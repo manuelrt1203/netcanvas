@@ -1,0 +1,470 @@
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ReactFlow,
+  ReactFlowProvider,
+  Background,
+  Controls,
+  MiniMap,
+  ConnectionMode,
+  addEdge,
+  useNodesState,
+  useEdgesState,
+  useReactFlow,
+} from '@xyflow/react';
+import DeviceNode from './DeviceNode.jsx';
+import CableEdge, { HOP_MS } from './CableEdge.jsx';
+import SimPanel from './SimPanel.jsx';
+// Chargés à la demande : l'éditeur s'ouvre plus vite
+const ExportPanel = lazy(() => import('./ExportPanel.jsx'));
+const Terminal = lazy(() => import('./Terminal.jsx'));
+import { CableInspector, DeviceInspector, Overview } from './Inspector.jsx';
+import { DEVICE_TYPES, Icon, PALETTE, iconName } from './devices.jsx';
+import { DEMOS } from './examples.js';
+import { toJSON, fromJSON, freePorts, linksOfNode, deviceToData } from './serialize.js';
+import { simulatePing } from './net/simulate.js';
+import { validate } from './net/validate.js';
+import { HOST_TYPES, buildTopology } from './net/topology.js';
+import { computeRouting } from './net/routing.js';
+import { CABLES, MODELS, TYPES } from './net/catalog.js';
+import { pickPorts } from './net/cabling.js';
+import { EMPTY_SIM, LinkContext, SimContext } from './SimContext.js';
+
+const STORAGE_KEY = 'netcanvas:draft';
+const MODE_KEY = 'netcanvas:config-mode';
+const DND_TYPE = 'application/netcanvas';
+const NODE_W = 96;
+// Équipements qui ont un terminal (Internet et le hub n'en ont pas)
+const hasTerminal = (d) => Boolean(d) && d.type !== 'cloud' && d.type !== 'hub';
+
+const nodeTypes = Object.fromEntries(DEVICE_TYPES.map((t) => [t, DeviceNode]));
+const CABLE_TOOLS = [['auto', 'Auto', 'Choisit le câble et les ports libres adaptés.'], ...Object.entries(CABLES).map(([id, c]) => [id, c.label, c.help])];
+const edgeTypes = { cable: CableEdge };
+
+const newId = () => crypto.randomUUID().slice(0, 8);
+const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+function loadDoc(doc) {
+  const loaded = fromJSON(doc);
+  return { ...loaded, edges: loaded.edges.map((e) => ({ ...e, type: 'cable' })) };
+}
+
+function loadDraft() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? loadDoc(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function emptyData(model, count) {
+  const type = MODELS[model].type;
+  const data = { label: `${MODELS[model].vendor === 'mikrotik' ? 'MikroTik' : TYPES[type].label} ${count}`, model };
+  if (HOST_TYPES.has(type)) Object.assign(data, { ip: '', mask: '', gateway: '' });
+  if (type === 'router') Object.assign(data, { modules: {}, ifaces: {}, routes: [] });
+  if (type === 'switch') data.ports = {};
+  return data;
+}
+
+// Signature de la config (sans les positions) pour savoir si une simulation est périmée
+const configSig = (doc) => JSON.stringify([doc.devices.map(({ position, ...d }) => d), doc.links]);
+
+function Editor() {
+  const draft = useMemo(loadDraft, []);
+  const [nodes, setNodes, onNodesChange] = useNodesState(draft?.nodes ?? []);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(draft?.edges ?? []);
+  const [name, setName] = useState(draft?.name ?? 'Mon réseau');
+  const [tab, setTab] = useState('props');
+  const [cableTool, setCableTool] = useState('auto');
+  const [configMode, setConfigModeState] = useState(() => {
+    try {
+      return localStorage.getItem(MODE_KEY) === 'terminal' ? 'terminal' : 'form';
+    } catch {
+      return 'form';
+    }
+  });
+  const sessions = useRef(new Map()); // sessions des terminaux, par équipement
+  const [error, setError] = useState('');
+  const [simForm, setSimForm] = useState({ source: '', target: '', custom: '' });
+  const [sim, setSim] = useState({ result: null, sig: null, playing: false, view: EMPTY_SIM });
+  const { screenToFlowPosition, setCenter, fitView } = useReactFlow();
+  const wrapper = useRef(null);
+  const importInput = useRef(null);
+  const timer = useRef(null);
+
+  const doc = useMemo(() => toJSON(nodes, edges, name), [nodes, edges, name]);
+  const issues = useMemo(() => validate(doc), [doc]);
+  const linkStatus = useMemo(() => buildTopology(doc).status, [doc]);
+  const routing = useMemo(() => computeRouting(doc), [doc]);
+  const labels = useMemo(() => new Map(nodes.map((n) => [n.id, n.data.label])), [nodes]);
+  const selected = nodes.find((n) => n.selected);
+  const selectedEdge = selected ? null : edges.find((e) => e.selected);
+  const selectedDevice = selected && doc.devices.find((d) => d.id === selected.id);
+  const wideInspector = tab === 'props' && configMode === 'terminal' && hasTerminal(selectedDevice);
+  const errorCount = issues.filter((i) => i.level === 'error').length;
+
+  // Sauvegarde automatique du brouillon dans le navigateur
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(doc));
+    } catch {
+      /* stockage indisponible : on ignore */
+    }
+  }, [doc]);
+
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  // Nouveau câble : on choisit les ports libres et le câble selon l'outil sélectionné (comme Packet Tracer)
+  const onConnect = useCallback(
+    (params) => {
+      if (params.source === params.target) return;
+      const [a, b] = [nodes.find((n) => n.id === params.source), nodes.find((n) => n.id === params.target)];
+      const side = (n) => ({ label: n.data.label, type: n.type, free: freePorts(n, edges) });
+      const pick = pickPorts(side(a), side(b), cableTool);
+      if (pick.error) {
+        setError(pick.error);
+        return;
+      }
+      setError('');
+      const id = `link-${newId()}`;
+      const data = {
+        cable: pick.cable,
+        sourceIface: pick.portA.name,
+        targetIface: pick.portB.name,
+        ...(pick.cable === 'serial' ? { dce: 'source' } : {}),
+      };
+      setEdges((eds) => addEdge({ ...params, id, type: 'cable', data }, eds));
+    },
+    [nodes, edges, cableTool, setEdges, setNodes],
+  );
+
+  const addDevice = useCallback(
+    (model, position) => {
+      const type = MODELS[model].type;
+      setNodes((nds) => {
+        // Décale l'équipement tant qu'il recouvre un équipement existant
+        const pos = { ...position };
+        while (nds.some((n) => Math.abs(n.position.x - pos.x) < NODE_W && Math.abs(n.position.y - pos.y) < 80)) {
+          pos.x += 32;
+          pos.y += 32;
+        }
+        const count = nds.filter((n) => n.type === type).length + 1;
+        return [
+          ...nds.map((n) => ({ ...n, selected: false })),
+          { id: `${type}-${newId()}`, type, position: pos, selected: true, data: emptyData(model, count) },
+        ];
+      });
+      setTab('props');
+    },
+    [setNodes],
+  );
+
+  const onDrop = useCallback(
+    (e) => {
+      e.preventDefault();
+      const model = e.dataTransfer.getData(DND_TYPE);
+      if (!MODELS[model]) return;
+      // On centre l'icône sous le curseur
+      const p = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      addDevice(model, { x: p.x - NODE_W / 2, y: p.y - 40 });
+    },
+    [screenToFlowPosition, addDevice],
+  );
+
+  // Alternative clavier / clic au glisser-déposer : ajout au centre de la vue
+  const addAtCenter = (model) => {
+    const r = wrapper.current.getBoundingClientRect();
+    const p = screenToFlowPosition({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+    addDevice(model, { x: p.x - NODE_W / 2, y: p.y - 40 });
+  };
+
+  const updateNode = (id) => (fn) => setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, data: fn(n.data) } : n)));
+  const updateEdge = (id) => (fn) => setEdges((eds) => eds.map((e) => (e.id === id ? { ...e, data: fn(e.data ?? {}) } : e)));
+
+  // La config reste sur le port quand on débranche, comme sur le vrai matériel
+  const deleteEdge = (id) => setEdges((eds) => eds.filter((e) => e.id !== id));
+
+  const selectNode = (id) => {
+    const node = nodes.find((n) => n.id === id);
+    if (!node) return;
+    setNodes((nds) => nds.map((n) => ({ ...n, selected: n.id === id })));
+    setCenter(node.position.x + NODE_W / 2, node.position.y + 40, { zoom: 1.2, duration: reducedMotion() ? 0 : 300 });
+    setTab('props');
+  };
+
+  const deleteSelected = () => {
+    const removed = new Set(linksOfNode(edges, selected.id).map((e) => e.id));
+    setNodes((nds) => nds.filter((n) => n.id !== selected.id));
+    setEdges((eds) => eds.filter((e) => !removed.has(e.id)));
+  };
+
+  // --- Simulation ------------------------------------------------------------
+  const stopSim = () => clearTimeout(timer.current);
+
+  function play(result) {
+    stopSim();
+    const { hops } = result;
+    const finalView = {
+      hop: null,
+      edges: new Map(hops.map((h) => [h.edge, h.phase])),
+      nodes: new Set(hops.flatMap((h) => [h.from, h.to])),
+      failedAt: result.failedAt,
+    };
+    if (reducedMotion() || !hops.length) {
+      setSim((s) => ({ ...s, playing: false, view: finalView }));
+      return;
+    }
+    const step = (i) => {
+      if (i === hops.length) {
+        setSim((s) => ({ ...s, playing: false, view: finalView }));
+        return;
+      }
+      const done = hops.slice(0, i);
+      setSim((s) => ({
+        ...s,
+        playing: true,
+        view: {
+          hop: { ...hops[i], key: i },
+          edges: new Map(done.map((h) => [h.edge, h.phase])),
+          nodes: new Set([hops[0].from, ...done.map((h) => h.to)]),
+          failedAt: null,
+        },
+      }));
+      timer.current = setTimeout(() => step(i + 1), HOP_MS);
+    };
+    step(0);
+  }
+
+  const setConfigMode = (mode) => {
+    setConfigModeState(mode);
+    try {
+      localStorage.setItem(MODE_KEY, mode);
+    } catch {
+      /* stockage indisponible : on ignore */
+    }
+  };
+
+  // Un ping tapé dans un terminal s'anime aussi sur le plan
+  const pingFromTerminal = (src, dst) => {
+    const result = simulatePing(doc, src, dst);
+    setSim({ result, sig: configSig(doc), playing: false, view: EMPTY_SIM });
+    play(result);
+  };
+
+  const runSim = (src, dst) => {
+    const result = simulatePing(doc, src, dst);
+    setSim({ result, sig: configSig(doc), playing: false, view: EMPTY_SIM });
+    play(result);
+  };
+
+  const resetSim = () => {
+    stopSim();
+    setSim({ result: null, sig: null, playing: false, view: EMPTY_SIM });
+  };
+
+  // --- Fichiers ----------------------------------------------------------------
+  const replaceDoc = (loaded) => {
+    resetSim();
+    setNodes(loaded.nodes);
+    setEdges(loaded.edges);
+    setName(loaded.name ?? 'Mon réseau');
+    setError('');
+    requestAnimationFrame(() => fitView({ maxZoom: 1, duration: reducedMotion() ? 0 : 300 }));
+  };
+
+  const importJson = async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      replaceDoc(loadDoc(JSON.parse(await file.text())));
+    } catch (err) {
+      setError(err instanceof SyntaxError ? "Ce fichier n'est pas du JSON valide." : err.message);
+    }
+  };
+
+  const demoMenu = useRef(null);
+  const loadDemo = (demo = DEMOS[0]) => {
+    if (demoMenu.current) demoMenu.current.open = false;
+    if (nodes.length && !confirm(`Remplacer le schéma actuel par la démo « ${demo.label} » ?`)) return;
+    replaceDoc(loadDoc(demo.doc));
+  };
+
+  const clearAll = () => {
+    if (nodes.length && !confirm('Effacer tout le schéma ?')) return;
+    resetSim();
+    setNodes([]);
+    setEdges([]);
+  };
+
+  const TABS = [
+    ['props', 'Propriétés', errorCount ? errorCount : null],
+    ['sim', 'Simulation'],
+    ['export', 'Export'],
+  ];
+
+  return (
+    <LinkContext.Provider value={linkStatus}>
+      <SimContext.Provider value={sim.view}>
+        <div className={`app${wideInspector ? ' wide-inspector' : ''}`}>
+          <header className="topbar">
+            <div className="brand">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="5" cy="6" r="2.5" /><circle cx="19" cy="6" r="2.5" /><circle cx="12" cy="18" r="2.5" />
+                <path d="M7.5 6h9M6.3 8.2l4.4 7.6M17.7 8.2l-4.4 7.6" />
+              </svg>
+              NetCanvas
+            </div>
+            <label className="visually-hidden" htmlFor="name">Nom du schéma</label>
+            <input id="name" className="doc-name" value={name} onChange={(e) => setName(e.target.value)} />
+            <div className="actions">
+              <details className="demo-menu" ref={demoMenu}>
+                <summary className="button ghost">Démos</summary>
+                <div className="demo-list" role="menu">
+                  {DEMOS.map((d) => (
+                    <button key={d.id} type="button" role="menuitem" onClick={() => loadDemo(d)}>{d.label}</button>
+                  ))}
+                </div>
+              </details>
+              <button type="button" className="ghost" onClick={() => importInput.current.click()}>Importer</button>
+              <input ref={importInput} type="file" accept="application/json,.json" hidden onChange={importJson} />
+              <button type="button" className="ghost" onClick={clearAll}>Effacer</button>
+              <button type="button" onClick={() => setTab('export')}>Exporter</button>
+            </div>
+          </header>
+          {error && <p className="error" role="alert">{error}</p>}
+
+          <aside className="palette" aria-label="Équipements">
+            <h2>Équipements</h2>
+            <p className="hint">Glisse sur le plan, ou clique pour ajouter.</p>
+            {PALETTE.map((group) => (
+              <details key={group.title} className="palette-group" open>
+                <summary>{group.title}</summary>
+                {group.models.map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    className="palette-item"
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData(DND_TYPE, m.id);
+                      e.dataTransfer.effectAllowed = 'move';
+                    }}
+                    onClick={() => addAtCenter(m.id)}
+                  >
+                    <span className={`palette-icon device-${m.type}`}><Icon name={iconName(m.type, m.id)} /></span>
+                    {m.label}
+                  </button>
+                ))}
+              </details>
+            ))}
+            <details className="palette-group" open>
+              <summary>Câbles</summary>
+              <div className="cable-tools" role="radiogroup" aria-label="Câble pour la prochaine liaison">
+                {CABLE_TOOLS.map(([id, label]) => (
+                  <button key={id} type="button" role="radio" aria-checked={cableTool === id}
+                    className={`cable-tool cable-tool-${id}`} onClick={() => setCableTool(id)}>
+                    <span className="cable-swatch" aria-hidden="true" />{label}
+                  </button>
+                ))}
+              </div>
+              <p className="hint">{CABLE_TOOLS.find(([id]) => id === cableTool)[2]}{cableTool === 'serial' ? ' Le premier équipement relié est le côté DCE.' : ''}</p>
+            </details>
+            <p className="hint">Relie deux équipements en tirant depuis un point bleu. Suppr pour effacer la sélection.</p>
+          </aside>
+
+          <main className="canvas" ref={wrapper} onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              nodeTypes={nodeTypes}
+              edgeTypes={edgeTypes}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={onConnect}
+              connectionMode={ConnectionMode.Loose}
+              deleteKeyCode={['Delete', 'Backspace']}
+              colorMode="system"
+              snapToGrid
+              snapGrid={[16, 16]}
+              // Recadrage seulement à l'ouverture d'un brouillon, sinon le 1er équipement déposé déclenche un zoom x2
+              fitView={Boolean(draft?.nodes.length)}
+              fitViewOptions={{ maxZoom: 1 }}
+              defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+            >
+              <Background gap={16} />
+              <Controls />
+              <MiniMap pannable zoomable />
+            </ReactFlow>
+            {nodes.length === 0 && (
+              <div className="empty">
+                <p>Glisse un routeur, un switch ou un PC ici pour commencer.</p>
+                <button type="button" className="ghost" onClick={() => loadDemo()}>Ouvrir le schéma de démo</button>
+              </div>
+            )}
+          </main>
+
+          <aside className="inspector" aria-label="Panneau latéral">
+            <div className="tabs" role="tablist">
+              {TABS.map(([key, label, badge]) => (
+                <button
+                  key={key}
+                  type="button"
+                  role="tab"
+                  id={`tab-${key}`}
+                  aria-selected={tab === key}
+                  aria-controls="panel"
+                  className="tab"
+                  onClick={() => setTab(key)}
+                >
+                  {label}
+                  {badge && <span className="badge" aria-label={`${badge} erreur(s)`}>{badge}</span>}
+                </button>
+              ))}
+            </div>
+            <div id="panel" role="tabpanel" aria-labelledby={`tab-${tab}`} className="panel">
+              {tab === 'props' && (selected ? (
+                <DeviceInspector key={selected.id} node={selected} edges={edges} labels={labels}
+                  update={updateNode(selected.id)} onDelete={deleteSelected} mode={configMode} onMode={setConfigMode}
+                  routing={routing.routers.get(selected.id)}
+                  terminal={hasTerminal(selectedDevice) && (
+                    <Suspense fallback={<p className="hint">Chargement du terminal…</p>}>
+                      <Terminal key={selected.id} device={selectedDevice} doc={doc} sessions={sessions.current}
+                        onChange={(dev) => updateNode(selected.id)(() => deviceToData(dev, doc.links))} onPing={pingFromTerminal} />
+                    </Suspense>
+                  )} />
+              ) : selectedEdge ? (
+                <CableInspector key={selectedEdge.id} edge={selectedEdge} nodes={nodes} edges={edges}
+                  updateEdge={updateEdge(selectedEdge.id)} updateNode={updateNode} onDelete={() => deleteEdge(selectedEdge.id)} />
+              ) : (
+                <Overview nodes={nodes} edges={edges} issues={issues} onSelect={selectNode} />
+              ))}
+              {tab === 'sim' && (
+                <>
+                  {sim.result && sim.sig !== configSig(doc) && (
+                    <p className="notice">Le schéma a changé depuis cette simulation. Relance-la.</p>
+                  )}
+                  <SimPanel doc={doc} form={simForm} setForm={setSimForm} result={sim.result} playing={sim.playing}
+                    onRun={runSim} onReplay={() => play(sim.result)} onReset={resetSim} />
+                </>
+              )}
+              {tab === 'export' && (
+                <Suspense fallback={<p className="hint">Chargement…</p>}>
+                  <ExportPanel doc={doc} />
+                </Suspense>
+              )}
+            </div>
+          </aside>
+        </div>
+      </SimContext.Provider>
+    </LinkContext.Provider>
+  );
+}
+
+export default function App() {
+  return (
+    <ReactFlowProvider>
+      <Editor />
+    </ReactFlowProvider>
+  );
+}

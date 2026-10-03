@@ -1,0 +1,125 @@
+// Vérifie l'export Containerlab sur un vrai réseau Linux, sans Docker ni root :
+// un namespace réseau par équipement (dans un namespace utilisateur), des paires veth pour les câbles,
+// puis les commandes `exec` générées. Les pings réels doivent donner le même verdict que le simulateur.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { BGP_DEMO, DEMO, OSPF_DEMO } from '../examples.js';
+import { simulatePing } from '../net/simulate.js';
+import { clabCommands } from './containerlab.js';
+import { interfaceTable } from './common.js';
+
+const sh = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+const probe = spawnSync('unshare', ['-rnm', 'sh', '-c', 'mount -t tmpfs none /run && mkdir -p /run/netns && ip netns add t && bridge -V'], { encoding: 'utf8' });
+const skip = probe.status !== 0 && 'namespaces utilisateur indisponibles (unshare -rnm) ou iproute2 absent';
+
+// Monte le réseau puis lance les pings ; renvoie { "src>ip": true|false }
+function runLab(doc, pings) {
+  const { table } = interfaceTable(doc);
+  const commands = clabCommands(doc);
+  const script = ['set -e', 'mount -t tmpfs none /run', 'mkdir -p /run/netns'];
+
+  for (const d of doc.devices) {
+    script.push(`ip netns add ${d.id}`, `ip -n ${d.id} link set lo up`);
+    if (d.type === 'router') script.push(`ip netns exec ${d.id} sh -c 'echo 1 > /proc/sys/net/ipv4/ip_forward'`);
+  }
+  doc.links.forEach((l, i) => {
+    const a = table.get(l.source).find((r) => r.link === l.id);
+    const b = table.get(l.target).find((r) => r.link === l.id);
+    script.push(
+      `ip link add va${i} type veth peer name vb${i}`,
+      `ip link set va${i} netns ${l.source}`, `ip -n ${l.source} link set va${i} name eth${a.index + 1}`,
+      `ip link set vb${i} netns ${l.target}`, `ip -n ${l.target} link set vb${i} name eth${b.index + 1}`,
+    );
+  });
+  for (const d of doc.devices) {
+    for (const c of commands.get(d.id)) script.push(`ip netns exec ${d.id} sh -c ${sh(c)}`);
+  }
+  script.push('set +e', 'sleep 1'); // laisse les bridges passer en forwarding
+  for (const [src, ip] of pings) {
+    script.push(`ip netns exec ${src} ping -c1 -W1 ${ip} >/dev/null 2>&1 && echo "${src}>${ip} ok" || echo "${src}>${ip} ko"`);
+  }
+
+  const r = spawnSync('unshare', ['-rnm', 'sh', '-c', script.join('\n')], { encoding: 'utf8', timeout: 60_000 });
+  assert.equal(r.status, 0, r.stderr);
+  return Object.fromEntries(r.stdout.trim().split('\n').map((line) => {
+    const [key, verdict] = line.split(' ');
+    return [key, verdict === 'ok'];
+  }));
+}
+
+function assertMatchesSimulator(doc, pings) {
+  const real = runLab(doc, pings);
+  for (const [src, ip, expected] of pings) {
+    const simulated = simulatePing(doc, src, ip).ok;
+    assert.equal(simulated, expected, `simulateur ${src} -> ${ip}`);
+    assert.equal(real[`${src}>${ip}`], expected, `réseau Linux ${src} -> ${ip}`);
+  }
+}
+
+test('containerlab : la démo fonctionne vraiment (VLAN, inter-VLAN, 2 routeurs)', { skip }, () => {
+  assertMatchesSimulator(structuredClone(DEMO), [
+    ['pc1', '192.168.10.11', true], // même VLAN
+    ['pc1', '192.168.20.10', true], // inter-VLAN via R1
+    ['pc3', '172.16.0.10', true], // R1 -> R2 -> serveur
+    ['pc2', '203.0.113.2', true], // route par défaut jusqu'à Internet
+  ]);
+});
+
+test('containerlab : un port dans le mauvais VLAN coupe vraiment le ping', { skip }, () => {
+  const doc = structuredClone(DEMO);
+  doc.devices.find((d) => d.id === 'sw1').config.ports.find((p) => p.link === 'l3').vlan = 10;
+  assertMatchesSimulator(doc, [
+    ['pc1', '192.168.10.11', true],
+    ['pc1', '192.168.20.10', false], // PC Atelier isolé de sa passerelle
+  ]);
+});
+
+test('containerlab : trunk 802.1Q entre deux switches', { skip }, () => {
+  const host = (id, ip) => ({ id, type: 'pc', label: id, position: { x: 0, y: 0 }, config: { ip, mask: 24, gateway: null } });
+  const doc = {
+    format: 'netcanvas', version: 2, name: 'Trunk',
+    devices: [
+      host('pca', '10.0.10.1'), host('pcb', '10.0.10.2'), host('pcc', '10.0.10.3'),
+      { id: 'swa', type: 'switch', label: 'SWA', position: { x: 0, y: 0 }, config: { ports: [
+        { link: 'a', name: 'Fa0/1', mode: 'access', vlan: 10 },
+        { link: 't', name: 'G0/1', mode: 'trunk' },
+      ] } },
+      { id: 'swb', type: 'switch', label: 'SWB', position: { x: 0, y: 0 }, config: { ports: [
+        { link: 't', name: 'G0/1', mode: 'trunk' },
+        { link: 'b', name: 'Fa0/1', mode: 'access', vlan: 10 },
+        { link: 'c', name: 'Fa0/2', mode: 'access', vlan: 20 },
+      ] } },
+    ],
+    links: [
+      { id: 'a', source: 'pca', target: 'swa' },
+      { id: 't', source: 'swa', target: 'swb' },
+      { id: 'b', source: 'pcb', target: 'swb' },
+      { id: 'c', source: 'pcc', target: 'swb' },
+    ],
+  };
+  assertMatchesSimulator(doc, [
+    ['pca', '10.0.10.2', true], // VLAN 10 traverse le trunk
+    ['pca', '10.0.10.3', false], // même sous-réseau mais VLAN 20
+  ]);
+});
+
+test('containerlab : OSPF 2 zones (routes calculées par NetCanvas, pings réels)', { skip }, () => {
+  assertMatchesSimulator(structuredClone(OSPF_DEMO), [
+    ['pc1', '172.16.3.10', true], // O IA via l'ABR
+    ['pc1', '203.0.113.2', true], // O*E2 jusqu'à Internet
+    ['pc1', '3.3.3.3', true], // loopback du MikroTik
+  ]);
+});
+
+test('containerlab : BGP eBGP + iBGP (next-hop résolu par OSPF)', { skip }, () => {
+  assertMatchesSimulator(structuredClone(BGP_DEMO), [
+    ['pc1', '172.16.0.10', true],
+    ['srv', '192.168.1.10', true],
+  ]);
+  // Sans next-hop-self, le simulateur et Linux tombent d'accord : plus de chemin
+  const broken = structuredClone(BGP_DEMO);
+  delete broken.devices.find((d) => d.id === 'r2').config.bgp.neighbors[0].nextHopSelf;
+  assertMatchesSimulator(broken, [['pc1', '172.16.0.10', false]]);
+});
