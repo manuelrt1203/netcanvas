@@ -21,12 +21,14 @@ class SimError extends Error {
   }
 }
 
-// options : topo et routing déjà calculés (BGP vérifie ses sessions avec ce ping), srcIp imposée
+// options : topo et routing déjà calculés (BGP vérifie ses sessions avec ce ping), srcIp imposée,
+//           oneWay : seulement l'aller (réponse ICMP d'un routeur pour traceroute)
 export function simulatePing(doc, sourceId, dstIp, options = {}) {
   const topo = options.topo ?? buildTopology(doc);
   const routing = options.routing ?? computeRouting(doc, topo);
   const ctx = { topo, routing };
-  const result = { ok: false, hops: [], log: [], failedAt: null };
+  // path : équipements atteints et adresse d'entrée (sert à traceroute)
+  const result = { ok: false, hops: [], path: [], log: [], failedAt: null, srcIp: null };
   const log = (phase, text, level = 'info', device = null) => result.log.push({ phase, text, level, device });
   const name = (id) => topo.devices.get(id)?.label ?? id;
 
@@ -36,6 +38,11 @@ export function simulatePing(doc, sourceId, dstIp, options = {}) {
 
     log('request', `${name(sourceId)} envoie un ping vers ${dstIp}.`);
     const req = forward(ctx, sourceId, dstIp, 'request', result, log, name, options.srcIp);
+    result.srcIp = req.srcIp;
+    if (options.oneWay) {
+      result.ok = true;
+      return result;
+    }
     log('request', `${name(req.arrivedAt)} reçoit l'echo request et répond.`, 'ok', req.arrivedAt);
 
     const rep = forward(ctx, req.arrivedAt, req.srcIp, 'reply', result, log, name);
@@ -73,10 +80,12 @@ function forward(ctx, startId, dstIp, phase, result, log, name, fixedSrc = null)
 
     const step = isHost(dev) ? hostDecision(topo, current, dstIp, name) : routerDecision(ctx, current, dstIp, name);
     srcIp ??= step.iface.ip;
+    if (phase === 'request') result.srcIp = srcIp;
     log(phase, step.text, 'info', current);
 
     const l2 = deliver(topo, current, step.iface.link, step.nextHop, name);
     result.hops.push(...l2.hops.map((h) => ({ ...h, phase })));
+    result.path.push({ phase, device: l2.endpoint, ip: topo.l3IfaceOn(l2.endpoint, l2.inLink)?.ip ?? null });
     const via = l2.vlan != null ? ` (VLAN ${l2.vlan})` : '';
     log(
       phase,
@@ -188,7 +197,7 @@ function deliver(topo, fromId, linkId, targetIp, name) {
   const { endpoints, drops, vlansSeen } = flood(topo, fromId, linkId);
   for (const e of endpoints) {
     const iface = topo.l3IfaceOn(e.device, e.inLink);
-    if (iface && isValidIp(iface.ip) && parseIp(iface.ip) === target) return { endpoint: e.device, hops: e.hops, vlan: e.vlan };
+    if (iface && isValidIp(iface.ip) && parseIp(iface.ip) === target) return { endpoint: e.device, inLink: e.inLink, hops: e.hops, vlan: e.vlan };
   }
   const where = vlansSeen.size ? ` dans le VLAN ${[...vlansSeen].join(', ')}` : ' sur ce lien';
   const extra = drops.length ? ` (${drops.join(' ; ')})` : '';

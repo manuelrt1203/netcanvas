@@ -64,6 +64,7 @@ export default function SimPanel({ doc, form, setForm, result, playing, onRun, o
         )}
         <div className="row">
           <button type="submit" disabled={!src || !dstIp || playing}>{playing ? 'Simulation…' : 'Lancer le ping'}</button>
+          <button type="button" className="ghost" disabled={!src || !dstIp || playing} onClick={() => onRun(src, dstIp, 'trace')}>Traceroute</button>
           {result && (
             <>
               <button type="button" className="ghost" onClick={onReplay} disabled={playing}>Rejouer</button>
@@ -78,6 +79,21 @@ export default function SimPanel({ doc, form, setForm, result, playing, onRun, o
           <p className={`sim-verdict ${result.ok ? 'ok' : 'fail'}`}>
             {result.ok ? 'Ping réussi' : 'Échec du ping'}
           </p>
+          {result.trace && (
+            <section>
+              <h3>Traceroute</h3>
+              <ol className="trace">
+                {result.trace.hops.map((h) => (
+                  <li key={h.ttl} className={h.ip ? '' : 'trace-lost'}>
+                    <span className="trace-ttl">{h.ttl}</span>
+                    <code>{h.ip ?? '*  *  *'}</code>
+                    {h.device && <span className="muted"> {doc.devices.find((d) => d.id === h.device)?.label}</span>}
+                  </li>
+                ))}
+              </ol>
+              {result.trace.reason && <p className="field-error">{result.trace.reason}</p>}
+            </section>
+          )}
           {phases.map(([phase, title]) => {
             const entries = result.log.filter((l) => l.phase === phase);
             if (!entries.length) return null;

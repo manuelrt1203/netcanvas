@@ -23,6 +23,7 @@ import { DEVICE_TYPES, Icon, PALETTE, iconName } from './devices.jsx';
 import { DEMOS } from './examples.js';
 import { toJSON, fromJSON, freePorts, linksOfNode, deviceToData } from './serialize.js';
 import { simulatePing } from './net/simulate.js';
+import { traceroute } from './net/traceroute.js';
 import { validate } from './net/validate.js';
 import { HOST_TYPES, buildTopology } from './net/topology.js';
 import { computeRouting } from './net/routing.js';
@@ -380,8 +381,10 @@ function Editor() {
     play(result);
   };
 
-  const runSim = (src, dst) => {
-    const result = simulatePing(doc, src, dst);
+  // Ping ou traceroute (la trace réutilise l'animation du ping)
+  const runSim = (src, dst, mode = 'ping') => {
+    const result = simulatePing(doc, src, dst, { topo, routing });
+    if (mode === 'trace') result.trace = traceroute(doc, src, dst);
     setSim({ result, sig: configSig(doc), playing: false, view: EMPTY_SIM });
     play(result);
   };

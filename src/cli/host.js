@@ -1,6 +1,7 @@
 // Invite de commandes d'un PC, serveur ou imprimante (façon Packet Tracer / Windows) : ipconfig, ping.
 import { tokenize } from './engine.js';
 import { maskToCidr, ping } from './device.js';
+import { traceroute } from '../net/traceroute.js';
 import { cidrToMask, isBroadcastAddress, isNetworkAddress, isValidCidr, isValidIp, sameSubnet } from '../net/ip.js';
 
 const HELP = [
@@ -8,6 +9,7 @@ const HELP = [
   '  ipconfig                         affiche la configuration IP',
   '  ipconfig <ip> <masque> [passerelle]  configure l\'adresse IP',
   '  ping <ip> [-n nombre]            envoie des echo request',
+  '  tracert <ip>                     routeurs traversés jusqu\'à la destination',
   '  cls                              efface l\'écran',
   '',
 ];
@@ -86,9 +88,19 @@ export const host = {
         out.push('');
         break;
       }
-      case 'tracert':
-        out.push('NetCanvas : tracert n\'est pas encore simulé.', '');
+      case 'tracert': {
+        const target = args.find((a) => isValidIp(a));
+        if (!target) {
+          out.push(`Unable to resolve target system name ${args[0] ?? ''}.`, '');
+          break;
+        }
+        const t = traceroute(doc, dev.id, target);
+        ctx.effects.push({ type: 'ping', source: dev.id, target });
+        out.push('', `Tracing route to ${target} over a maximum of 30 hops:`, '');
+        for (const h of t.hops) out.push(`${String(h.ttl).padStart(3)}   ${h.ip ? `<1 ms     <1 ms     <1 ms     ${h.ip}` : '*         *         *        Request timed out.'}`);
+        out.push('', t.ok ? 'Trace complete.' : `NetCanvas : ${t.reason}`, '');
         break;
+      }
       default:
         out.push('Invalid Command.', '');
     }

@@ -5,6 +5,7 @@ import { buildTopology, isLoopbackName } from '../net/topology.js';
 import { cidrToMask, formatIp, isBroadcastAddress, isNetworkAddress, isValidIp, networkOf, parseIp, sameSubnet } from '../net/ip.js';
 import { modelOf } from '../net/catalog.js';
 import { hostname as iosHostname, iosInterfaceExtras, iosLongName, iosRoutingLines } from '../export/cisco.js';
+import { traceroute } from '../net/traceroute.js';
 import { bgpTree, interfaceRoutingCommands, ospfTree, ripTree, routeFilters, routerCommands, routingShows, showIpRoute } from './ios-routing.js';
 
 const NOT_SIMULATED = (what) => [`% NetCanvas : ${what} n'est pas encore simulé.`, ''];
@@ -185,6 +186,16 @@ function doPing(ctx, ip) {
   else out.push('.....', 'Success rate is 0 percent (0/5)', `% NetCanvas : ${r.reason}`, '');
 }
 
+function doTraceroute(ctx, ip) {
+  const { dev, doc, out, effects } = ctx;
+  out.push('Type escape sequence to abort.', `Tracing the route to ${ip}`, '');
+  const t = traceroute(doc, dev.id, ip);
+  effects.push({ type: 'ping', source: dev.id, target: ip });
+  for (const h of t.hops) out.push(`  ${h.ttl} ${h.ip ? `${h.ip} 0 msec 0 msec 0 msec` : '*    *    *'}`);
+  if (t.reason) out.push(`% NetCanvas : ${t.reason}`);
+  out.push('');
+}
+
 // --- Configuration ------------------------------------------------------------------------
 // Messages IOS après un changement d'état d'interface
 function linkMessages(ctx, names) {
@@ -276,7 +287,7 @@ function execTree(dev, privileged) {
     kw('exit', 'Exit from the EXEC', { run: (c) => logout(c) }),
     kw('logout', 'Exit from the EXEC', { run: (c) => logout(c) }),
     pingCmd(),
-    kw('traceroute', 'Trace route to destination', { children: [arg('ip', 'WORD', '', isIp, { run: (c) => c.out.push(...NOT_SIMULATED('traceroute')) })] }),
+    kw('traceroute', 'Trace route to destination', { children: [arg('ip', 'WORD', 'Trace route to destination address', isIp, { run: (c) => doTraceroute(c, c.args.ip) })] }),
     showTree(dev),
   ];
   if (privileged) {

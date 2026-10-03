@@ -5,11 +5,13 @@ import { dataPorts, ensureEntry, getEntry, linkOf, pad, ping } from './device.js
 import { buildTopology } from '../net/topology.js';
 import { formatIp, isBroadcastAddress, isNetworkAddress, isValidCidr, isValidIp, networkOf, sameSubnet, splitCidr } from '../net/ip.js';
 import { modelOf } from '../net/catalog.js';
+import { traceroute } from '../net/traceroute.js';
 import { ROUTING_MENUS, routeTable, routingScript, runRouting } from './routeros-routing.js';
 
 // Menus : sous-menus et commandes de chaque chemin
 const MENUS = {
-  '': { menus: ['interface', 'ip', 'routing', 'system'], commands: ['ping', 'export', 'quit'] },
+  '': { menus: ['interface', 'ip', 'routing', 'system', 'tool'], commands: ['ping', 'export', 'quit'] },
+  tool: { menus: [], commands: ['traceroute'] },
   interface: { menus: ['ethernet'], commands: ['print', 'enable', 'disable', 'export'] },
   'interface ethernet': { menus: [], commands: ['print', 'enable', 'disable', 'export'] },
   ip: { menus: ['address', 'route', 'firewall'], commands: ['export'] },
@@ -223,6 +225,16 @@ function run(ctx, p) {
       const recv = r.ok ? count : 0;
       out.push(`    sent=${count} received=${recv} packet-loss=${r.ok ? 0 : 100}%${r.ok ? ' min-rtt=1ms avg-rtt=1ms max-rtt=1ms' : ''}`);
       if (!r.ok) out.push(`NetCanvas : ${r.reason}`);
+      return out.push('');
+    }
+    case 'tool|traceroute': {
+      const target = p.named.address ?? p.unnamed[0];
+      if (!isValidIp(target)) return out.push('invalid value for argument address', '');
+      const t = traceroute(doc, dev.id, target);
+      ctx.effects.push({ type: 'ping', source: dev.id, target });
+      out.push(` # ${pad('ADDRESS', 39)}LOSS SENT LAST`);
+      for (const h of t.hops) out.push(`${String(h.ttl).padStart(2)} ${pad(h.ip ?? '', 39)}${h.ip ? '  0%    3 0.5ms' : '100%    3 timeout'}`);
+      if (t.reason) out.push(`NetCanvas : ${t.reason}`);
       return out.push('');
     }
     case '|export':
