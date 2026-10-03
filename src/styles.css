@@ -358,3 +358,26 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .iface-name { align-self: center; font-size: .85rem; min-width: 3ch; }
 .routing-status { margin: 8px 0; font-size: .85rem; }
 .routing-status p { margin: 0 0 4px; }
+
+/* --- Édition : historique, recherche, aide ------------------------------------ */
+.icon-group { display: flex; }
+.icon-group .icon:first-child { border-radius: 8px 0 0 8px; }
+.icon-group .icon:last-child { border-radius: 0 8px 8px 0; margin-left: -1px; }
+button.icon { min-width: 40px; padding: 0 10px; font-size: 1.05rem; }
+button:disabled { opacity: .4; cursor: not-allowed; }
+.search { position: relative; margin-bottom: 4px; }
+.search input { min-height: 36px; font-size: .9rem; }
+.search-results {
+  position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 30; list-style: none; margin: 0; padding: 4px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 24px rgb(0 0 0 / .15);
+}
+.search-results li.muted { padding: 8px; font-size: .85rem; }
+.search-results button { width: 100%; text-align: left; background: transparent; color: var(--text); border: 0; font-weight: 500; min-height: 36px; }
+.search-results button:hover, .search-results button:focus-visible { background: var(--bg); opacity: 1; }
+.search-results .muted { font-weight: 400; font-size: .8rem; margin-left: 4px; }
+.help-dialog { border: 1px solid var(--border); border-radius: 12px; padding: 20px 24px; background: var(--surface); color: var(--text); max-width: min(480px, calc(100vw - 32px)); }
+.help-dialog::backdrop { background: rgb(0 0 0 / .4); }
+.shortcuts { display: grid; gap: 6px; margin: 12px 0; }
+.shortcuts div { display: flex; justify-content: space-between; gap: 16px; }
+.shortcuts dd { margin: 0; color: var(--muted); }
+kbd { font: 12px ui-monospace, monospace; padding: 2px 6px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--bg); }

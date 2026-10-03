@@ -3,8 +3,9 @@ import { isBroadcastAddress, isNetworkAddress, isValidCidr, isValidIp, networkLa
 import { buildTopology, isHost } from './topology.js';
 import { computeRouting } from './routing.js';
 
-export function validate(doc) {
-  const topo = buildTopology(doc);
+// ctx : topologie et routage déjà calculés par l'éditeur (évite de tout refaire)
+export function validate(doc, ctx = {}) {
+  const topo = ctx.topo ?? buildTopology(doc);
   const issues = [];
   const add = (device, level, text) => issues.push({ device, level, text });
   const ipOwners = new Map();
@@ -80,7 +81,7 @@ export function validate(doc) {
   }
 
   // Routage dynamique : adjacences OSPF, échanges RIP, sessions BGP qui ne montent pas
-  for (const i of computeRouting(doc, topo).issues) add(i.device, i.level, i.text);
+  for (const i of (ctx.routing ?? computeRouting(doc, topo)).issues) add(i.device, i.level, i.text);
 
   for (const [ip, owners] of ipOwners) {
     if (owners.length > 1) {

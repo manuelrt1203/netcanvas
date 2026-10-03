@@ -27,6 +27,7 @@ Menu **Démos** :
 - **Contrôles en direct** : IP en double, passerelle hors réseau, adresse de réseau ou de diffusion, interfaces d'un routeur dans le même réseau, saut suivant injoignable, ports de switch incohérents (access ↔ trunk, VLAN différents).
 - **Simulation de ping** : animation de l'echo request (bleu) puis de l'echo reply (vert), avec un journal de chaque décision. L'équipement fautif est entouré en rouge.
 - **Exports** vers Packet Tracer, GNS3, Containerlab, draw.io, CSV, SVG et PNG (détails plus bas).
+- **Édition confortable** : annuler / rétablir (Ctrl+Z, Ctrl+Y, 100 étapes), copier-coller et duplication avec la configuration et les câbles internes (noms renumérotés), sélection multiple (Maj+clic, Maj+glisser) avec alignement et répartition, recherche par nom, modèle ou IP (Ctrl+K), aide des raccourcis (?).
 - **Import JSON**, sauvegarde automatique du brouillon, mode sombre, `prefers-reduced-motion` respecté.
 
 ## Routage dynamique (`src/net/routing.js`)
@@ -156,7 +157,7 @@ Les fichiers v1 et v2 s'importent toujours : le modèle est déduit des ports ut
 ## Tests
 
 ```bash
-npm test           # 81 tests : calculs IP, ping, validation, JSON, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
+npm test           # 85 tests : calculs IP, ping, validation, JSON, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
 npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : édition, contrôles, ping, persistance, exports, câblage, terminaux (IOS, RouterOS, PC), démos OSPF et BGP (show ip ospf neighbor, next-hop-self retiré)
 ```
 

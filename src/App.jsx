@@ -17,7 +17,8 @@ import SimPanel from './SimPanel.jsx';
 // Chargés à la demande : l'éditeur s'ouvre plus vite
 const ExportPanel = lazy(() => import('./ExportPanel.jsx'));
 const Terminal = lazy(() => import('./Terminal.jsx'));
-import { CableInspector, DeviceInspector, Overview } from './Inspector.jsx';
+import { CableInspector, DeviceInspector, MultiInspector, Overview } from './Inspector.jsx';
+import { arrange, copySelection, duplicate, search } from './editing.js';
 import { DEVICE_TYPES, Icon, PALETTE, iconName } from './devices.jsx';
 import { DEMOS } from './examples.js';
 import { toJSON, fromJSON, freePorts, linksOfNode, deviceToData } from './serialize.js';
@@ -31,6 +32,8 @@ import { EMPTY_SIM, LinkContext, SimContext } from './SimContext.js';
 
 const STORAGE_KEY = 'netcanvas:draft';
 const MODE_KEY = 'netcanvas:config-mode';
+const HISTORY_MAX = 100;
+const isTyping = (el) => el?.closest?.('input, textarea, select, [contenteditable="true"]');
 const DND_TYPE = 'application/netcanvas';
 const NODE_W = 96;
 // Équipements qui ont un terminal (Internet et le hub n'en ont pas)
@@ -93,11 +96,14 @@ function Editor() {
   const timer = useRef(null);
 
   const doc = useMemo(() => toJSON(nodes, edges, name), [nodes, edges, name]);
-  const issues = useMemo(() => validate(doc), [doc]);
-  const linkStatus = useMemo(() => buildTopology(doc).status, [doc]);
-  const routing = useMemo(() => computeRouting(doc), [doc]);
+  // Topologie et routage calculés une fois par modification, partagés par les contrôles et l'affichage
+  const topo = useMemo(() => buildTopology(doc), [doc]);
+  const routing = useMemo(() => computeRouting(doc, topo), [doc, topo]);
+  const issues = useMemo(() => validate(doc, { topo, routing }), [doc, topo, routing]);
+  const linkStatus = topo.status;
   const labels = useMemo(() => new Map(nodes.map((n) => [n.id, n.data.label])), [nodes]);
-  const selected = nodes.find((n) => n.selected);
+  const selectedNodes = nodes.filter((n) => n.selected);
+  const selected = selectedNodes.length === 1 ? selectedNodes[0] : null;
   const selectedEdge = selected ? null : edges.find((e) => e.selected);
   const selectedDevice = selected && doc.devices.find((d) => d.id === selected.id);
   const wideInspector = tab === 'props' && configMode === 'terminal' && hasTerminal(selectedDevice);
@@ -113,6 +119,95 @@ function Editor() {
   }, [doc]);
 
   useEffect(() => () => clearTimeout(timer.current), []);
+
+  // --- Annuler / rétablir ------------------------------------------------------
+  // On garde des instantanés du document ; les modifications rapprochées (frappe, glisser) n'en font qu'un.
+  const history = useRef({ past: [], future: [], last: null, restoring: false });
+  const [historyTick, setHistoryTick] = useState(0);
+  useEffect(() => {
+    const h = history.current;
+    const snap = JSON.stringify(doc);
+    if (h.restoring || h.last === null) {
+      h.restoring = false;
+      h.last = snap;
+      return undefined;
+    }
+    if (snap === h.last) return undefined;
+    const t = setTimeout(() => {
+      h.past = [...h.past, h.last].slice(-HISTORY_MAX);
+      h.future = [];
+      h.last = snap;
+      setHistoryTick((x) => x + 1);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [doc]);
+
+  const restore = (snap) => {
+    const keep = new Set(nodes.filter((n) => n.selected).map((n) => n.id));
+    const loaded = loadDoc(JSON.parse(snap));
+    history.current.restoring = true;
+    resetSim();
+    setNodes(loaded.nodes.map((n) => ({ ...n, selected: keep.has(n.id) })));
+    setEdges(loaded.edges);
+    setName(loaded.name ?? 'Mon réseau');
+  };
+
+  const undo = () => {
+    const h = history.current;
+    const now = JSON.stringify(doc);
+    if (now !== h.last) h.past = [...h.past, h.last]; // modification pas encore enregistrée
+    if (!h.past.length) return;
+    h.future = [...h.future, now];
+    h.last = h.past.at(-1);
+    h.past = h.past.slice(0, -1);
+    restore(h.last);
+    setHistoryTick((x) => x + 1);
+  };
+
+  const redo = () => {
+    const h = history.current;
+    if (!h.future.length) return;
+    h.past = [...h.past, JSON.stringify(doc)];
+    h.last = h.future.at(-1);
+    h.future = h.future.slice(0, -1);
+    restore(h.last);
+    setHistoryTick((x) => x + 1);
+  };
+  const canUndo = historyTick >= 0 && (history.current.past.length > 0 || (history.current.last !== null && JSON.stringify(doc) !== history.current.last));
+  const canRedo = historyTick >= 0 && history.current.future.length > 0;
+
+  // --- Copier / coller / dupliquer ---------------------------------------------------
+  const clipboard = useRef(null);
+  const pasteCount = useRef(0);
+  const copy = () => {
+    if (!nodes.some((n) => n.selected)) return;
+    clipboard.current = copySelection(nodes, edges);
+    pasteCount.current = 0;
+  };
+  const paste = (clip = clipboard.current) => {
+    if (!clip?.nodes.length) return;
+    pasteCount.current += 1;
+    const added = duplicate(clip, nodes, 32 * pasteCount.current);
+    setNodes((nds) => [...nds.map((n) => ({ ...n, selected: false })), ...added.nodes]);
+    setEdges((eds) => [...eds.map((e) => ({ ...e, selected: false })), ...added.edges]);
+  };
+  const duplicateSelection = () => {
+    if (!nodes.some((n) => n.selected)) return;
+    pasteCount.current = 0;
+    paste(copySelection(nodes, edges));
+  };
+
+  const deleteSelection = () => {
+    const ids = new Set(nodes.filter((n) => n.selected).map((n) => n.id));
+    setNodes((nds) => nds.filter((n) => !ids.has(n.id)));
+    setEdges((eds) => eds.filter((e) => !ids.has(e.source) && !ids.has(e.target)));
+  };
+
+  // --- Recherche --------------------------------------------------------------------
+  const [query, setQuery] = useState('');
+  const searchInput = useRef(null);
+  const results = useMemo(() => search(doc, query), [doc, query]);
+  const helpDialog = useRef(null);
 
   // Nouveau câble : on choisit les ports libres et le câble selon l'outil sélectionné (comme Packet Tracer)
   const onConnect = useCallback(
@@ -197,6 +292,40 @@ function Editor() {
     setNodes((nds) => nds.filter((n) => n.id !== selected.id));
     setEdges((eds) => eds.filter((e) => !removed.has(e.id)));
   };
+
+  // Raccourcis clavier (hors champs de saisie : là, Ctrl+Z reste celui du navigateur)
+  const shortcuts = useRef({});
+  shortcuts.current = {
+    undo, redo, copy, paste, duplicateSelection,
+    hasSelection: () => nodes.some((n) => n.selected),
+    hasClipboard: () => Boolean(clipboard.current?.nodes.length),
+  };
+  useEffect(() => {
+    const onKey = (e) => {
+      if (isTyping(e.target)) return;
+      const mod = e.ctrlKey || e.metaKey;
+      const k = e.key.toLowerCase();
+      const run = (fn) => {
+        e.preventDefault();
+        shortcuts.current[fn]();
+      };
+      if (mod && k === 'z' && !e.shiftKey) run('undo');
+      else if (mod && (k === 'y' || (k === 'z' && e.shiftKey))) run('redo');
+      // Ctrl+C / Ctrl+V : seulement s'il y a des équipements, sinon copie de texte normale
+      else if (mod && k === 'c' && window.getSelection()?.isCollapsed !== false && shortcuts.current.hasSelection()) run('copy');
+      else if (mod && k === 'v' && shortcuts.current.hasClipboard()) run('paste');
+      else if (mod && k === 'd') run('duplicateSelection');
+      else if ((mod && k === 'k') || (!mod && e.key === '/')) {
+        e.preventDefault();
+        searchInput.current?.focus();
+      } else if (!mod && e.key === '?') {
+        e.preventDefault();
+        helpDialog.current?.showModal();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // --- Simulation ------------------------------------------------------------
   const stopSim = () => clearTimeout(timer.current);
@@ -329,12 +458,39 @@ function Editor() {
               <button type="button" className="ghost" onClick={() => importInput.current.click()}>Importer</button>
               <input ref={importInput} type="file" accept="application/json,.json" hidden onChange={importJson} />
               <button type="button" className="ghost" onClick={clearAll}>Effacer</button>
+              <div className="icon-group" role="group" aria-label="Historique">
+                <button type="button" className="ghost icon" onClick={undo} disabled={!canUndo} aria-label="Annuler (Ctrl+Z)" title="Annuler (Ctrl+Z)">↶</button>
+                <button type="button" className="ghost icon" onClick={redo} disabled={!canRedo} aria-label="Rétablir (Ctrl+Y)" title="Rétablir (Ctrl+Y)">↷</button>
+              </div>
+              <button type="button" className="ghost icon" onClick={() => helpDialog.current?.showModal()} aria-label="Raccourcis clavier" title="Raccourcis clavier (?)">?</button>
               <button type="button" onClick={() => setTab('export')}>Exporter</button>
             </div>
           </header>
           {error && <p className="error" role="alert">{error}</p>}
 
           <aside className="palette" aria-label="Équipements">
+            <div className="search">
+              <label className="visually-hidden" htmlFor="search">Rechercher un équipement</label>
+              <input id="search" ref={searchInput} type="search" placeholder="Rechercher (nom, IP)…  Ctrl+K" value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && results[0]) {
+                    selectNode(results[0].id);
+                    setQuery('');
+                  } else if (e.key === 'Escape') setQuery('');
+                }} />
+              {query && (
+                <ul className="search-results" role="listbox" aria-label="Résultats">
+                  {results.length ? results.map((r) => (
+                    <li key={r.id}>
+                      <button type="button" role="option" aria-selected="false" onClick={() => { selectNode(r.id); setQuery(''); }}>
+                        {r.label} <span className="muted">{r.detail}</span>
+                      </button>
+                    </li>
+                  )) : <li className="muted">Aucun équipement</li>}
+                </ul>
+              )}
+            </div>
             <h2>Équipements</h2>
             <p className="hint">Glisse sur le plan, ou clique pour ajouter.</p>
             {PALETTE.map((group) => (
@@ -384,6 +540,7 @@ function Editor() {
               onConnect={onConnect}
               connectionMode={ConnectionMode.Loose}
               deleteKeyCode={['Delete', 'Backspace']}
+              multiSelectionKeyCode={['Control', 'Meta', 'Shift']}
               colorMode="system"
               snapToGrid
               snapGrid={[16, 16]}
@@ -433,6 +590,10 @@ function Editor() {
                         onChange={(dev) => updateNode(selected.id)(() => deviceToData(dev, doc.links))} onPing={pingFromTerminal} />
                     </Suspense>
                   )} />
+              ) : selectedNodes.length > 1 ? (
+                <MultiInspector nodes={selectedNodes}
+                  onArrange={(how) => setNodes((nds) => arrange(nds, how))}
+                  onDuplicate={duplicateSelection} onDelete={deleteSelection} />
               ) : selectedEdge ? (
                 <CableInspector key={selectedEdge.id} edge={selectedEdge} nodes={nodes} edges={edges}
                   updateEdge={updateEdge(selectedEdge.id)} updateNode={updateNode} onDelete={() => deleteEdge(selectedEdge.id)} />
@@ -455,6 +616,22 @@ function Editor() {
               )}
             </div>
           </aside>
+          <dialog ref={helpDialog} className="help-dialog" aria-labelledby="help-title">
+            <h2 id="help-title">Raccourcis clavier</h2>
+            <dl className="shortcuts">
+              {[
+                ['Ctrl+Z', 'Annuler'], ['Ctrl+Y ou Ctrl+Maj+Z', 'Rétablir'],
+                ['Ctrl+C / Ctrl+V', 'Copier / coller la sélection'], ['Ctrl+D', 'Dupliquer la sélection'],
+                ['Suppr', 'Supprimer la sélection'], ['Maj + glisser', 'Sélection par rectangle'],
+                ['Ctrl/Maj + clic', 'Ajouter à la sélection'], ['Ctrl+K ou /', 'Rechercher un équipement'],
+                ['?', 'Cette aide'],
+              ].map(([k, v]) => (
+                <div key={k}><dt><kbd>{k}</kbd></dt><dd>{v}</dd></div>
+              ))}
+            </dl>
+            <p className="hint">Dans le terminal, Ctrl+Z sort du mode configuration (IOS).</p>
+            <form method="dialog"><button type="submit">Fermer</button></form>
+          </dialog>
         </div>
       </SimContext.Provider>
     </LinkContext.Provider>

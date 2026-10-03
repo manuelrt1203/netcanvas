@@ -351,6 +351,29 @@ export function CableInspector({ edge, nodes, edges, updateEdge, updateNode, onD
   );
 }
 
+// Plusieurs équipements sélectionnés : alignement, duplication, suppression
+export function MultiInspector({ nodes, onArrange, onDuplicate, onDelete }) {
+  return (
+    <>
+      <h2>{nodes.length} équipements sélectionnés</h2>
+      <p className="hint">{nodes.map((n) => n.data.label).join(', ')}</p>
+      <h3>Disposition</h3>
+      <div className="row">
+        <button type="button" className="ghost" onClick={() => onArrange('row')}>Aligner en ligne</button>
+        <button type="button" className="ghost" onClick={() => onArrange('column')}>Aligner en colonne</button>
+      </div>
+      {nodes.length > 2 && (
+        <div className="row">
+          <button type="button" className="ghost" onClick={() => onArrange('spread-x')}>Répartir horizontalement</button>
+          <button type="button" className="ghost" onClick={() => onArrange('spread-y')}>Répartir verticalement</button>
+        </div>
+      )}
+      <button type="button" className="ghost" onClick={onDuplicate}>Dupliquer (Ctrl+D)</button>
+      <button type="button" className="danger" onClick={onDelete}>Supprimer les {nodes.length} équipements</button>
+    </>
+  );
+}
+
 export function Overview({ nodes, edges, issues, onSelect }) {
   const errors = issues.filter((i) => i.level === 'error').length;
   return (

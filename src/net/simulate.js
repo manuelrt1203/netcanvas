@@ -175,7 +175,7 @@ function noRoute(topo, routing, id, dstIp, name) {
     return `${name(id)} : le saut suivant ${r.nextHop} de la route ${netText} n'est sur aucun réseau connecté.`;
   }
 
-  const hints = routing.routers.get(id)?.issues.map((i) => i.text) ?? [];
+  const hints = routing.routers?.get(id)?.issues.map((i) => i.text) ?? [];
   const tail = hints.length ? ` Piste : ${hints.slice(0, 2).join(' ')}` : '';
   return `${name(id)} : aucune route vers ${dstIp} (destination injoignable).${tail}`;
 }

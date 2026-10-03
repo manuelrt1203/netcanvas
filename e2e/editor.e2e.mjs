@@ -221,6 +221,46 @@ await page.locator('.react-flow__pane').click({ position: { x: 40, y: 40 } });
 assert.ok(await page.getByText(/next-hop 10\.0\.23\.2, injoignable/).isVisible(), 'explication dans les contrôles');
 await page.screenshot({ path: 'e2e/bgp.png' });
 
+step('édition : annuler / rétablir, copier-coller, sélection multiple, recherche');
+await page.click('text=Effacer');
+await page.locator('.react-flow__pane').click({ position: { x: 40, y: 40 } });
+await item('PC').click();
+await page.waitForTimeout(500); // l'historique regroupe les modifications rapprochées
+await item('Cisco 2911').click();
+await page.waitForTimeout(500);
+assert.equal(await nodes.count(), 2);
+await page.locator('.react-flow__pane').click({ position: { x: 40, y: 40 } });
+await page.keyboard.press('Control+z');
+assert.equal(await nodes.count(), 1, 'Ctrl+Z retire le routeur');
+await page.keyboard.press('Control+y');
+assert.equal(await nodes.count(), 2, 'Ctrl+Y le remet');
+await page.click('role=button[name="Annuler (Ctrl+Z)"]');
+assert.equal(await nodes.count(), 1);
+await page.click('role=button[name="Rétablir (Ctrl+Y)"]');
+assert.equal(await nodes.count(), 2);
+
+await nodes.nth(0).click();
+await nodes.nth(1).click({ modifiers: ['Shift'] });
+assert.match(await page.locator('.panel h2').first().textContent(), /2 équipements sélectionnés/);
+await page.keyboard.press('Control+c');
+await page.keyboard.press('Control+v');
+assert.equal(await nodes.count(), 4, 'Ctrl+V colle les 2 équipements');
+assert.ok(await page.getByText('Routeur 2', { exact: true }).isVisible(), 'renommage automatique');
+await page.click('text=Aligner en ligne');
+const ys = await page.locator('.react-flow__node.selected').evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().top)));
+assert.equal(new Set(ys).size, 1, 'les 2 copies sont alignées');
+await page.click('text=Supprimer les 2 équipements');
+assert.equal(await nodes.count(), 2);
+
+await page.keyboard.press('Control+k');
+await page.keyboard.type('rout');
+await page.keyboard.press('Enter');
+assert.match(await page.locator('.panel h2').first().textContent(), /Routeur/);
+await page.locator('.react-flow__pane').click({ position: { x: 40, y: 40 } });
+await page.keyboard.press('?');
+assert.ok(await page.locator('.help-dialog').isVisible());
+await page.click('.help-dialog >> text=Fermer');
+
 assert.deepEqual(errors, [], `erreurs console : ${errors.join(' | ')}`);
 console.log('OK');
 await browser.close();
