@@ -257,6 +257,37 @@ await page.click('text=Lancer le ping');
 await page.waitForSelector('button:has-text("Lancer le ping"):not([disabled])', { timeout: 15000 });
 assert.ok(await page.locator('.sim-verdict.ok').isVisible());
 
+step('NAT : démo, ping vers Internet, NAT inside décoché dans le formulaire');
+await openDemo('NAT / PAT (box, FAI, serveur publié)');
+await page.click('role=tab[name="Simulation"]');
+await page.selectOption('#sim-src', { label: 'PC Maison' });
+await page.selectOption('#sim-dst', { label: 'Serveur Internet · 198.51.100.10' });
+await page.click('text=Lancer le ping');
+await page.waitForSelector('button:has-text("Lancer le ping"):not([disabled])', { timeout: 15000 });
+assert.ok(await page.getByText(/source 192\.168\.1\.10 traduite en 203\.0\.113\.1/).first().isVisible());
+await page.getByTestId('rf__node-r1').click();
+await page.click('role=tab[name=/Propriétés/]');
+await page.getByLabel('NAT inside').first().uncheck();
+assert.ok(await page.getByText(/aucune interface « ip nat inside »/).first().isVisible(), 'avertissement dans le formulaire');
+await page.click('role=tab[name="Simulation"]');
+await page.click('text=Lancer le ping');
+await page.waitForSelector('button:has-text("Lancer le ping"):not([disabled])', { timeout: 15000 });
+assert.ok(await page.getByText(/adresse privée : elle ne circule pas sur Internet/).first().isVisible());
+
+step('ACL : création dans le formulaire, ping bloqué');
+await page.keyboard.press('Control+z');
+await page.click('role=tab[name=/Propriétés/]');
+await page.fill('#new-acl', '100');
+await page.click('role=button[name="Créer"]');
+await page.getByLabel('Règles (syntaxe IOS, une par ligne)').last().fill('deny icmp any host 198.51.100.10\npermit ip any');
+assert.ok(await page.getByText(/Ligne 2 : destination/).isVisible(), 'erreur de syntaxe affichée');
+await page.getByLabel('Règles (syntaxe IOS, une par ligne)').last().fill('deny icmp any host 198.51.100.10\npermit ip any any');
+await page.selectOption('#aclOut-G0\\/1', '100');
+await page.click('role=tab[name="Simulation"]');
+await page.click('text=Lancer le ping');
+await page.waitForSelector('button:has-text("Lancer le ping"):not([disabled])', { timeout: 15000 });
+assert.ok(await page.getByText(/refusé en sortie de G0\/1 par l'ACL 100, ligne 10/).first().isVisible());
+
 step('édition : annuler / rétablir, copier-coller, sélection multiple, recherche');
 await page.click('text=Effacer');
 await page.locator('.react-flow__pane').click({ position: { x: 40, y: 40 } });

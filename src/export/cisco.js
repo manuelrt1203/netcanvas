@@ -115,6 +115,7 @@ function routerConfig(d, rows, { target, table, topo }) {
   }
   lines.push(...iosRoutingLines(cfg, (n) => renamed.get(n) ?? iosLongName(n)).map((l) => (l === '!' && target !== 'gns3' ? ' exit' : l)));
   lines.push(...iosAclLines(cfg).filter((l) => l !== '!'));
+  lines.push(...iosNatLines(cfg, (n) => renamed.get(n) ?? iosLongName(n)));
   return { lines, warnings };
 }
 
@@ -271,6 +272,8 @@ export function iosInterfaceExtras(cfg, entry) {
   if (entry?.ospfCost) out.push(` ip ospf cost ${entry.ospfCost}`);
   const o = cfg.ospf?.interfaces?.find((x) => x.name === entry?.name);
   if (o) out.push(` ip ospf ${cfg.ospf.processId ?? 1} area ${o.area}`);
+  if (entry?.natInside) out.push(' ip nat inside');
+  if (entry?.natOutside) out.push(' ip nat outside');
   if (entry?.aclIn) out.push(` ip access-group ${entry.aclIn} in`);
   if (entry?.aclOut) out.push(` ip access-group ${entry.aclOut} out`);
   return out;
@@ -329,4 +332,17 @@ export function iosAclLines(cfg) {
     else out.push(`ip access-list ${acl.type} ${name}`, ...(acl.rules ?? []).map((r) => ` ${ruleText(r, acl.type)}`));
   }
   return out.length ? [...out, '!'] : [];
+}
+
+// --- NAT (partagé avec le terminal) -------------------------------------------------------------
+export function iosNatLines(cfg, ifName = iosLongName) {
+  const nat = cfg.nat;
+  if (!nat) return [];
+  const out = [];
+  for (const [name, p] of Object.entries(nat.pools ?? {})) out.push(`ip nat pool ${name} ${p.start} ${p.end} netmask ${cidrToMask(p.mask)}`);
+  for (const d of nat.dynamic ?? []) {
+    out.push(`ip nat inside source list ${d.acl} ${d.iface ? `interface ${ifName(d.iface)}` : `pool ${d.pool}`}${d.overload ? ' overload' : ''}`);
+  }
+  for (const st of nat.statics ?? []) out.push(`ip nat inside source static ${st.local} ${st.global}`);
+  return out;
 }

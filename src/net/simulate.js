@@ -11,6 +11,7 @@ import { formatIp, isValidCidr, isValidIp, networkLabel, networkOf, parseIp, sam
 import { buildTopology, isHost, isL3Switch, isRouting } from './topology.js';
 import { isMikrotik, modelOf } from './catalog.js';
 import { evaluateAcl, evaluateFirewall } from './acl.js';
+import { destNat, isPrivate, natGlobals, sourceNat } from './nat.js';
 import { flood } from './l2.js';
 import { computeRouting, lookup } from './routing.js';
 
@@ -28,7 +29,7 @@ class SimError extends Error {
 export function simulatePing(doc, sourceId, dstIp, options = {}) {
   const topo = options.topo ?? buildTopology(doc);
   const routing = options.routing ?? computeRouting(doc, topo);
-  const ctx = { topo, routing };
+  const ctx = { topo, routing, natTable: [] }; // natTable : traductions faites pendant ce ping
   // path : équipements atteints et adresse d'entrée (sert à traceroute)
   const result = { ok: false, hops: [], path: [], log: [], failedAt: null, srcIp: null };
   const log = (phase, text, level = 'info', device = null) => result.log.push({ phase, text, level, device });
@@ -61,8 +62,9 @@ export function simulatePing(doc, sourceId, dstIp, options = {}) {
 }
 
 // Achemine un paquet de startId vers dstIp, routeur après routeur.
-function forward(ctx, startId, dstIp, phase, result, log, name, fixedSrc = null) {
+function forward(ctx, startId, target, phase, result, log, name, fixedSrc = null) {
   const { topo } = ctx;
+  let dstIp = target; // peut changer : NAT de destination
   let current = startId;
   let srcIp = fixedSrc;
   let ttl = MAX_TTL;
@@ -70,9 +72,18 @@ function forward(ctx, startId, dstIp, phase, result, log, name, fixedSrc = null)
 
   while (true) {
     const dev = topo.devices.get(current);
-    const own = topo.l3Ifaces(current).find((i) => parseIp(i.ip) === parseIp(dstIp));
+    const ownIp = (ip) => topo.l3Ifaces(current).find((i) => parseIp(i.ip) === parseIp(ip));
     // Filtrage en entrée (ACL « in », pare-feu MikroTik chain=input) ; pas sur le trafic émis par l'équipement
-    if (current !== startId && isRouting(dev) && arrived) filterIn(dev, arrived, { src: srcIp, dst: dstIp }, Boolean(own), log, phase, name);
+    if (current !== startId && isRouting(dev) && arrived) filterIn(dev, arrived, { src: srcIp, dst: dstIp }, Boolean(ownIp(dstIp)), log, phase, name);
+    // NAT de destination à l'entrée (statique, dst-nat, ou retour d'une traduction)
+    if (current !== startId && isRouting(dev) && arrived) {
+      const t = destNat(dev, arrived, { src: srcIp, dst: dstIp }, ctx.natTable);
+      if (t) {
+        log(phase, `${name(current)} : NAT, destination ${dstIp} traduite en ${t.dst} (${t.how}).`, 'info', current);
+        dstIp = t.dst;
+      }
+    }
+    const own = ownIp(dstIp);
     if (own) return { arrivedAt: current, srcIp: srcIp ?? own.ip, ttl };
 
     if (current !== startId && !isRouting(dev)) {
@@ -92,6 +103,15 @@ function forward(ctx, startId, dstIp, phase, result, log, name, fixedSrc = null)
     srcIp ??= step.iface.ip;
     if (phase === 'request') result.srcIp = srcIp;
     log(phase, step.text, 'info', current);
+    // NAT de source (inside -> outside, masquerade) puis filtrage en sortie, comme sur IOS
+    if (current !== startId && isRouting(dev)) {
+      const t = sourceNat(dev, arrived, step.iface.name, step.iface.ip, { src: srcIp, dst: dstIp });
+      if (t) {
+        ctx.natTable.push({ router: current, inside: srcIp, outside: t.src, dynamic: t.dynamic });
+        log(phase, `${name(current)} : NAT, source ${srcIp} traduite en ${t.src} (${t.how}).`, 'info', current);
+        srcIp = t.src;
+      }
+    }
     // Filtrage en sortie (ACL « out », pare-feu MikroTik chain=forward)
     if (current !== startId && isRouting(dev)) filterOut(dev, arrived, step.iface.name, { src: srcIp, dst: dstIp }, log, phase, name);
 
@@ -259,6 +279,10 @@ function noRoute(topo, routing, id, dstIp, name) {
   }
 
   const hints = routing.routers?.get(id)?.issues.map((i) => i.text) ?? [];
+  // Routeur « côté Internet » (aucun réseau privé connecté) et destination privée : il manque du NAT
+  if (isPrivate(dstIp) && !all.some((i) => isPrivate(i.ip))) {
+    hints.unshift(`${dstIp} est une adresse privée : elle ne circule pas sur Internet. Il faut la traduire (NAT/PAT) sur le routeur de bordure.`);
+  }
   const tail = hints.length ? ` Piste : ${hints.slice(0, 2).join(' ')}` : '';
   return `${name(id)} : aucune route vers ${dstIp} (destination injoignable).${tail}`;
 }
@@ -271,7 +295,9 @@ function deliver(topo, fromId, linkId, targetIp, name, tag = null, sviVlan = nul
   const { endpoints, drops, vlansSeen } = flood(topo, fromId, linkId, tag, sviVlan);
   for (const e of endpoints) {
     const iface = e.svi != null ? topo.l3Ifaces(e.device).find((s) => s.svi && s.vlan === e.svi) : topo.l3IfaceOn(e.device, e.inLink, e.tag);
-    if (iface && isValidIp(iface.ip) && parseIp(iface.ip) === target) {
+    // Le routeur répond aussi en ARP pour ses adresses publiques de NAT statique
+    const natOwner = iface && natGlobals(topo.devices.get(e.device), iface.name).includes(targetIp);
+    if (iface && isValidIp(iface.ip) && (parseIp(iface.ip) === target || natOwner)) {
       return { endpoint: e.device, inLink: e.inLink, tag: e.tag, hops: e.hops, vlan: e.vlan, iface };
     }
   }

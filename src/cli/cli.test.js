@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BGP_DEMO, DEMO, L3_DEMO, OSPF_DEMO, ROAS_DEMO } from '../examples.js';
+import { BGP_DEMO, DEMO, L3_DEMO, NAT_DEMO, OSPF_DEMO, ROAS_DEMO } from '../examples.js';
 import { runLine, shellFor } from './index.js';
 import { validate } from '../net/validate.js';
 import { simulatePing } from '../net/simulate.js';
@@ -433,4 +433,39 @@ test('mikrotik : pare-feu /ip firewall filter', () => {
   assert.match(t.run('/ip firewall filter print'), / 0 {3}chain=forward action=accept src-address=192\.168\.1\.10\n 1 {3}chain=forward action=drop/);
   assert.ok(simulatePing(t.doc, 'pc1', '172.16.3.10').ok); // la règle accept passe avant
   assert.match(t.run('/export'), /\/ip firewall filter\nadd chain=forward action=accept src-address=192\.168\.1\.10\nadd chain=forward action=drop protocol=icmp/);
+});
+
+test('ios : NAT/PAT et NAT statique tapés à la main', () => {
+  const doc = structuredClone(NAT_DEMO);
+  const r1 = dev(doc, 'r1');
+  delete r1.config.nat;
+  delete r1.config.acls;
+  for (const i of r1.config.interfaces) { delete i.natInside; delete i.natOutside; }
+  assert.ok(!simulatePing(doc, 'pc1', '198.51.100.10').ok);
+  const t = session(doc, 'r1');
+  t.run('en', 'conf t', 'access-list 1 permit 192.168.1.0 0.0.0.255',
+    'ip nat inside source list 1 interface g0/1 overload', 'ip nat inside source static 192.168.1.100 203.0.113.5',
+    'int g0/0', 'ip nat inside', 'int g0/1', 'ip nat outside', 'end');
+  assert.deepEqual(dev(t.doc, 'r1').config.nat, { statics: [{ local: '192.168.1.100', global: '203.0.113.5' }], dynamic: [{ acl: '1', overload: true, iface: 'G0/1' }] });
+  assert.ok(simulatePing(t.doc, 'pc1', '198.51.100.10').ok);
+  assert.ok(simulatePing(t.doc, 'srv', '203.0.113.5').ok);
+  assert.match(t.run('show ip nat translations'), /---  203\.0\.113\.5\s+192\.168\.1\.100\s+---/);
+  const run = t.run('show running-config');
+  assert.match(run, /interface GigabitEthernet0\/0\n ip address 192\.168\.1\.1 255\.255\.255\.0\n ip nat inside\n!/);
+  assert.match(run, /ip nat inside source list 1 interface GigabitEthernet0\/1 overload\nip nat inside source static 192\.168\.1\.100 203\.0\.113\.5/);
+  t.run('conf t', 'ip nat pool PUBLIC 203.0.113.2 203.0.113.4 netmask 255.255.255.248', 'no ip nat inside source list 1', 'ip nat inside source list 1 pool PUBLIC overload', 'end');
+  const r = simulatePing(t.doc, 'pc1', '198.51.100.10');
+  assert.ok(r.ok);
+  assert.ok(r.log.some((l) => /source 192\.168\.1\.10 traduite en 203\.0\.113\.2 \(pool PUBLIC \(overload\), ACL 1\)/.test(l.text)));
+});
+
+test('mikrotik : NAT (masquerade et dst-nat)', () => {
+  const t = session(structuredClone(OSPF_DEMO), 'r3');
+  assert.match(t.run('/ip firewall nat add chain=srcnat action=dst-nat'), /impossible dans chain=srcnat/);
+  t.run('/ip firewall nat add chain=srcnat action=masquerade out-interface=ether3',
+    '/ip firewall nat add chain=dstnat action=dst-nat dst-address=203.0.113.1 to-addresses=172.16.3.10 in-interface=ether3');
+  const r = simulatePing(t.doc, 'net', '203.0.113.1');
+  assert.ok(r.ok);
+  assert.ok(r.log.some((l) => /destination 203\.0\.113\.1 traduite en 172\.16\.3\.10 \(dst-nat 203\.0\.113\.1 → 172\.16\.3\.10\)/.test(l.text)));
+  assert.match(t.run('/export'), /\/ip firewall nat\nadd chain=srcnat action=masquerade out-interface=ether3\nadd chain=dstnat action=dst-nat dst-address=203\.0\.113\.1 in-interface=ether3 to-addresses=172\.16\.3\.10/);
 });

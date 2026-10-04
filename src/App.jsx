@@ -586,7 +586,7 @@ function Editor() {
               {tab === 'props' && (selected ? (
                 <DeviceInspector key={selected.id} node={selected} edges={edges} labels={labels}
                   update={updateNode(selected.id)} onDelete={deleteSelected} mode={configMode} onMode={setConfigMode}
-                  routing={routing.routers.get(selected.id)}
+                  routing={routing.routers.get(selected.id)} issues={issues.filter((i) => i.device === selected.id)}
                   terminal={hasTerminal(selectedDevice) && (
                     <Suspense fallback={<p className="hint">Chargement du terminal…</p>}>
                       <Terminal key={selected.id} device={selectedDevice} doc={doc} sessions={sessions.current}

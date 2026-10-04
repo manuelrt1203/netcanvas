@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { BGP_DEMO, DEMO, L3_DEMO, OSPF_DEMO, ROAS_DEMO } from '../examples.js';
+import { BGP_DEMO, DEMO, L3_DEMO, NAT_DEMO, OSPF_DEMO, ROAS_DEMO } from '../examples.js';
 import { isRouting } from '../net/topology.js';
 import { simulatePing } from '../net/simulate.js';
 import { clabCommands } from './containerlab.js';
@@ -160,4 +160,15 @@ test('containerlab : ACL Cisco et pare-feu MikroTik traduits en iptables', { ski
   const fw = structuredClone(OSPF_DEMO);
   fw.devices.find((d) => d.id === 'r3').config.firewall = [{ chain: 'forward', action: 'drop', protocol: 'icmp', src: '192.168.1.0/24', dst: '172.16.3.0/24' }];
   assertMatchesSimulator(fw, [['pc1', '172.16.3.10', false], ['pc1', '203.0.113.2', true]]);
+});
+
+test('containerlab : NAT/PAT et NAT statique (iptables -t nat)', { skip }, () => {
+  assertMatchesSimulator(structuredClone(NAT_DEMO), [
+    ['pc1', '198.51.100.10', true], // PAT
+    ['srv', '203.0.113.5', true], // NAT statique entrant
+    ['web', '198.51.100.10', true], // NAT statique sortant
+  ]);
+  const off = structuredClone(NAT_DEMO);
+  for (const i of off.devices.find((d) => d.id === 'r1').config.interfaces) delete i.natInside;
+  assertMatchesSimulator(off, [['pc1', '198.51.100.10', false]]);
 });

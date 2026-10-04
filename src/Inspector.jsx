@@ -5,6 +5,7 @@ import { HOST_TYPES } from './net/topology.js';
 import { CABLES, CLOCK_RATES, MEDIA_LABEL, MODELS, MODULES, TYPES, devicePorts, modelId, modelsOfType } from './net/catalog.js';
 import { useLinkStatus } from './SimContext.js';
 import { LoopbacksForm, RoutingForm, SubInterfaces } from './RoutingForm.jsx';
+import { InterfaceSecurity, SecurityForm } from './SecurityForm.jsx';
 
 const otherEnd = (e, id) => (e.source === id ? e.target : e.source);
 // Côté DCE d'une liaison série : l'équipement source, sauf indication contraire
@@ -102,7 +103,7 @@ function StaticRoutes({ routes, update }) {
   );
 }
 
-function RouterForm({ node, edges, labels, update, routing }) {
+function RouterForm({ node, edges, labels, update, routing, issues }) {
   const ports = portsOf(node, edges);
   const routes = node.data.routes ?? [];
 
@@ -122,6 +123,7 @@ function RouterForm({ node, edges, labels, update, routing }) {
               {p.name} <span className="muted">vers {labels.get(otherEnd(p.edge, node.id))}{serial ? ` · série ${dce ? 'DCE' : 'DTE'}` : ''}</span>
             </legend>
             <IpCidrFields ip={p.ip} mask={p.mask} onChange={(patch) => patchIface(p, patch)} />
+            <InterfaceSecurity node={node} name={p.name} patch={(patch) => patchIface(p, patch)} />
             {!serial && <SubInterfaces node={node} parent={p.name} update={update} />}
             {dce && <ClockRate link={p.link} value={p.clockRate} onChange={(clockRate) => patchIface(p, { clockRate })} />}
             {node.data.ospf && (
@@ -135,6 +137,7 @@ function RouterForm({ node, edges, labels, update, routing }) {
       <StaticRoutes routes={routes} update={update} />
       <LoopbacksForm node={node} update={update} />
       <RoutingForm node={node} update={update} ports={ports} state={routing} />
+      <SecurityForm node={node} update={update} issues={issues} ifaceNames={ports.map((p) => p.name)} />
     </>
   );
 }
@@ -339,7 +342,7 @@ function ModeSwitch({ mode, onMode, vendor }) {
   );
 }
 
-export function DeviceInspector({ node, edges, labels, update, onDelete, mode, onMode, terminal, routing }) {
+export function DeviceInspector({ node, edges, labels, update, onDelete, mode, onMode, terminal, routing, issues }) {
   const Form = HOST_TYPES.has(node.type) ? HostForm : node.type === 'router' ? RouterForm : node.type === 'switch' ? SwitchForm : null;
   const vendor = HOST_TYPES.has(node.type) ? node.type : MODELS[modelId({ type: node.type, model: node.data.model })].vendor;
   if (terminal && mode === 'terminal') {
@@ -358,7 +361,7 @@ export function DeviceInspector({ node, edges, labels, update, onDelete, mode, o
       {terminal && <ModeSwitch mode={mode} onMode={onMode} vendor={vendor} />}
       <Field label="Nom" value={node.data.label} onChange={(e) => update((d) => ({ ...d, label: e.target.value }))} />
       <Hardware node={node} edges={edges} update={update} />
-      {Form ? <Form node={node} edges={edges} labels={labels} update={update} routing={routing} /> : <p className="hint">Un hub répète chaque trame sur tous ses ports : rien à configurer.</p>}
+      {Form ? <Form node={node} edges={edges} labels={labels} update={update} routing={routing} issues={issues} /> : <p className="hint">Un hub répète chaque trame sur tous ses ports : rien à configurer.</p>}
       <button type="button" className="danger" onClick={onDelete}>Supprimer l'équipement</button>
     </>
   );

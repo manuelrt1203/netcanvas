@@ -7,6 +7,11 @@ import { formatIp, isValidIp, networkOf, sameSubnet, splitCidr } from '../net/ip
 import { firewallRuleText, parseFirewallRule } from '../net/acl.js';
 import { buildTopology } from '../net/topology.js';
 
+const natRuleText = (r) => [
+  `chain=${r.chain}`, `action=${r.action}`, r.src && `src-address=${r.src}`, r.dst && `dst-address=${r.dst}`,
+  r.inIface && `in-interface=${r.inIface}`, r.outIface && `out-interface=${r.outIface}`, r.toAddresses && `to-addresses=${r.toAddresses}`,
+].filter(Boolean).join(' ');
+
 export const ROUTING_MENUS = {
   routing: { menus: ['ospf', 'rip', 'bgp'], commands: [] },
   'routing ospf': { menus: ['instance', 'area', 'interface-template', 'neighbor'], commands: [] },
@@ -21,7 +26,8 @@ export const ROUTING_MENUS = {
   'routing bgp': { menus: ['connection', 'session'], commands: [] },
   'routing bgp connection': { menus: [], commands: ['add', 'print', 'remove'] },
   'routing bgp session': { menus: [], commands: ['print'] },
-  'ip firewall': { menus: ['address-list', 'filter'], commands: [] },
+  'ip firewall': { menus: ['address-list', 'filter', 'nat'], commands: [] },
+  'ip firewall nat': { menus: [], commands: ['add', 'print', 'remove'] },
   'ip firewall filter': { menus: [], commands: ['add', 'print', 'remove'] },
   'ip firewall address-list': { menus: [], commands: ['add', 'print', 'remove'] },
 };
@@ -275,6 +281,33 @@ export function runRouting(ctx, p) {
       return true;
     }
 
+    // --- NAT -------------------------------------------------------------------------
+    case 'ip firewall nat|add': {
+      const rule = {
+        chain: n.chain, action: n.action, src: n['src-address'], dst: n['dst-address'],
+        inIface: n['in-interface'], outIface: n['out-interface'], toAddresses: n['to-addresses'],
+      };
+      if (!['srcnat', 'dstnat'].includes(rule.chain)) return out.push('failure: chain=srcnat ou chain=dstnat attendu', ''), true;
+      const ok = rule.chain === 'srcnat' ? ['masquerade', 'src-nat'].includes(rule.action) : rule.action === 'dst-nat';
+      if (!ok) return out.push(`failure: action ${rule.action ?? '?'} impossible dans chain=${rule.chain}`, ''), true;
+      if (rule.action !== 'masquerade' && !isValidIp(rule.toAddresses)) return out.push('failure: to-addresses attendu', ''), true;
+      if (rule.action === 'dst-nat' && !isValidIp(rule.dst)) return out.push('failure: dst-address attendu (adresse publique)', ''), true;
+      (cfg.natRules ??= []).push(Object.fromEntries(Object.entries(rule).filter(([, v]) => v !== undefined)));
+      changed();
+      return true;
+    }
+    case 'ip firewall nat|print':
+      out.push('Flags: X - disabled, I - invalid, D - dynamic ');
+      (cfg.natRules ?? []).forEach((r, i) => out.push(` ${pad(i, 3)} ${natRuleText(r)}`));
+      return out.push(''), true;
+    case 'ip firewall nat|remove': {
+      const k = Number(n.numbers ?? p.unnamed[0]);
+      if (!cfg.natRules?.[k]) return out.push('no such item', ''), true;
+      cfg.natRules.splice(k, 1);
+      changed();
+      return true;
+    }
+
     // --- Listes d'adresses (réseaux annoncés en BGP) --------------------------
     case 'ip firewall address-list|add': {
       const s = splitCidr(n.address ?? '') ?? (isValidIp(n.address) ? { ip: n.address, cidr: 32 } : null);
@@ -333,6 +366,7 @@ export function routingScript(dev) {
   const cfg = dev.config ?? {};
   const out = [];
   if (cfg.firewall?.length) out.push('/ip firewall filter', ...cfg.firewall.map((r) => `add ${firewallRuleText(r)}`));
+  if (cfg.natRules?.length) out.push('/ip firewall nat', ...cfg.natRules.map((r) => `add ${natRuleText(r)}`));
   const o = cfg.ospf;
   if (o) {
     const instance = o.instance ?? 'default-v2';

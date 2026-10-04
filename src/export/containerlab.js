@@ -44,7 +44,7 @@ export function clabCommands(doc) {
   for (const d of doc.devices) {
     const rows = table.get(d.id).filter((r) => r.link);
     const cmds = [];
-    const filters = () => filterCmds(d, rows);
+    const filters = () => [...natCmds(d, rows), ...filterCmds(d, rows)];
     if (d.type === 'hub') {
       // Hub : bridge sans filtrage VLAN (répète tout)
       cmds.push('ip link add br0 type bridge', 'ip link set br0 up');
@@ -157,6 +157,55 @@ function filterCmds(d, rows) {
         out.push(`iptables -A ${chain} -j DROP`); // refus implicite
       }
       for (const h of hooks(dev)) out.push(`iptables -A ${h} -j ${chain}`);
+    }
+  }
+  return out;
+}
+
+// --- NAT -> iptables -t nat ---------------------------------------------------------------------
+function natCmds(d, rows) {
+  const out = [];
+  if (isMikrotik(d)) {
+    for (const r of d.config?.natRules ?? []) {
+      const parts = [`iptables -t nat -A ${r.chain === 'dstnat' ? 'PREROUTING' : 'POSTROUTING'}`];
+      if (r.inIface && linuxDev(d, rows, r.inIface)) parts.push(`-i ${linuxDev(d, rows, r.inIface)}`);
+      if (r.outIface && linuxDev(d, rows, r.outIface)) parts.push(`-o ${linuxDev(d, rows, r.outIface)}`);
+      if (r.src) parts.push(`-s ${r.src}`);
+      if (r.dst) parts.push(`-d ${r.dst}`);
+      parts.push(r.action === 'masquerade' ? '-j MASQUERADE' : r.action === 'src-nat' ? `-j SNAT --to-source ${r.toAddresses}` : `-j DNAT --to-destination ${r.toAddresses}`);
+      out.push(parts.join(' '));
+    }
+    return out;
+  }
+  const nat = d.config?.nat;
+  const ifs = d.config?.interfaces ?? [];
+  // Comme sur IOS : sans interface inside ET outside, rien n'est traduit
+  if (!nat || !ifs.some((i) => i.natInside) || !ifs.some((i) => i.natOutside)) return out;
+  const outside = ifs.filter((i) => i.natOutside).map((i) => linuxDev(d, rows, i.name)).filter(Boolean);
+  for (const st of nat.statics ?? []) {
+    for (const dev of outside) {
+      out.push(`ip addr add ${st.global}/32 dev ${dev}`, `iptables -t nat -A PREROUTING -i ${dev} -d ${st.global} -j DNAT --to-destination ${st.local}`,
+        `iptables -t nat -A POSTROUTING -o ${dev} -s ${st.local} -j SNAT --to-source ${st.global}`);
+    }
+  }
+  for (const r of nat.dynamic ?? []) {
+    const acl = d.config?.acls?.[r.acl];
+    if (!acl) continue;
+    const chain = `nat-${r.acl}`.replace(/[^\w-]/g, '_').slice(0, 28);
+    const pool = r.pool ? nat.pools?.[r.pool] : null;
+    const target = r.iface ? '-j MASQUERADE' : pool ? `-j SNAT --to-source ${pool.start}` : null;
+    if (!target) continue;
+    out.push(`iptables -t nat -N ${chain}`);
+    for (const rule of acl.rules ?? []) {
+      if (rule.remark !== undefined) continue;
+      const src = ipt(rule.src, '-s');
+      if (src === null) continue;
+      out.push(`iptables -t nat -A ${chain}${src} ${rule.action === 'permit' ? target : '-j RETURN'}`);
+    }
+    const devs = r.iface ? [linuxDev(d, rows, r.iface)].filter(Boolean) : outside;
+    for (const dev of devs) {
+      if (pool) for (const ip of [pool.start]) out.push(`ip addr add ${ip}/32 dev ${dev}`);
+      out.push(`iptables -t nat -A POSTROUTING -o ${dev} -j ${chain}`);
     }
   }
   return out;

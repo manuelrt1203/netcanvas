@@ -242,10 +242,43 @@ export const L3_DEMO = {
   ],
 };
 
+// NAT/PAT : le LAN privé sort par l'adresse publique de R1 ; le serveur web local est publié en NAT statique.
+// Le routeur du FAI ne connaît aucune adresse privée.
+export const NAT_DEMO = {
+  format: 'netcanvas',
+  version: 3,
+  name: 'Démo : NAT / PAT',
+  devices: [
+    pc('pc1', 'PC Maison', '192.168.1.10', 24, '192.168.1.1', -96, 448),
+    pc('web', 'Serveur web local', '192.168.1.100', 24, '192.168.1.1', 192, 448, 'Server-PT', 'server'),
+    sw('sw1', 'SW Maison', [['n1', 'Fa0/1'], ['n2', 'Fa0/2'], ['n3', 'Fa0/24']], 48, 256),
+    {
+      ...router('r1', 'R1 (box)', '2911', 48, 32, [
+        ['n3', 'G0/0', '192.168.1.1', 24, { natInside: true }],
+        ['n4', 'G0/1', '203.0.113.1', 29, { natOutside: true }],
+      ], { routes: [{ network: '0.0.0.0', mask: 0, nextHop: '203.0.113.6' }] }),
+    },
+    router('isp', 'Routeur FAI', '2911', 384, 32, [['n4', 'G0/0', '203.0.113.6', 29], ['n5', 'G0/1', '198.51.100.1', 24]]),
+    pc('srv', 'Serveur Internet', '198.51.100.10', 24, '198.51.100.1', 384, 256, 'Server-PT', 'server'),
+  ],
+  links: [
+    link('n1', 'pc1', 'Fa0', 'sw1', 'Fa0/1', 'straight', ['t', 'b']),
+    link('n2', 'web', 'Fa0', 'sw1', 'Fa0/2', 'straight', ['t', 'b']),
+    link('n3', 'r1', 'G0/0', 'sw1', 'Fa0/24', 'straight', ['b', 't']),
+    link('n4', 'r1', 'G0/1', 'isp', 'G0/0', 'cross', ['r', 'l']),
+    link('n5', 'isp', 'G0/1', 'srv', 'Fa0', 'cross', ['b', 't']),
+  ],
+};
+Object.assign(NAT_DEMO.devices.find((d) => d.id === 'r1').config, {
+  acls: { 1: { type: 'standard', rules: [{ action: 'permit', src: { ip: '192.168.1.0', wildcard: '0.0.0.255' } }] } },
+  nat: { statics: [{ local: '192.168.1.100', global: '203.0.113.5' }], dynamic: [{ acl: '1', iface: 'G0/1', overload: true }] },
+});
+
 export const DEMOS = [
   { id: 'vlan', label: '2 VLAN, 2 routeurs (statique)', doc: DEMO },
   { id: 'roas', label: 'Router-on-a-stick (802.1Q)', doc: ROAS_DEMO },
   { id: 'l3', label: 'Switch niveau 3 (SVI, ip routing)', doc: L3_DEMO },
+  { id: 'nat', label: 'NAT / PAT (box, FAI, serveur publié)', doc: NAT_DEMO },
   { id: 'ospf', label: 'OSPF 2 zones (Cisco + MikroTik)', doc: OSPF_DEMO },
   { id: 'bgp', label: 'BGP eBGP + iBGP', doc: BGP_DEMO },
 ];

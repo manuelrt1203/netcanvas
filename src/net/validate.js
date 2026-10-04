@@ -81,6 +81,20 @@ export function validate(doc, ctx = {}) {
     }
   }
 
+  // NAT Cisco : interfaces inside / outside, ACL et pools référencés
+  for (const d of topo.devices.values()) {
+    const nat = d.config?.nat;
+    if (!nat || (!nat.statics?.length && !nat.dynamic?.length)) continue;
+    const ifs = d.config.interfaces ?? [];
+    if (!ifs.some((i) => i.natInside)) add(d.id, 'warning', `${d.label} : NAT configuré mais aucune interface « ip nat inside » : rien n'est traduit.`);
+    if (!ifs.some((i) => i.natOutside)) add(d.id, 'warning', `${d.label} : NAT configuré mais aucune interface « ip nat outside » : rien n'est traduit.`);
+    for (const r of nat.dynamic ?? []) {
+      if (!d.config.acls?.[r.acl]) add(d.id, 'warning', `${d.label} : la règle NAT utilise l'ACL ${r.acl}, qui n'existe pas : rien n'est traduit.`);
+      if (r.pool && !nat.pools?.[r.pool]) add(d.id, 'warning', `${d.label} : le pool NAT ${r.pool} n'existe pas.`);
+      if (r.iface && !ifs.find((i) => i.name === r.iface)?.natOutside) add(d.id, 'warning', `${d.label} : la règle NAT sort par ${r.iface}, qui n'est pas « ip nat outside ».`);
+    }
+  }
+
   // Interfaces VLAN des switches : adresse, et état (une SVI sans port actif dans son VLAN est down)
   for (const d of topo.devices.values()) {
     if (d.type !== 'switch') continue;
