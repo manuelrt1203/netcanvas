@@ -337,6 +337,25 @@ await page.getByTestId('rf__node-sw1').click();
 await page.click('role=button[name="+1 h"]');
 assert.ok(await macTable.getByText(/Vide : le switch apprend/).isVisible(), 'table MAC vidée par le vieillissement');
 
+step('TP : objectifs en direct, indices, ajout d\'un objectif');
+await openDemo('TP : inter-VLAN en panne (3 pannes)');
+await page.click('role=tab[name=/^TP/]');
+assert.equal(await page.locator('#tab-tp .badge').textContent(), '0/4');
+const first = page.locator('.tp-objectives li').first();
+await first.getByRole('button', { name: 'Indice' }).click();
+await first.getByRole('button', { name: 'Indice suivant' }).click();
+assert.equal(await first.locator('.tp-hint').textContent(), 'Regarde du côté de R1. Voir');
+await first.getByRole('button', { name: 'Indice suivant' }).click();
+assert.match(await first.locator('.tp-hint').textContent(), /pas de réponse ARP/);
+await page.click('role=button[name="Modifier"]');
+await page.click('role=button[name="Ajouter un objectif"]');
+const added = page.locator('fieldset.iface').last();
+await added.getByLabel('Depuis').selectOption({ label: 'PC Compta' });
+await added.getByLabel('Vers').fill('192.168.10.11');
+await page.click('role=button[name="Vue élève"]');
+assert.equal(await page.locator('#tab-tp .badge').textContent(), '1/5');
+assert.ok(await page.locator('.tp-objectives li.ok').getByText('PC Compta ping 192.168.10.11').isVisible());
+
 step('édition : annuler / rétablir, copier-coller, sélection multiple, recherche');
 await page.click('text=Effacer');
 await page.locator('.react-flow__pane').click({ position: { x: 40, y: 40 } });

@@ -431,4 +431,21 @@ table.data tr:last-child td { border-bottom: 0; }
 table.data code { font-size: .78rem; }
 /* Quatre onglets dans un panneau étroit : on resserre, et on défile si besoin */
 .tabs { overflow-x: auto; scrollbar-width: none; }
-.tab { flex: 1 0 auto; padding-left: 10px; padding-right: 10px; white-space: nowrap; font-size: .88rem; }
+.tab { flex: 1 0 auto; padding-left: 5px; padding-right: 5px; white-space: nowrap; font-size: .8rem; gap: 4px; }
+.tab .badge { padding: 0 5px; }
+
+/* --- Onglet TP ---------------------------------------------------------------------- */
+.badge.badge-tp { background: var(--primary); }
+.tp-instructions { border-left: 3px solid var(--primary); padding: 2px 0 2px 10px; margin: 0 0 12px; }
+.tp-instructions p { margin: 0 0 6px; }
+.tp-progress { height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; }
+.tp-progress span { display: block; height: 100%; background: var(--ok); transition: width .3s; }
+@media (prefers-reduced-motion: reduce) { .tp-progress span { transition: none; } }
+.tp-objectives { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 8px; }
+.tp-objectives li { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.tp-objectives li.ok { border-color: var(--ok); }
+.tp-mark { font-weight: 700; width: 1.2em; flex: none; text-align: center; color: var(--muted); }
+.tp-objectives li.ok .tp-mark { color: var(--ok); }
+.tp-objectives li > div { display: grid; gap: 6px; justify-items: start; }
+.tp-hint { margin: 0; font-size: .85rem; background: var(--bg); padding: 6px 8px; border-radius: 6px; }
+button.linklike { background: none; border: 0; padding: 0; min-height: 0; color: var(--primary); text-decoration: underline; cursor: pointer; font: inherit; }

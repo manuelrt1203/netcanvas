@@ -52,7 +52,8 @@ export function freePorts(node, edges, exceptEdge = null) {
 }
 
 // runtime : état d'exécution (temps, baux DHCP, table NAT), omis tant qu'il est vide
-export function toJSON(nodes, edges, name = 'Sans titre', runtime = null) {
+// exercise : TP attaché au schéma (consigne et objectifs), voir net/exercise.js
+export function toJSON(nodes, edges, name = 'Sans titre', runtime = null, exercise = null) {
   const ids = new Set(nodes.map((n) => n.id));
   const liveEdges = edges.filter((e) => ids.has(e.source) && ids.has(e.target));
 
@@ -81,6 +82,7 @@ export function toJSON(nodes, edges, name = 'Sans titre', runtime = null) {
       ...(e.data?.cable === 'serial' ? { dce: e.data.dce === 'target' ? 'target' : 'source' } : {}),
     })),
     ...(isEmptyRuntime(runtime) ? {} : { runtime }),
+    ...(exercise ? { exercise } : {}),
   };
 }
 
@@ -223,6 +225,7 @@ export function fromJSON(raw) {
   return {
     name: doc.name,
     runtime: doc.runtime ?? null,
+    exercise: doc.exercise ?? null,
     nodes: doc.devices.map((d) => ({ id: d.id, type: d.type, position: d.position, data: deviceToData(d, doc.links) })),
     edges: doc.links.map((l) => ({
       id: l.id,

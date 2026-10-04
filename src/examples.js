@@ -323,12 +323,60 @@ DHCP_DEMO.devices.find((d) => d.id === 'srv').config.dhcp = {
   pools: [{ name: 'ELEVES', network: '192.168.20.0', mask: 24, defaultRouter: '192.168.20.1', dns: '8.8.8.8' }],
 };
 
+// --- TP prêts à l'emploi : un réseau en panne et des objectifs vérifiés en direct --------------
+const broken = (doc, name, exercise, breakIt) => {
+  const copy = structuredClone(doc);
+  copy.name = name;
+  breakIt(copy);
+  copy.exercise = exercise;
+  return copy;
+};
+const devOf = (doc, id) => doc.devices.find((d) => d.id === id);
+
+export const TP_INTERVLAN = broken(DEMO, 'TP : inter-VLAN en panne', {
+  title: 'Réparer le réseau de l\'entreprise',
+  instructions: [
+    'Le service Atelier (VLAN 20) n\'arrive plus à joindre le reste du réseau, et le serveur web ne répond plus à personne.',
+    'Trouve et corrige les pannes, sans changer le plan d\'adressage. Utilise le ping, le traceroute, les tables et le terminal.',
+  ].join('\n'),
+  objectives: [
+    { id: 'o1', type: 'ping', from: 'pc1', to: '192.168.20.10' },
+    { id: 'o2', type: 'ping', from: 'pc3', to: '172.16.0.10' },
+    { id: 'o3', type: 'ping', from: 'pc1', to: '203.0.113.2' },
+    { id: 'o4', type: 'route', router: 'r2', to: '192.168.10.0/24' },
+  ],
+}, (d) => {
+  devOf(d, 'pc3').config.gateway = '192.168.20.254'; // mauvaise passerelle
+  devOf(d, 'sw1').config.ports.find((p) => p.name === 'Fa0/24').vlan = 10; // port du routeur dans le mauvais VLAN
+  devOf(d, 'r2').config.routes = []; // route de retour oubliée
+});
+
+export const TP_OSPF = broken(OSPF_DEMO, 'TP : OSPF ne monte pas', {
+  title: 'Faire converger OSPF',
+  instructions: [
+    'Les trois routeurs doivent échanger leurs routes par OSPF (R1 en zone 1, R2 ABR, R3 MikroTik en zone 0).',
+    'Le LAN doit joindre le serveur et Internet. Aucune route statique n\'est autorisée sur R1 et R2.',
+  ].join('\n'),
+  objectives: [
+    { id: 'o1', type: 'ospf', a: 'r1', b: 'r2' },
+    { id: 'o2', type: 'ospf', a: 'r2', b: 'r3' },
+    { id: 'o3', type: 'ping', from: 'pc1', to: '172.16.3.10' },
+    { id: 'o4', type: 'ping', from: 'pc1', to: '203.0.113.2' },
+  ],
+}, (d) => {
+  devOf(d, 'r1').config.ospf.networks[1].area = 0; // zone fausse côté R1
+  devOf(d, 'r2').config.ospf.passive = ['G0/1']; // interface vers R3 passive
+  delete devOf(d, 'r3').config.ospf.defaultOriginate; // route par défaut non annoncée
+});
+
 export const DEMOS = [
   { id: 'vlan', label: '2 VLAN, 2 routeurs (statique)', doc: DEMO },
   { id: 'roas', label: 'Router-on-a-stick (802.1Q)', doc: ROAS_DEMO },
   { id: 'l3', label: 'Switch niveau 3 (SVI, ip routing)', doc: L3_DEMO },
   { id: 'nat', label: 'NAT / PAT (box, FAI, serveur publié)', doc: NAT_DEMO },
   { id: 'dhcp', label: 'DHCP (serveur et relais)', doc: DHCP_DEMO },
+  { id: 'tp-vlan', label: 'TP : inter-VLAN en panne (3 pannes)', doc: TP_INTERVLAN },
+  { id: 'tp-ospf', label: 'TP : OSPF ne monte pas (3 pannes)', doc: TP_OSPF },
   { id: 'ospf', label: 'OSPF 2 zones (Cisco + MikroTik)', doc: OSPF_DEMO },
   { id: 'bgp', label: 'BGP eBGP + iBGP', doc: BGP_DEMO },
 ];

@@ -31,6 +31,8 @@ import { withLeases } from './net/dhcp.js';
 import { EMPTY_RUNTIME, activeNat, formatTime } from './net/runtime.js';
 import { mergeLearned } from './net/tables.js';
 import TablesPanel from './TablesPanel.jsx';
+import ExercisePanel from './ExercisePanel.jsx';
+import { evaluateExercise } from './net/exercise.js';
 import { createShared, loadShared, myShares, parseShareLocation, rememberShare, saveShared, shareEnabled, shareLinks } from './share.js';
 import { CABLES, MODELS, TYPES } from './net/catalog.js';
 import { pickPorts } from './net/cabling.js';
@@ -85,6 +87,8 @@ function Editor() {
   const [name, setName] = useState(draft?.name ?? 'Mon réseau');
   // État d'exécution : temps simulé, baux DHCP, table NAT (enregistré avec le schéma)
   const [runtime, setRuntime] = useState(() => ({ ...EMPTY_RUNTIME, ...draft?.runtime }));
+  // TP attaché au schéma : consigne et objectifs vérifiés en direct
+  const [exercise, setExercise] = useState(draft?.exercise ?? null);
   const [tab, setTab] = useState('props');
   const [cableTool, setCableTool] = useState('auto');
   const [configMode, setConfigModeState] = useState(() => {
@@ -103,7 +107,7 @@ function Editor() {
   const importInput = useRef(null);
   const timer = useRef(null);
 
-  const doc = useMemo(() => toJSON(nodes, edges, name, runtime), [nodes, edges, name, runtime]);
+  const doc = useMemo(() => toJSON(nodes, edges, name, runtime, exercise), [nodes, edges, name, runtime, exercise]);
   // Document effectif (clients DHCP avec leur bail), topologie et routage : calculés une fois par modification
   const live = useMemo(() => withLeases(doc), [doc]);
   // Les baux calculés (renouvelés, expirés, d'hôtes partis) sont enregistrés dans l'état d'exécution
@@ -114,6 +118,8 @@ function Editor() {
   const topo = useMemo(() => buildTopology(live), [live]);
   const routing = useMemo(() => computeRouting(live, topo), [live, topo]);
   const issues = useMemo(() => validate(live, { topo, routing }), [live, topo, routing]);
+  // Objectifs du TP, revérifiés à chaque modification (pings simulés compris)
+  const tpResults = useMemo(() => evaluateExercise(doc, { live, topo, routing, issues }), [doc, live, topo, routing, issues]);
   const linkStatus = topo.status;
   const labels = useMemo(() => new Map(nodes.map((n) => [n.id, n.data.label])), [nodes]);
   const selectedNodes = nodes.filter((n) => n.selected);
@@ -248,6 +254,7 @@ function Editor() {
     setEdges(loaded.edges);
     setName(loaded.name ?? 'Mon réseau');
     setRuntime({ ...EMPTY_RUNTIME, ...loaded.runtime });
+    setExercise(loaded.exercise ?? null);
   };
 
   const undo = () => {
@@ -508,6 +515,7 @@ function Editor() {
     setEdges(loaded.edges);
     setName(loaded.name ?? 'Mon réseau');
     setRuntime({ ...EMPTY_RUNTIME, ...loaded.runtime });
+    setExercise(loaded.exercise ?? null);
     setError('');
     requestAnimationFrame(() => fitView({ maxZoom: 1, duration: reducedMotion() ? 0 : 300 }));
   };
@@ -538,9 +546,10 @@ function Editor() {
   };
 
   const TABS = [
-    ['props', 'Propriétés', errorCount ? errorCount : null],
+    ['props', 'Propriétés', errorCount ? errorCount : null, `${errorCount} erreur(s)`],
     ['sim', 'Simulation'],
     ['tables', 'Tables'],
+    ['tp', 'TP', exercise && tpResults.length ? `${tpResults.filter((r) => r.ok).length}/${tpResults.length}` : null, 'objectifs atteints'],
     ['export', 'Export'],
   ];
 
@@ -714,7 +723,7 @@ function Editor() {
 
           <aside className="inspector" aria-label="Panneau latéral">
             <div className="tabs" role="tablist">
-              {TABS.map(([key, label, badge]) => (
+              {TABS.map(([key, label, badge, badgeLabel]) => (
                 <button
                   key={key}
                   type="button"
@@ -726,7 +735,7 @@ function Editor() {
                   onClick={() => setTab(key)}
                 >
                   {label}
-                  {badge && <span className="badge" aria-label={`${badge} erreur(s)`}>{badge}</span>}
+                  {badge && <span className={`badge${key === 'tp' ? ' badge-tp' : ''}`} aria-label={`${badge} ${badgeLabel}`}>{badge}</span>}
                 </button>
               ))}
             </div>
@@ -755,6 +764,10 @@ function Editor() {
                 <Overview nodes={nodes} edges={edges} issues={issues} onSelect={selectNode} />
               )}
                 </fieldset>
+              )}
+              {tab === 'tp' && (
+                <ExercisePanel exercise={exercise} results={tpResults} devices={live.devices} doc={live} readOnly={readOnly}
+                  onChange={setExercise} onLocate={selectNode} />
               )}
               {tab === 'tables' && (
                 <TablesPanel device={selected ? live.devices.find((d) => d.id === selected.id) : null} doc={live} routing={routing}

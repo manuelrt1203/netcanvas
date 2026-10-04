@@ -123,6 +123,24 @@ Commandes :
 
 Pas encore simulé (le terminal le dit) : EIGRP, STP, DNS.
 
+## Mode TP (`src/net/exercise.js`, onglet « TP »)
+
+Un schéma peut porter un exercice : un titre, une consigne et des objectifs vérifiés en direct à chaque modification. Types d'objectifs :
+
+| Objectif | Atteint quand |
+|---|---|
+| Ping qui doit réussir | le ping simulé arrive et revient |
+| Ping qui doit échouer | le ping est bloqué (ACL, isolation de VLAN) |
+| Bail DHCP | l'hôte est en DHCP et a obtenu un bail |
+| Adjacence OSPF | les deux routeurs sont voisins |
+| Session BGP | la session vers ce voisin est Established |
+| Route | le routeur a une route qui couvre le préfixe (un résumé ou une route par défaut compte) |
+| Aucune erreur | les contrôles ne signalent aucune erreur |
+
+Indices progressifs pour l'élève : 1. l'objectif n'est pas atteint ; 2. l'équipement où ça bloque (bouton « Voir ») ; 3. l'explication du simulateur.
+
+Parcours : l'enseignant règle le réseau qui marche, ajoute les objectifs (tous verts), introduit les pannes et partage le lien de lecture. L'élève clique « Dupliquer pour modifier » et répare dans son brouillon. Deux TP sont fournis dans le menu Démos (inter-VLAN, OSPF), avec trois pannes chacun.
+
 ## Matériel et câblage (`src/net/catalog.js`, `src/net/cabling.js`)
 
 | Catégorie | Modèles |
@@ -226,7 +244,7 @@ Les fichiers v1 et v2 s'importent toujours : le modèle est déduit des ports ut
 ## Tests
 
 ```bash
-npm test           # 145 tests : calculs IP, ping, validation, JSON, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
+npm test           # 151 tests : calculs IP, ping, validation, JSON, TP, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
 npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : édition, contrôles, ping, persistance, exports, câblage, terminaux (IOS, RouterOS, PC), démos OSPF et BGP (show ip ospf neighbor, next-hop-self retiré)
 ```
 

@@ -118,6 +118,13 @@ test('aller-retour JSON -> éditeur -> JSON sans perte', async () => {
   assert.deepEqual(back, DEMO);
 });
 
+test('aller-retour JSON : le TP (consigne, objectifs) est conservé', async () => {
+  const { fromJSON, toJSON } = await import('../serialize.js');
+  const { TP_INTERVLAN } = await import('../examples.js');
+  const loaded = fromJSON(structuredClone(TP_INTERVLAN));
+  assert.deepEqual(toJSON(loaded.nodes, loaded.edges, loaded.name, null, loaded.exercise), TP_INTERVLAN);
+});
+
 test('aller-retour JSON -> éditeur -> JSON : démos OSPF et BGP (routage, loopbacks, coûts)', async () => {
   const { fromJSON, toJSON } = await import('../serialize.js');
   const { OSPF_DEMO, BGP_DEMO } = await import('../examples.js');
