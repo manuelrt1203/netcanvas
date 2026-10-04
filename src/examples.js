@@ -167,8 +167,41 @@ export const BGP_DEMO = {
   ],
 };
 
+// Router-on-a-stick : un seul câble trunk entre le switch et R1, une sous-interface par VLAN.
+export const ROAS_DEMO = {
+  format: 'netcanvas',
+  version: 3,
+  name: 'Démo : router-on-a-stick (802.1Q)',
+  devices: [
+    pc('pc1', 'PC Profs', '192.168.10.10', 24, '192.168.10.1', -96, 448),
+    pc('pc2', 'PC Élèves', '192.168.20.10', 24, '192.168.20.1', 288, 448),
+    {
+      id: 'sw1', type: 'switch', model: '2960-24TT', label: 'SW1', position: { x: 96, y: 256 },
+      config: {
+        ports: [
+          { link: 'c1', name: 'Fa0/1', mode: 'access', vlan: 10 },
+          { link: 'c2', name: 'Fa0/2', mode: 'access', vlan: 20 },
+          { link: 'c3', name: 'G0/1', mode: 'trunk' },
+        ],
+        vlans: [{ id: 10, name: 'PROFS' }, { id: 20, name: 'ELEVES' }],
+      },
+    },
+    router('r1', 'R1', '2911', 96, 32, [
+      ['c3', 'G0/0', null, null],
+      [null, 'G0/0.10', '192.168.10.1', 24, { parent: 'G0/0', vlan: 10 }],
+      [null, 'G0/0.20', '192.168.20.1', 24, { parent: 'G0/0', vlan: 20 }],
+    ]),
+  ],
+  links: [
+    link('c1', 'pc1', 'Fa0', 'sw1', 'Fa0/1', 'straight', ['t', 'b']),
+    link('c2', 'pc2', 'Fa0', 'sw1', 'Fa0/2', 'straight', ['t', 'b']),
+    link('c3', 'r1', 'G0/0', 'sw1', 'G0/1', 'straight', ['b', 't']),
+  ],
+};
+
 export const DEMOS = [
   { id: 'vlan', label: '2 VLAN, 2 routeurs (statique)', doc: DEMO },
+  { id: 'roas', label: 'Router-on-a-stick (802.1Q)', doc: ROAS_DEMO },
   { id: 'ospf', label: 'OSPF 2 zones (Cisco + MikroTik)', doc: OSPF_DEMO },
   { id: 'bgp', label: 'BGP eBGP + iBGP', doc: BGP_DEMO },
 ];

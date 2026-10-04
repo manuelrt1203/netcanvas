@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { BGP_DEMO, DEMO, OSPF_DEMO } from '../examples.js';
+import { BGP_DEMO, DEMO, OSPF_DEMO, ROAS_DEMO } from '../examples.js';
 import { simulatePing } from '../net/simulate.js';
 import { clabCommands } from './containerlab.js';
 import { interfaceTable } from './common.js';
@@ -122,4 +122,11 @@ test('containerlab : BGP eBGP + iBGP (next-hop résolu par OSPF)', { skip }, () 
   const broken = structuredClone(BGP_DEMO);
   delete broken.devices.find((d) => d.id === 'r2').config.bgp.neighbors[0].nextHopSelf;
   assertMatchesSimulator(broken, [['pc1', '172.16.0.10', false]]);
+});
+
+test('containerlab : router-on-a-stick (sous-interfaces 802.1Q sur un trunk)', { skip }, () => {
+  assertMatchesSimulator(structuredClone(ROAS_DEMO), [['pc1', '192.168.20.10', true], ['pc2', '192.168.10.1', true]]);
+  const wrong = structuredClone(ROAS_DEMO);
+  wrong.devices.find((d) => d.id === 'r1').config.interfaces.find((i) => i.name === 'G0/0.20').vlan = 30;
+  assertMatchesSimulator(wrong, [['pc1', '192.168.20.10', false]]);
 });

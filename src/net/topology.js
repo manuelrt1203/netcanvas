@@ -102,14 +102,17 @@ export function buildTopology(doc) {
   }
 
   // Interface de niveau 3 de l'équipement sur ce câble (null si aucune)
-  function l3IfaceOn(id, linkId) {
+  // Interface de niveau 3 de l'équipement sur ce câble, pour une trame étiquetée `tag` ou non (null)
+  function l3IfaceOn(id, linkId, tag = null) {
     const d = devices.get(id);
     if (isHost(d)) {
       const i = hostIface(id);
-      return i.link === linkId ? i : null;
+      return tag == null && i.link === linkId ? i : null;
     }
-    if (d.type === 'router') return routerIface(id, linkId);
-    return null;
+    if (d.type !== 'router') return null;
+    const subs = subIfaces(id).filter((s) => s.link === linkId);
+    if (tag != null) return subs.find((s) => !s.native && Number(s.vlan) === tag) ?? null;
+    return subs.find((s) => s.native) ?? routerIface(id, linkId);
   }
 
   function loopbacks(id) {
@@ -118,16 +121,25 @@ export function buildTopology(doc) {
       .map((i) => ({ ...i, link: null, loopback: true }));
   }
 
+  // Sous-interfaces 802.1Q (router-on-a-stick) : G0/0.10 chez Cisco, vlan10 chez MikroTik.
+  // Elles partagent le câble de leur interface parente.
+  function subIfaces(id) {
+    return (devices.get(id).config?.interfaces ?? [])
+      .filter((i) => i.parent && i.vlan)
+      .map((i) => ({ ...i, sub: true, link: linksOf.get(id).find((l) => portName(l, id) === i.parent) ?? null }));
+  }
+
   // Interfaces IP configurées et valides ; par défaut seulement celles dont le câble fonctionne
   function l3Ifaces(id, { includeDown = false } = {}) {
     const d = devices.get(id);
-    const all = isHost(d) ? [hostIface(id)] : d.type === 'router' ? [...linksOf.get(id).map((l) => routerIface(id, l)), ...loopbacks(id)] : [];
-    const up = (i) => (i.loopback ? !i.shutdown : i.link && isUp(i.link));
+    const all = isHost(d) ? [hostIface(id)]
+      : d.type === 'router' ? [...linksOf.get(id).map((l) => routerIface(id, l)), ...subIfaces(id), ...loopbacks(id)] : [];
+    const up = (i) => (i.loopback ? !i.shutdown : i.link && isUp(i.link) && !i.shutdown);
     return all.filter((i) => isValidIp(i.ip) && isValidCidr(i.mask) && (includeDown || up(i)));
   }
 
   return {
     devices, ports, links, linksOf, consoleLinks, status, other, portName, isUp,
-    hostIface, routerIface, switchPort, l3IfaceOn, l3Ifaces,
+    hostIface, routerIface, switchPort, l3IfaceOn, l3Ifaces, subIfaces,
   };
 }

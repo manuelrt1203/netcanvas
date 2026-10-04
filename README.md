@@ -11,6 +11,7 @@ npm run dev        # http://localhost:5173
 
 Menu **Démos** :
 - **2 VLAN, 2 routeurs** : routage statique, liaison série /30 entre R1 et R2 ;
+- **Router-on-a-stick** : un trunk 802.1Q entre le switch et R1, une sous-interface par VLAN ;
 - **OSPF 2 zones** : R1 en zone 1, R2 en ABR, un MikroTik en zone 0 qui annonce la route par défaut vers Internet ;
 - **BGP eBGP + iBGP** : AS 65001 (iBGP entre loopbacks, OSPF comme IGP) et un MikroTik dans l'AS 65002.
 
@@ -72,7 +73,11 @@ Comme sur le vrai matériel :
 
 La particularité de NetCanvas reste là : un `ping` tapé dans un terminal s'anime sur le plan, et en cas d'échec une ligne `% NetCanvas :` donne la raison (câble, route, VLAN, boucle…).
 
-Pas encore simulé (le terminal le dit) : EIGRP, DHCP, sous-interfaces 802.1Q, interface VLAN de switch, table ARP / MAC, traceroute.
+**Router-on-a-stick** : sous-interfaces `G0/0.10` + `encapsulation dot1Q 10 [native]` (IOS), `/interface vlan` (RouterOS) ou le formulaire du routeur. La trame part étiquetée sur le trunk ; un VLAN absent ou un port du switch en access est expliqué.
+
+**traceroute** : `traceroute` (IOS), `tracert` (PC), `/tool traceroute` (RouterOS) et le bouton du panneau Simulation. Chaque routeur répond depuis son interface d'entrée, et n'apparaît que si sa réponse revient jusqu'à la source.
+
+Pas encore simulé (le terminal le dit) : EIGRP, DHCP, interface VLAN de switch, table ARP / MAC.
 
 ## Matériel et câblage (`src/net/catalog.js`, `src/net/cabling.js`)
 
@@ -157,7 +162,7 @@ Les fichiers v1 et v2 s'importent toujours : le modèle est déduit des ports ut
 ## Tests
 
 ```bash
-npm test           # 85 tests : calculs IP, ping, validation, JSON, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
+npm test           # 96 tests : calculs IP, ping, validation, JSON, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
 npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : édition, contrôles, ping, persistance, exports, câblage, terminaux (IOS, RouterOS, PC), démos OSPF et BGP (show ip ospf neighbor, next-hop-self retiré)
 ```
 
@@ -165,5 +170,5 @@ npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : éditi
 
 ## Prochaines étapes
 
-1. Simulation : sous-interfaces 802.1Q (router-on-a-stick), switch niveau 3, ARP / MAC, traceroute, DHCP, NAT, ACL.
+1. Simulation : switch niveau 3, ACL, NAT/PAT, DHCP, tables ARP / MAC.
 2. Backend + base (PostgreSQL `jsonb`), liens partageables et page `/embed/:id`.

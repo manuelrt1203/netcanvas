@@ -23,7 +23,11 @@ export const getEntry = (dev, name) => list(dev).find((e) => e.name === name);
 export function ensureEntry(dev, name, doc) {
   let e = getEntry(dev, name);
   if (!e) {
-    e = { link: linkOf(doc, dev.id, name), name, ...(dev.type === 'switch' ? { mode: 'access', vlan: 1 } : { ip: null, mask: null }) };
+    // Sous-interface Cisco « G0/0.10 » : rattachée à sa parente, sans câble propre
+    const sub = dev.type !== 'switch' && /^(.+)\.\d+$/.exec(name);
+    e = sub
+      ? { link: null, name, parent: sub[1], ip: null, mask: null }
+      : { link: linkOf(doc, dev.id, name), name, ...(dev.type === 'switch' ? { mode: 'access', vlan: 1 } : { ip: null, mask: null }) };
     list(dev).push(e);
   }
   return e;

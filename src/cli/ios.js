@@ -16,7 +16,13 @@ const long = iosLongName;
 // Loopbacks configurées, puis ports physiques (ordre de show run)
 const loopbackEntries = (dev) => (dev.config?.interfaces ?? []).filter((e) => isLoopbackName(e.name))
   .sort((a, b) => Number(a.name.slice(2)) - Number(b.name.slice(2)));
-const allInterfaces = (dev) => [...loopbackEntries(dev).map((e) => ({ name: e.name, media: 'virtual' })), ...dataPorts(dev)];
+// Ordre de show run : loopbacks, puis chaque port suivi de ses sous-interfaces
+const subEntries = (dev, parent) => (dev.config?.interfaces ?? []).filter((e) => e.parent === parent)
+  .sort((a, b) => Number(a.name.split('.')[1]) - Number(b.name.split('.')[1]));
+const allInterfaces = (dev) => [
+  ...loopbackEntries(dev).map((e) => ({ name: e.name, media: 'virtual' })),
+  ...dataPorts(dev).flatMap((p) => [p, ...subEntries(dev, p.name).map((e) => ({ name: e.name, media: 'virtual' }))]),
+];
 
 // --- Noms d'interfaces -------------------------------------------------------------
 const IF_TYPES = [['gigabitethernet', 'G'], ['fastethernet', 'Fa'], ['serial', 'Se'], ['ethernet', 'Eth'], ['loopback', 'Lo']];
@@ -30,7 +36,7 @@ export function parseInterfaces(text, dev, { range = false } = {}) {
     if (!m) return { error: '% Invalid interface type and number' };
     const types = IF_TYPES.filter(([full]) => full.startsWith(m[1].toLowerCase()));
     if (types.length !== 1) return { error: '% Invalid interface type and number' };
-    if (m[3]) return { error: NOT_SIMULATED('les sous-interfaces (router-on-a-stick)')[0] };
+    if (m[3] && (dev.type !== 'router' || m[4])) return { error: '% Invalid interface type and number' };
     if (m[4] && !range) return { error: '% Invalid interface type and number' };
     // Loopback : interface virtuelle, n'importe quel numéro (routeurs seulement)
     if (types[0][1] === 'Lo') {
@@ -44,7 +50,7 @@ export function parseInterfaces(text, dev, { range = false } = {}) {
     for (let n = first; n <= last; n++) {
       const name = `${types[0][1]}${[...nums.slice(0, -1), n].join('/')}`;
       if (!ports.has(name)) return { error: '% Invalid interface type and number' };
-      out.push(name);
+      out.push(m[3] ? `${name}${m[3]}` : name);
     }
   }
   return { names: out };
@@ -55,7 +61,9 @@ function portState(dev, name, doc, topo) {
   const e = getEntry(dev, name);
   if (e?.shutdown) return ['administratively down', 'down'];
   if (isLoopbackName(name)) return ['up', 'up'];
-  const link = linkOf(doc, dev.id, name);
+  // Sous-interface : état du câble de l'interface parente
+  if (e?.parent && getEntry(dev, e.parent)?.shutdown) return ['down', 'down'];
+  const link = linkOf(doc, dev.id, e?.parent ?? name);
   return link && topo.isUp(link) ? ['up', 'up'] : ['down', 'down'];
 }
 
@@ -89,6 +97,7 @@ function runningConfig(dev) {
       const e = getEntry(dev, p.name);
       lines.push(`interface ${long(p.name)}`);
       if (e?.description) lines.push(` description ${e.description}`);
+      if (e?.parent && e.vlan) lines.push(` encapsulation dot1Q ${e.vlan}${e.native ? ' native' : ''}`);
       lines.push(e?.ip && isValidIp(e.ip) && e.mask != null ? ` ip address ${e.ip} ${cidrToMask(e.mask)}` : ' no ip address');
       lines.push(...iosInterfaceExtras(dev.config ?? {}, e));
       if (e?.clockRate) lines.push(` clock rate ${e.clockRate}`);
@@ -213,6 +222,16 @@ function linkMessages(ctx, names) {
   ctx.out.push('');
 }
 
+// Sous-interface 802.1Q : seulement sur « G0/0.10 », pas sur l'interface physique
+function setEncapsulation(c, native) {
+  if (!c.s.ifaces.every((n) => n.includes('.'))) return c.out.push('% Configuring IEEE 802.1Q encapsulation is only allowed on subinterfaces (ex. interface g0/0.10)', '');
+  forIfaces(c, (e) => {
+    e.vlan = Number(c.args.vlan);
+    if (native) e.native = true;
+    else delete e.native;
+  });
+}
+
 function setIpAddress(ctx) {
   const { dev, doc, out, args, s } = ctx;
   const cidr = maskToCidr(args.mask);
@@ -225,6 +244,10 @@ function setIpAddress(ctx) {
     return;
   }
   const [name] = s.ifaces;
+  if (name.includes('.') && !getEntry(dev, name)?.vlan) {
+    out.push('% Configuring IP routing on a LAN subinterface is only allowed if that', 'subinterface is already configured as part of an IEEE 802.10, IEEE 802.1Q,', 'or ISL vLAN.', '');
+    return;
+  }
   // IOS refuse deux interfaces dans le même réseau
   for (const e of dev.config?.interfaces ?? []) {
     if (e.name !== name && isValidIp(e.ip) && e.mask != null && sameSubnet(e.ip, args.ip, Math.min(e.mask, cidr))) {
@@ -335,6 +358,16 @@ function doCmd(dev) {
   });
 }
 
+function interfaceCmd(isSwitch) {
+  return kw('interface', 'Select an interface to configure', {
+    children: [
+      kw('range', 'interface range command', { children: [rest('spec', 'LINE', 'Interfaces', (c) => enterInterfaces(c, true))] }),
+      ...(isSwitch ? [kw('vlan', 'Catalyst Vlans', { children: [arg('n', '<1-4094>', '', isNum(1, 4094), { run: (c) => c.out.push(...NOT_SIMULATED('l\'interface VLAN (SVI)')) })] })] : []),
+      rest('spec', 'WORD', 'Interface type and number', (c) => enterInterfaces(c, false)),
+    ],
+  });
+}
+
 function configTree(dev) {
   const isSwitch = dev.type === 'switch';
   const children = [
@@ -343,13 +376,7 @@ function configTree(dev) {
         run: (c) => { c.dev.label = c.args.name; c.changed = true; },
       })],
     }),
-    kw('interface', 'Select an interface to configure', {
-      children: [
-        kw('range', 'interface range command', { children: [rest('spec', 'LINE', 'Interfaces', (c) => enterInterfaces(c, true))] }),
-        ...(isSwitch ? [kw('vlan', 'Catalyst Vlans', { children: [arg('n', '<1-4094>', '', isNum(1, 4094), { run: (c) => c.out.push(...NOT_SIMULATED('l\'interface VLAN (SVI)')) })] })] : []),
-        rest('spec', 'WORD', 'Interface type and number', (c) => enterInterfaces(c, false)),
-      ],
-    }),
+    interfaceCmd(isSwitch),
     kw('ip', 'Global IP configuration subcommands', {
       children: [
         ...(isSwitch
@@ -463,6 +490,7 @@ function interfaceTree(dev) {
     accept('speed', 'Configure speed operation.'),
     accept('duplex', 'Configure duplex operation.'),
     ...(isSwitch ? [accept('bandwidth', 'Set bandwidth informational parameter')] : [interfaceRoutingCommands(forIfaces).bandwidth]),
+    interfaceCmd(isSwitch),
     kw('exit', 'Exit from interface configuration mode', leave('config')),
     endCmd(),
     doCmd(dev),
@@ -522,7 +550,14 @@ function interfaceTree(dev) {
           })],
         })],
       }),
-      kw('encapsulation', 'Set encapsulation type for an interface', { children: [rest('x', 'LINE', '', (c) => c.out.push(...NOT_SIMULATED('l\'encapsulation 802.1Q (router-on-a-stick)')))] }),
+      kw('encapsulation', 'Set encapsulation type for an interface', {
+        children: [kw('dot1Q', 'IEEE 802.1Q Virtual LAN', {
+          children: [arg('vlan', '<1-4094>', 'IEEE 802.1Q VLAN ID', isNum(1, 4094), {
+            run: (c) => setEncapsulation(c, false),
+            children: [kw('native', 'Make this as native vlan', { run: (c) => setEncapsulation(c, true) })],
+          })],
+        })],
+      }),
     );
     no.push(
       kw('ip', '', { children: [kw('address', 'Set the IP address of an interface', { run: (c) => forIfaces(c, (e) => { e.ip = null; e.mask = null; }) }), interfaceRoutingCommands(forIfaces).noIpOspf] }),

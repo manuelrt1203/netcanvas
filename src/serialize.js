@@ -94,7 +94,7 @@ function configuredPorts(n, edges, table) {
 }
 
 // Champs facultatifs d'une interface, gardés tels quels entre l'éditeur et le JSON
-const IFACE_EXTRAS = ['shutdown', 'description', 'bandwidth', 'ospfCost'];
+const IFACE_EXTRAS = ['shutdown', 'description', 'bandwidth', 'ospfCost', 'parent', 'vlan', 'native'];
 const extras = (p) => Object.fromEntries(IFACE_EXTRAS.filter((k) => p[k] !== undefined && p[k] !== null && p[k] !== '' && p[k] !== false).map((k) => [k, p[k]]));
 // Routage dynamique d'un routeur : copié sans transformation
 const ROUTING_KEYS = ['ospf', 'rip', 'bgp', 'addressLists'];

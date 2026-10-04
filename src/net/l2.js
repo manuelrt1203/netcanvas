@@ -4,9 +4,10 @@ import { NATIVE_VLAN } from './topology.js';
 
 // Renvoie les équipements de niveau 3 (hôtes, routeurs) atteints par une trame non étiquetée,
 // dans l'ordre du parcours, avec le chemin suivi ; et les trames perdues en route.
-export function flood(topo, fromId, linkId) {
+// startTag : trame émise étiquetée (sous-interface 802.1Q d'un routeur)
+export function flood(topo, fromId, linkId, startTag = null) {
   const first = topo.other(linkId, fromId);
-  const queue = [{ device: first, inLink: linkId, tag: null, vlan: null, hops: [{ edge: linkId, from: fromId, to: first }] }];
+  const queue = [{ device: first, inLink: linkId, tag: startTag, vlan: startTag, hops: [{ edge: linkId, from: fromId, to: first }] }];
   const seen = new Set();
   const reached = new Set();
   const endpoints = [];
@@ -65,15 +66,17 @@ export function flood(topo, fromId, linkId) {
       continue;
     }
 
-    // Hôte ou routeur : il ne comprend que les trames non étiquetées
-    if (tag != null) {
-      drops.push(`${dev.label} ne gère pas les trames étiquetées (VLAN ${tag})`);
+    // Hôte : seulement des trames non étiquetées. Routeur : une trame étiquetée arrive sur sa sous-interface.
+    if (tag != null && !topo.l3IfaceOn(device, inLink, tag)) {
+      drops.push(dev.type === 'router'
+        ? `${dev.label} n'a pas de sous-interface pour le VLAN ${tag} sur ${topo.portName(inLink, device)}`
+        : `${dev.label} ne gère pas les trames étiquetées (VLAN ${tag})`);
       continue;
     }
-    const key = `${device}|${inLink}`;
+    const key = `${device}|${inLink}|${tag}`;
     if (reached.has(key) || device === fromId) continue;
     reached.add(key);
-    endpoints.push({ device, inLink, hops, vlan });
+    endpoints.push({ device, inLink, tag, hops, vlan });
   }
   return { endpoints, drops, vlansSeen };
 }

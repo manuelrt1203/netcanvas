@@ -44,12 +44,21 @@ export function clabCommands(doc) {
       }
     } else {
       for (const r of rows) {
-        if (!r.hasIp) continue;
-        cmds.push(`ip addr add ${r.ip}/${r.mask} dev ${ifname(r.index)}`, `ip link set ${ifname(r.index)} up`);
+        // Port actif même sans IP (parent des sous-interfaces 802.1Q)
+        if (r.hasIp) cmds.push(`ip addr add ${r.ip}/${r.mask} dev ${ifname(r.index)}`);
+        cmds.push(`ip link set ${ifname(r.index)} up`);
       }
       if (d.type === 'router') {
         for (const lo of (d.config?.interfaces ?? []).filter((i) => isLoopbackName(i.name) && isValidIp(i.ip) && isValidCidr(i.mask) && !i.shutdown)) {
           cmds.push(`ip addr add ${lo.ip}/${lo.mask} dev lo`);
+        }
+        // Router-on-a-stick : interface VLAN Linux sur le port parent (eth1.10…)
+        for (const sub of (d.config?.interfaces ?? []).filter((i) => i.parent && i.vlan && isValidIp(i.ip) && !i.shutdown)) {
+          const parent = rows.find((r) => r.name === sub.parent);
+          if (!parent) continue;
+          const dev = sub.native ? ifname(parent.index) : `${ifname(parent.index)}.${sub.vlan}`;
+          if (!sub.native) cmds.push(`ip link add link ${ifname(parent.index)} name ${dev} type vlan id ${sub.vlan}`);
+          cmds.push(`ip addr add ${sub.ip}/${sub.mask} dev ${dev}`, `ip link set ${dev} up`);
         }
         const rib = routing.ribs.get(d.id);
         for (const route of [...rib.values()].filter((r) => !['C', 'L'].includes(r.proto)).sort((a, b) => a.net - b.net || a.mask - b.mask)) {

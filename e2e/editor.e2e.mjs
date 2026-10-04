@@ -221,6 +221,23 @@ await page.locator('.react-flow__pane').click({ position: { x: 40, y: 40 } });
 assert.ok(await page.getByText(/next-hop 10\.0\.23\.2, injoignable/).isVisible(), 'explication dans les contrôles');
 await page.screenshot({ path: 'e2e/bgp.png' });
 
+step('router-on-a-stick : sous-interfaces dans le formulaire, ping inter-VLAN');
+await openDemo('Router-on-a-stick (802.1Q)');
+await page.getByTestId('rf__node-r1').click();
+assert.ok(await page.getByText('G0/0.20', { exact: true }).first().isVisible(), 'sous-interface affichée');
+await page.locator('.subifs input[type="number"]').nth(2).fill('30'); // VLAN de G0/0.20 -> 30
+assert.ok(await page.getByText('G0/0.30', { exact: true }).first().isVisible(), 'renommée selon le VLAN');
+await page.click('role=tab[name="Simulation"]');
+await page.selectOption('#sim-src', { label: 'PC Profs' });
+await page.selectOption('#sim-dst', { label: 'PC Élèves · 192.168.20.10' });
+await page.click('text=Lancer le ping');
+await page.waitForSelector('button:has-text("Lancer le ping"):not([disabled])', { timeout: 15000 });
+assert.ok(await page.getByText(/pas de réponse ARP.*VLAN 30/).first().isVisible(), 'explication : la trame part dans le VLAN 30');
+await page.keyboard.press('Control+z');
+await page.click('text=Lancer le ping');
+await page.waitForSelector('button:has-text("Lancer le ping"):not([disabled])', { timeout: 15000 });
+assert.ok(await page.locator('.sim-verdict.ok').isVisible(), 'Ctrl+Z remet le VLAN 20 et le ping passe');
+
 step('édition : annuler / rétablir, copier-coller, sélection multiple, recherche');
 await page.click('text=Effacer');
 await page.locator('.react-flow__pane').click({ position: { x: 40, y: 40 } });

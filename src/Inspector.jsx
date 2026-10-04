@@ -4,7 +4,7 @@ import { cidrToMask, isValidCidr, isValidIp, splitCidr } from './net/ip.js';
 import { HOST_TYPES } from './net/topology.js';
 import { CABLES, CLOCK_RATES, MEDIA_LABEL, MODELS, MODULES, TYPES, devicePorts, modelId, modelsOfType } from './net/catalog.js';
 import { useLinkStatus } from './SimContext.js';
-import { LoopbacksForm, RoutingForm } from './RoutingForm.jsx';
+import { LoopbacksForm, RoutingForm, SubInterfaces } from './RoutingForm.jsx';
 
 const otherEnd = (e, id) => (e.source === id ? e.target : e.source);
 // Côté DCE d'une liaison série : l'équipement source, sauf indication contraire
@@ -97,6 +97,7 @@ function RouterForm({ node, edges, labels, update, routing }) {
               {p.name} <span className="muted">vers {labels.get(otherEnd(p.edge, node.id))}{serial ? ` · série ${dce ? 'DCE' : 'DTE'}` : ''}</span>
             </legend>
             <IpCidrFields ip={p.ip} mask={p.mask} onChange={(patch) => patchIface(p, patch)} />
+            {!serial && <SubInterfaces node={node} parent={p.name} update={update} />}
             {dce && <ClockRate link={p.link} value={p.clockRate} onChange={(clockRate) => patchIface(p, { clockRate })} />}
             {node.data.ospf && (
               <Field label="Coût OSPF (vide = selon le débit)" type="number" min="1" max="65535" className="cidr" value={p.ospfCost ?? ''}

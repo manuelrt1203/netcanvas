@@ -44,6 +44,15 @@ export function validate(doc, ctx = {}) {
         const i = topo.routerIface(d.id, l);
         if (checkAddress(d, `${d.label} ${i.name}`, i.ip, i.mask)) valid.push(i);
       }
+      // Sous-interfaces 802.1Q
+      const seenVlans = new Map();
+      for (const s of topo.subIfaces(d.id)) {
+        if (!s.link) add(d.id, 'warning', `${d.label} ${s.name} : l'interface parente ${s.parent} n'est pas câblée.`);
+        const key = `${s.parent}|${s.vlan}`;
+        if (seenVlans.has(key)) add(d.id, 'error', `${d.label} : ${seenVlans.get(key)} et ${s.name} utilisent le même VLAN ${s.vlan} sur ${s.parent}.`);
+        seenVlans.set(key, s.name);
+        if (checkAddress(d, `${d.label} ${s.name}`, s.ip, s.mask)) valid.push(s);
+      }
       for (let a = 0; a < valid.length; a++) {
         for (let b = a + 1; b < valid.length; b++) {
           const [x, y] = [valid[a], valid[b]];

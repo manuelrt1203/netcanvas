@@ -51,6 +51,47 @@ function Status({ lines, problems }) {
   );
 }
 
+// Sous-interfaces 802.1Q d'un port (router-on-a-stick) : G0/0.10 chez Cisco, vlan10 chez MikroTik
+export function SubInterfaces({ node, parent, update }) {
+  const mk = isMikrotik({ type: node.type, model: node.data.model });
+  const subs = Object.entries(node.data.ifaces ?? {}).filter(([, i]) => i.parent === parent)
+    .sort(([, a], [, b]) => Number(a.vlan) - Number(b.vlan));
+  const nameFor = (vlan) => (mk ? `vlan${vlan}` : `${parent}.${vlan}`);
+  const setSub = (oldName, patch) => update((d) => {
+    const ifaces = { ...d.ifaces };
+    const cur = { ...ifaces[oldName], ...patch };
+    delete ifaces[oldName];
+    ifaces[patch.vlan !== undefined ? nameFor(patch.vlan) : oldName] = cur; // le nom suit le VLAN
+    return { ...d, ifaces };
+  });
+  const add = () => {
+    const used = new Set(subs.map(([, i]) => Number(i.vlan)));
+    let vlan = 10;
+    while (used.has(vlan)) vlan += 10;
+    update((d) => ({ ...d, ifaces: { ...d.ifaces, [nameFor(vlan)]: { parent, vlan, ip: '', mask: 24 } } }));
+  };
+  const remove = (name) => update((d) => {
+    const ifaces = { ...d.ifaces };
+    delete ifaces[name];
+    return { ...d, ifaces };
+  });
+  return (
+    <div className="subifs">
+      {subs.map(([name, i]) => (
+        <div className="rows-item" key={name}>
+          <code className="iface-name">{name}</code>
+          <Input label="VLAN" type="number" min="1" max="4094" className="cidr" value={i.vlan}
+            onChange={(e) => { const v = Math.max(1, Math.min(4094, Number(e.target.value) || 1)); if (!subs.some(([n, x]) => n !== name && Number(x.vlan) === v)) setSub(name, { vlan: v }); }} />
+          <Input label="Adresse" placeholder="192.168.10.1" data-ip value={i.ip ?? ''} onChange={(e) => setSub(name, { ip: e.target.value.trim() })} />
+          <Input label="/" type="number" min="0" max="32" className="cidr" value={i.mask ?? ''} onChange={(e) => setSub(name, { mask: num(e.target.value) })} />
+          <button type="button" className="ghost small" aria-label={`Retirer ${name}`} onClick={() => remove(name)}>✕</button>
+        </div>
+      ))}
+      <button type="button" className="ghost small" onClick={add}>Ajouter une sous-interface 802.1Q</button>
+    </div>
+  );
+}
+
 export function LoopbacksForm({ node, update }) {
   const mk = isMikrotik({ type: node.type, model: node.data.model });
   const names = Object.keys(node.data.ifaces ?? {}).filter((n) => /^(Lo\d+|lo)$/.test(n)).sort();

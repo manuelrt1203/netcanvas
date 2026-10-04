@@ -12,7 +12,8 @@ import { ROUTING_MENUS, routeTable, routingScript, runRouting } from './routeros
 const MENUS = {
   '': { menus: ['interface', 'ip', 'routing', 'system', 'tool'], commands: ['ping', 'export', 'quit'] },
   tool: { menus: [], commands: ['traceroute'] },
-  interface: { menus: ['ethernet'], commands: ['print', 'enable', 'disable', 'export'] },
+  interface: { menus: ['ethernet', 'vlan'], commands: ['print', 'enable', 'disable', 'export'] },
+  'interface vlan': { menus: [], commands: ['add', 'print', 'remove', 'export'] },
   'interface ethernet': { menus: [], commands: ['print', 'enable', 'disable', 'export'] },
   ip: { menus: ['address', 'route', 'firewall'], commands: ['export'] },
   'ip address': { menus: [], commands: ['add', 'print', 'remove', 'export'] },
@@ -74,8 +75,11 @@ function parseLine(line, cwd) {
   return { path, command, named, unnamed };
 }
 
-// Interfaces adressables : ports physiques + loopback « lo »
-const ifaceNames = (dev) => [...dataPorts(dev).map((p) => p.name), 'lo'];
+// Interfaces VLAN (sous-interfaces 802.1Q) : name=vlan10 interface=ether2 vlan-id=10
+const vlanIfaces = (dev) => (dev.config?.interfaces ?? []).filter((e) => e.parent && e.vlan);
+
+// Interfaces adressables : ports physiques, interfaces VLAN, loopback « lo »
+const ifaceNames = (dev) => [...dataPorts(dev).map((p) => p.name), ...vlanIfaces(dev).map((e) => e.name), 'lo'];
 
 // Adresses IP de l'équipement, dans l'ordre des ports (numéros de « print »)
 function addresses(dev) {
@@ -90,6 +94,10 @@ export function routerosScript(dev) {
   if (disabled.length) {
     lines.push('/interface ethernet');
     for (const p of disabled) lines.push(`set [ find default-name=${p.name} ] disabled=yes`);
+  }
+  if (vlanIfaces(dev).length) {
+    lines.push('/interface vlan');
+    for (const e of vlanIfaces(dev)) lines.push(`add interface=${e.parent} name=${e.name} vlan-id=${e.vlan}`);
   }
   const addrs = addresses(dev);
   if (addrs.length) {
@@ -203,6 +211,30 @@ function run(ctx, p) {
       ctx.changed = true;
       return;
     }
+    case 'interface vlan|add': {
+      const parent = p.named.interface;
+      const vlan = Number(p.named['vlan-id']);
+      const nameV = p.named.name ?? `vlan${vlan}`;
+      if (!dataPorts(dev).some((x) => x.name === parent)) return out.push('input does not match any value of interface', '');
+      if (!(vlan >= 1 && vlan <= 4094)) return out.push('invalid value for argument vlan-id', '');
+      if (ifaceNames(dev).includes(nameV)) return out.push('failure: interface with such name exists', '');
+      if (vlanIfaces(dev).some((e) => e.parent === parent && Number(e.vlan) === vlan)) return out.push(`failure: vlan-id ${vlan} already used on ${parent}`, '');
+      (dev.config.interfaces ??= []).push({ link: null, name: nameV, parent, vlan, ip: null, mask: null });
+      ctx.changed = true;
+      return;
+    }
+    case 'interface vlan|print':
+      out.push('Flags: X - disabled, R - running ', ` #   ${pad('NAME', 20)}${pad('MTU', 6)}${pad('VLAN-ID', 9)}INTERFACE`);
+      vlanIfaces(dev).forEach((e, i) => out.push(` ${pad(i, 4)}${pad(e.name, 20)}${pad(1500, 6)}${pad(e.vlan, 9)}${e.parent}`));
+      return out.push('');
+    case 'interface vlan|remove': {
+      const list = vlanIfaces(dev);
+      const i = index(p.named.numbers ?? p.unnamed[0], list) ?? list.findIndex((e) => e.name === p.unnamed[0]);
+      if (i === null || i < 0) return out.push('no such item', '');
+      dev.config.interfaces = dev.config.interfaces.filter((e) => e !== list[i]);
+      ctx.changed = true;
+      return;
+    }
     case 'system identity|set':
       if (!p.named.name) return out.push('expected end of command', '');
       dev.label = p.named.name.replace(/^"(.*)"$/, '$1');
@@ -243,6 +275,7 @@ function run(ctx, p) {
     case 'ip route|export':
     case 'interface|export':
     case 'interface ethernet|export':
+    case 'interface vlan|export':
     case 'system identity|export':
       return out.push(...routerosScript(dev), '');
     case '|quit':

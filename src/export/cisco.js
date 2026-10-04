@@ -82,7 +82,9 @@ function routerConfig(d, rows, { target, table, topo }) {
     lines.push(`interface ${ifname}`);
     const description = row.description ? ` description ${row.description}` : desc(row, target === 'gns3' && row.peer ? gns3PortName(table, row.peer, row.link) : null);
     if (description) lines.push(description);
+    const subs = (cfg.interfaces ?? []).filter((i) => i.parent === row.name && i.vlan);
     if (row.hasIp) lines.push(` ip address ${row.ip} ${cidrToMask(row.mask)}`);
+    else if (subs.length) lines.push(' no ip address'); // trunk vers les sous-interfaces
     else warnings.push(`${ifname} (vers ${ascii(row.peer?.label)}) n'a pas d'adresse IP.`);
     lines.push(...iosInterfaceExtras(cfg, row));
     // Liaison série : le côté DCE fournit l'horloge
@@ -93,6 +95,16 @@ function routerConfig(d, rows, { target, table, topo }) {
       else warnings.push(`${ifname} est le côté DCE de la liaison série mais n'a pas de clock rate.`);
     }
     lines.push(row.shutdown ? ' shutdown' : ' no shutdown', end);
+    // Router-on-a-stick : une sous-interface par VLAN
+    for (const sub of subs) {
+      const subName = `${ifname}.${sub.name.split('.')[1] ?? sub.vlan}`;
+      renamed.set(sub.name, subName);
+      lines.push(`interface ${subName}`, ` encapsulation dot1Q ${sub.vlan}${sub.native ? ' native' : ''}`);
+      if (sub.ip) lines.push(` ip address ${sub.ip} ${cidrToMask(sub.mask)}`);
+      lines.push(...iosInterfaceExtras(cfg, sub));
+      if (sub.shutdown) lines.push(' shutdown');
+      lines.push(end);
+    }
   }
 
   for (const r of d.config?.routes ?? []) {
@@ -230,7 +242,12 @@ export function ciscoBundle(doc, target = 'packet-tracer') {
 
 // --- Routage dynamique (partagé avec le terminal : show running-config) -------------------------
 const loName = (n) => (/^Lo(\d+)$/.test(n) ? `Loopback${n.slice(2)}` : null);
-export const iosLongName = (n) => loName(n) ?? iosInterfaceName(n) ?? n;
+export function iosLongName(n) {
+  // Sous-interface : « G0/0.10 » -> « GigabitEthernet0/0.10 »
+  const sub = /^(.+)(\.\d+)$/.exec(n ?? '');
+  if (sub) return `${iosLongName(sub[1])}${sub[2]}`;
+  return loName(n) ?? iosInterfaceName(n) ?? n;
+}
 
 // Lignes propres à une interface : bande passante, OSPF
 export function iosInterfaceExtras(cfg, entry) {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BGP_DEMO, DEMO, OSPF_DEMO } from '../examples.js';
+import { BGP_DEMO, DEMO, OSPF_DEMO, ROAS_DEMO } from '../examples.js';
 import { runLine, shellFor } from './index.js';
 import { validate } from '../net/validate.js';
 import { simulatePing } from '../net/simulate.js';
@@ -325,4 +325,37 @@ test('mikrotik : BGP en RouterOS v7 avec un Cisco (eBGP)', () => {
   assert.match(t.run('/ip route print'), /DAb  192\.168\.1\.0\/24\s+10\.0\.23\.1\s+20/);
   t.run('/routing bgp connection remove 0', '/routing bgp connection add name=bad as=65002 remote.address=10.0.23.1 remote.as=64999');
   assert.match(t.run('/routing bgp session print'), /NetCanvas : « remote-as 64999 » mais R2 \(AS 65001\) est dans l'AS 65001/);
+});
+
+test('ios : router-on-a-stick tapé à la main', () => {
+  const doc = structuredClone(ROAS_DEMO);
+  dev(doc, 'r1').config.interfaces = [{ link: 'c3', name: 'G0/0', ip: null, mask: null }];
+  assert.ok(!simulatePing(doc, 'pc1', '192.168.20.10').ok);
+  const t = session(doc, 'r1');
+  t.run('en', 'conf t', 'int g0/0', 'no shut');
+  assert.match(t.run('encapsulation dot1Q 10'), /only allowed on subinterfaces/);
+  t.run('int g0/0.10');
+  assert.equal(t.prompt(), 'R1(config-if)#');
+  assert.match(t.run('ip address 192.168.10.1 255.255.255.0'), /only allowed if that/);
+  t.run('encapsulation dot1Q 10', 'ip address 192.168.10.1 255.255.255.0', 'int g0/0.20', 'encap dot1q 20', 'ip add 192.168.20.1 255.255.255.0', 'end');
+  assert.deepEqual(iface(t.doc, 'r1', 'G0/0.20'), { link: null, name: 'G0/0.20', parent: 'G0/0', ip: '192.168.20.1', mask: 24, vlan: 20 });
+  assert.ok(simulatePing(t.doc, 'pc1', '192.168.20.10').ok);
+  assert.match(t.run('show ip interface brief'), /GigabitEthernet0\/0\.10\s+192\.168\.10\.1\s+YES manual up\s+up/);
+  assert.match(t.run('show running-config'), /interface GigabitEthernet0\/0\.20\n encapsulation dot1Q 20\n ip address 192\.168\.20\.1 255\.255\.255\.0\n!/);
+  assert.match(t.run('show ip route connected'), /C    192\.168\.20\.0\/24 is directly connected, GigabitEthernet0\/0\.20/);
+});
+
+test('mikrotik : router-on-a-stick en RouterOS (/interface vlan)', () => {
+  const doc = structuredClone(ROAS_DEMO);
+  const r1 = dev(doc, 'r1');
+  r1.model = 'hAP-ac2';
+  r1.config.interfaces = [];
+  doc.links.find((l) => l.id === 'c3').sourceIface = 'ether2';
+  const t = session(doc, 'r1');
+  t.run('/interface vlan add name=vlan10 vlan-id=10 interface=ether2', '/interface vlan add name=vlan20 vlan-id=20 interface=ether2');
+  assert.match(t.run('/interface vlan add name=x vlan-id=10 interface=ether2'), /vlan-id 10 already used on ether2/);
+  t.run('/ip address add address=192.168.10.1/24 interface=vlan10', '/ip address add address=192.168.20.1/24 interface=vlan20');
+  assert.ok(simulatePing(t.doc, 'pc1', '192.168.20.10').ok);
+  assert.match(t.run('/interface vlan print'), / 1   vlan20\s+1500\s+20\s+ether2/);
+  assert.match(t.run('/export'), /\/interface vlan\nadd interface=ether2 name=vlan10 vlan-id=10\nadd interface=ether2 name=vlan20 vlan-id=20\n\/ip address\nadd address=192\.168\.10\.1\/24 interface=vlan10/);
 });

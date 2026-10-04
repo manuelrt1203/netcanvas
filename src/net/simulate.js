@@ -83,9 +83,11 @@ function forward(ctx, startId, dstIp, phase, result, log, name, fixedSrc = null)
     if (phase === 'request') result.srcIp = srcIp;
     log(phase, step.text, 'info', current);
 
-    const l2 = deliver(topo, current, step.iface.link, step.nextHop, name);
+    // Sous-interface 802.1Q : la trame part étiquetée sur le trunk
+    const tag = step.iface.sub && !step.iface.native ? Number(step.iface.vlan) : null;
+    const l2 = deliver(topo, current, step.iface.link, step.nextHop, name, tag);
     result.hops.push(...l2.hops.map((h) => ({ ...h, phase })));
-    result.path.push({ phase, device: l2.endpoint, ip: topo.l3IfaceOn(l2.endpoint, l2.inLink)?.ip ?? null });
+    result.path.push({ phase, device: l2.endpoint, ip: topo.l3IfaceOn(l2.endpoint, l2.inLink, l2.tag)?.ip ?? null });
     const via = l2.vlan != null ? ` (VLAN ${l2.vlan})` : '';
     log(
       phase,
@@ -171,8 +173,12 @@ function routerDecision({ topo, routing }, id, dstIp, name) {
 // Pourquoi aucune route : interface down, route statique inutilisable, protocole mal configuré
 function noRoute(topo, routing, id, dstIp, name) {
   const all = topo.l3Ifaces(id, { includeDown: true });
-  const down = all.find((i) => !i.loopback && !topo.isUp(i.link) && sameSubnet(i.ip, dstIp, i.mask));
-  if (down) return `${name(id)} : ${networkLabel(down.ip, down.mask)} est sur ${down.name}, mais l'interface est down. ${topo.status.get(down.link).reason}`;
+  const down = all.find((i) => !i.loopback && (i.shutdown || !topo.isUp(i.link)) && sameSubnet(i.ip, dstIp, i.mask));
+  if (down) {
+    const why = down.shutdown ? `${name(id)} ${down.name} est désactivée (shutdown).`
+      : down.link ? topo.status.get(down.link).reason : `${down.parent ?? down.name} n'est pas câblée.`;
+    return `${name(id)} : ${networkLabel(down.ip, down.mask)} est sur ${down.name}, mais l'interface est down. ${why}`;
+  }
 
   const statics = (topo.devices.get(id).config?.routes ?? [])
     .filter((r) => isValidIp(r.network) && isValidCidr(r.mask) && isValidIp(r.nextHop) && networkOf(dstIp, r.mask) === networkOf(r.network, r.mask))
@@ -191,13 +197,13 @@ function noRoute(topo, routing, id, dstIp, name) {
 
 // Résolution ARP + acheminement de la trame dans le domaine de diffusion.
 // Renvoie le chemin (liste de câbles) jusqu'à l'équipement qui possède targetIp.
-function deliver(topo, fromId, linkId, targetIp, name) {
+function deliver(topo, fromId, linkId, targetIp, name, tag = null) {
   if (!topo.isUp(linkId)) throw new SimError(`${name(fromId)} : câble hors service. ${topo.status.get(linkId).reason}`, fromId);
   const target = parseIp(targetIp);
-  const { endpoints, drops, vlansSeen } = flood(topo, fromId, linkId);
+  const { endpoints, drops, vlansSeen } = flood(topo, fromId, linkId, tag);
   for (const e of endpoints) {
-    const iface = topo.l3IfaceOn(e.device, e.inLink);
-    if (iface && isValidIp(iface.ip) && parseIp(iface.ip) === target) return { endpoint: e.device, inLink: e.inLink, hops: e.hops, vlan: e.vlan };
+    const iface = topo.l3IfaceOn(e.device, e.inLink, e.tag);
+    if (iface && isValidIp(iface.ip) && parseIp(iface.ip) === target) return { endpoint: e.device, inLink: e.inLink, tag: e.tag, hops: e.hops, vlan: e.vlan };
   }
   const where = vlansSeen.size ? ` dans le VLAN ${[...vlansSeen].join(', ')}` : ' sur ce lien';
   const extra = drops.length ? ` (${drops.join(' ; ')})` : '';

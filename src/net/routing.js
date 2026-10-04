@@ -108,10 +108,12 @@ export function computeRouting(doc, topo = buildTopology(doc)) {
     r.peers = [];
     for (const i of r.ifaces) {
       if (i.loopback) continue;
-      for (const e of flood(topo, r.id, i.link).endpoints) {
+      const tag = i.sub && !i.native ? Number(i.vlan) : null;
+      for (const e of flood(topo, r.id, i.link, tag).endpoints) {
         const p = routers.get(e.device);
         if (!p) continue;
-        const pi = p.ifaces.find((x) => x.link === e.inLink);
+        const theirs = topo.l3IfaceOn(p.id, e.inLink, e.tag);
+        const pi = theirs && p.ifaces.find((x) => x.name === theirs.name);
         if (pi) r.peers.push({ iface: i, peer: p, peerIface: pi, p2p: topo.links.get(i.link)?.cable === 'serial' });
       }
     }
