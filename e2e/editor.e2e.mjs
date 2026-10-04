@@ -288,6 +288,18 @@ await page.click('text=Lancer le ping');
 await page.waitForSelector('button:has-text("Lancer le ping"):not([disabled])', { timeout: 15000 });
 assert.ok(await page.getByText(/refusé en sortie de G0\/1 par l'ACL 100, ligne 10/).first().isVisible());
 
+step('DHCP : bail affiché, relais retiré -> APIPA et explication');
+await openDemo('DHCP (serveur et relais)');
+await page.getByTestId('rf__node-pc3').click();
+await page.click('role=tab[name=/Propriétés/]');
+assert.match(await page.locator('.routing-status').textContent(), /Bail obtenu : 192\.168\.20\.2\/24.*via le relais R1/);
+await page.getByTestId('rf__node-r1').click();
+await page.getByLabel('Relais DHCP (ip helper-address)').nth(0).waitFor();
+const helpers = page.getByLabel('Relais DHCP (ip helper-address)');
+for (let k = 0; k < await helpers.count(); k++) await helpers.nth(k).fill('');
+await page.getByTestId('rf__node-pc3').click();
+assert.match(await page.locator('.routing-status').textContent(), /Pas de bail : .*n'a ni pool DHCP.*APIPA/);
+
 step('édition : annuler / rétablir, copier-coller, sélection multiple, recherche');
 await page.click('text=Effacer');
 await page.locator('.react-flow__pane').click({ position: { x: 40, y: 40 } });

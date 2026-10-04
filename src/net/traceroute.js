@@ -3,11 +3,13 @@
 import { simulatePing } from './simulate.js';
 import { buildTopology } from './topology.js';
 import { computeRouting } from './routing.js';
+import { withLeases } from './dhcp.js';
 
 export const MAX_HOPS = 30;
 
 // Renvoie { hops: [{ ttl, ip, device, reached }], ok, reason }
-export function traceroute(doc, sourceId, dstIp) {
+export function traceroute(rawDoc, sourceId, dstIp) {
+  const doc = withLeases(rawDoc);
   const topo = buildTopology(doc);
   const routing = computeRouting(doc, topo);
   const ping = simulatePing(doc, sourceId, dstIp, { topo, routing });

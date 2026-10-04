@@ -116,6 +116,7 @@ function routerConfig(d, rows, { target, table, topo }) {
   lines.push(...iosRoutingLines(cfg, (n) => renamed.get(n) ?? iosLongName(n)).map((l) => (l === '!' && target !== 'gns3' ? ' exit' : l)));
   lines.push(...iosAclLines(cfg).filter((l) => l !== '!'));
   lines.push(...iosNatLines(cfg, (n) => renamed.get(n) ?? iosLongName(n)));
+  lines.push(...iosDhcpLines(cfg).map((l) => (l === '!' ? ' exit' : l)));
   return { lines, warnings };
 }
 
@@ -222,10 +223,13 @@ export function ciscoConfigs(doc, { target = 'packet-tracer' } = {}) {
 
     // Hôtes : configuration manuelle (Packet Tracer) ou script VPCS (GNS3)
     const i = rows[0] ?? {};
-    const warnings = i.hasIp ? [] : [`${d.label} n'a pas d'adresse IP.`];
+    const client = d.config?.dhcp === true;
+    const warnings = i.hasIp || client ? [] : [`${d.label} n'a pas d'adresse IP.`];
     let text;
     if (target === 'gns3') {
-      text = [`set pcname ${name}`, i.hasIp ? `ip ${i.ip}${i.gateway ? ` ${i.gateway}` : ''} ${i.mask}` : '# pas d\'adresse IP', ''].join('\n');
+      text = [`set pcname ${name}`, client ? 'ip dhcp' : i.hasIp ? `ip ${i.ip}${i.gateway ? ` ${i.gateway}` : ''} ${i.mask}` : '# pas d\'adresse IP', ''].join('\n');
+    } else if (client) {
+      text = [`${d.label} (${modelId(d)})`, 'Desktop > IP Configuration > DHCP', ''].join('\n');
     } else {
       text = [
         `${d.label} (${MODELS[modelId(d)].type === 'cloud' ? 'Cloud-PT' : modelId(d)})`,
@@ -233,6 +237,12 @@ export function ciscoConfigs(doc, { target = 'packet-tracer' } = {}) {
         `  IPv4 Address    : ${i.hasIp ? i.ip : '(non configurée)'}`,
         `  Subnet Mask     : ${i.hasIp ? cidrToMask(i.mask) : ''}`,
         `  Default Gateway : ${i.gateway || ''}`,
+        // Server-PT : service DHCP
+        ...(d.config?.dhcp?.pools ?? []).flatMap((p) => [
+          `Services > DHCP : On, pool ${p.name ?? p.network}`,
+          `  Default Gateway : ${p.defaultRouter ?? ''}`, `  DNS Server : ${p.dns ?? ''}`,
+          `  Start IP Address : ${p.network} (réseau /${p.mask})`,
+        ]),
         '',
       ].join('\n');
     }
@@ -272,6 +282,7 @@ export function iosInterfaceExtras(cfg, entry) {
   if (entry?.ospfCost) out.push(` ip ospf cost ${entry.ospfCost}`);
   const o = cfg.ospf?.interfaces?.find((x) => x.name === entry?.name);
   if (o) out.push(` ip ospf ${cfg.ospf.processId ?? 1} area ${o.area}`);
+  if (entry?.helperAddress) out.push(` ip helper-address ${entry.helperAddress}`);
   if (entry?.natInside) out.push(' ip nat inside');
   if (entry?.natOutside) out.push(' ip nat outside');
   if (entry?.aclIn) out.push(` ip access-group ${entry.aclIn} in`);
@@ -345,4 +356,18 @@ export function iosNatLines(cfg, ifName = iosLongName) {
   }
   for (const st of nat.statics ?? []) out.push(`ip nat inside source static ${st.local} ${st.global}`);
   return out;
+}
+
+// --- DHCP (partagé avec le terminal) -------------------------------------------------------------
+export function iosDhcpLines(cfg) {
+  const d = cfg.dhcp;
+  if (!d || d === true) return [];
+  const out = [];
+  for (const [a, b] of d.excluded ?? []) out.push(`ip dhcp excluded-address ${a}${b && b !== a ? ` ${b}` : ''}`);
+  for (const p of d.pools ?? []) {
+    out.push(`ip dhcp pool ${p.name ?? p.network}`, ` network ${p.network} ${cidrToMask(Number(p.mask))}`);
+    if (p.defaultRouter) out.push(` default-router ${p.defaultRouter}`);
+    if (p.dns) out.push(` dns-server ${p.dns}`);
+  }
+  return out.length ? [...out, '!'] : [];
 }

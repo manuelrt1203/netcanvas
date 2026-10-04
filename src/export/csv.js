@@ -1,6 +1,7 @@
 // Plan d'adressage au format CSV « Excel français » (séparateur ;, UTF-8 avec BOM).
 import { cidrToMask, networkLabel } from '../net/ip.js';
 import { interfaceTable } from './common.js';
+import { withLeases } from '../net/dhcp.js';
 import { CABLES, MODELS, modelId } from '../net/catalog.js';
 
 const HEADER = ['Équipement', 'Modèle', 'Interface', 'Adresse IP', 'Masque', 'CIDR', 'Réseau', 'Passerelle', 'VLAN', 'Mode', 'Relié à', 'Câble'];
@@ -16,7 +17,9 @@ function cableText(topo, link) {
   return st.up ? label : `${label} (hors service)`;
 }
 
-export function addressPlanRows(doc) {
+export function addressPlanRows(rawDoc) {
+  // Les clients DHCP apparaissent avec l'adresse de leur bail
+  const doc = withLeases(rawDoc);
   const { table, topo } = interfaceTable(doc);
   const rows = [];
   for (const d of doc.devices) {
@@ -26,7 +29,7 @@ export function addressPlanRows(doc) {
         d.label,
         MODELS[modelId(d)].label,
         r.name,
-        r.hasIp ? r.ip : '',
+        r.hasIp ? `${r.ip}${d.config?.lease ? ' (DHCP)' : ''}` : '',
         r.hasIp ? cidrToMask(r.mask) : '',
         r.hasIp ? `/${r.mask}` : '',
         r.hasIp ? networkLabel(r.ip, r.mask) : '',

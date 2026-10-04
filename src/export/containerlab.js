@@ -9,6 +9,7 @@ import { computeRouting, lookup, prefixText } from '../net/routing.js';
 import { isL3Switch, isLoopbackName, isRouting } from '../net/topology.js';
 import { isMikrotik } from '../net/catalog.js';
 import { wildcardToCidr } from '../net/routing.js';
+import { withLeases } from '../net/dhcp.js';
 import { ascii, interfaceTable, switchVlans, uniqueNames } from './common.js';
 
 export const CLAB_IMAGE = 'nicolaka/netshoot:latest'; // iproute2 + bridge + ping + tcpdump
@@ -19,7 +20,9 @@ const nodeName = (d) =>
   ascii(d.label).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || d.type;
 
 // Commandes de configuration de chaque nœud (aussi utilisées par les tests avec des namespaces Linux)
-export function clabCommands(doc) {
+export function clabCommands(rawDoc) {
+  // Clients DHCP : on installe l'adresse du bail calculé (pas de serveur DHCP dans les conteneurs)
+  const doc = withLeases(rawDoc);
   const { table, topo } = interfaceTable(doc);
   const routing = computeRouting(doc, topo);
   const allVlans = [...new Set(doc.devices.filter((d) => d.type === 'switch').flatMap((d) => switchVlans(table.get(d.id))))];

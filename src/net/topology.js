@@ -95,7 +95,7 @@ export function buildTopology(doc) {
     const c = devices.get(id).config || {};
     const link = linksOf.get(id)[0] ?? null;
     const name = link ? portName(link, id) : ports.get(id).find((p) => isDataMedia(p.media))?.name ?? 'eth0';
-    return { link, name, ip: c.ip, mask: c.mask, gateway: c.gateway };
+    return { link, name, ip: c.ip, mask: c.mask, gateway: c.gateway, dhcp: c.dhcp === true, dhcpError: c.dhcpError ?? null, lease: c.lease ?? null };
   }
 
   function routerIface(id, linkId) {

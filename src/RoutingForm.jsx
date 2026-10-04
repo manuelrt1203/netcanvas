@@ -84,6 +84,10 @@ export function SubInterfaces({ node, parent, update }) {
             onChange={(e) => { const v = Math.max(1, Math.min(4094, Number(e.target.value) || 1)); if (!subs.some(([n, x]) => n !== name && Number(x.vlan) === v)) setSub(name, { vlan: v }); }} />
           <Input label="Adresse" placeholder="192.168.10.1" data-ip value={i.ip ?? ''} onChange={(e) => setSub(name, { ip: e.target.value.trim() })} />
           <Input label="/" type="number" min="0" max="32" className="cidr" value={i.mask ?? ''} onChange={(e) => setSub(name, { mask: num(e.target.value) })} />
+          {!mk && (
+            <Input label="Relais DHCP (ip helper-address)" placeholder="serveur" data-ip value={i.helperAddress ?? ''}
+              onChange={(e) => setSub(name, { helperAddress: e.target.value.trim() || undefined })} />
+          )}
           <button type="button" className="ghost small" aria-label={`Retirer ${name}`} onClick={() => remove(name)}>✕</button>
         </div>
       ))}

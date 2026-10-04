@@ -15,7 +15,7 @@ const MENUS = {
   interface: { menus: ['ethernet', 'vlan'], commands: ['print', 'enable', 'disable', 'export'] },
   'interface vlan': { menus: [], commands: ['add', 'print', 'remove', 'export'] },
   'interface ethernet': { menus: [], commands: ['print', 'enable', 'disable', 'export'] },
-  ip: { menus: ['address', 'route', 'firewall'], commands: ['export'] },
+  ip: { menus: ['address', 'route', 'firewall', 'pool', 'dhcp-server'], commands: ['export'] },
   'ip address': { menus: [], commands: ['add', 'print', 'remove', 'export'] },
   'ip route': { menus: [], commands: ['add', 'print', 'remove', 'export'] },
   system: { menus: ['identity'], commands: ['reboot'] },

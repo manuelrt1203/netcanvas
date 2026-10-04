@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BGP_DEMO, DEMO, L3_DEMO, NAT_DEMO, OSPF_DEMO, ROAS_DEMO } from '../examples.js';
+import { BGP_DEMO, DEMO, DHCP_DEMO, L3_DEMO, NAT_DEMO, OSPF_DEMO, ROAS_DEMO } from '../examples.js';
+import { computeLeases } from '../net/dhcp.js';
 import { runLine, shellFor } from './index.js';
 import { validate } from '../net/validate.js';
 import { simulatePing } from '../net/simulate.js';
@@ -468,4 +469,53 @@ test('mikrotik : NAT (masquerade et dst-nat)', () => {
   assert.ok(r.ok);
   assert.ok(r.log.some((l) => /destination 203\.0\.113\.1 traduite en 172\.16\.3\.10 \(dst-nat 203\.0\.113\.1 → 172\.16\.3\.10\)/.test(l.text)));
   assert.match(t.run('/export'), /\/ip firewall nat\nadd chain=srcnat action=masquerade out-interface=ether3\nadd chain=dstnat action=dst-nat dst-address=203\.0\.113\.1 in-interface=ether3 to-addresses=172\.16\.3\.10/);
+});
+
+test('ios : serveur DHCP et relais tapés à la main', () => {
+  const doc = structuredClone(DHCP_DEMO);
+  delete dev(doc, 'r1').config.dhcp;
+  delete iface(doc, 'r1', 'G0/0.20').helperAddress;
+  assert.ok(computeLeases(doc).get('pc1').error);
+  const t = session(doc, 'r1');
+  t.run('en', 'conf t', 'ip dhcp excluded-address 192.168.10.1 192.168.10.9', 'ip dhcp pool PROFS');
+  assert.equal(t.prompt(), 'R1(dhcp-config)#');
+  t.run('network 192.168.10.0 255.255.255.0', 'default-router 192.168.10.1', 'dns-server 8.8.8.8', 'exit',
+    'int g0/0.20', 'ip helper-address 192.168.30.10', 'end');
+  const leases = computeLeases(t.doc);
+  assert.equal(leases.get('pc1').ip, '192.168.10.10');
+  assert.equal(leases.get('pc3').ip, '192.168.20.2');
+  assert.match(t.run('show ip dhcp binding'), /^192\.168\.10\.10\s+PC Profs 1\s+--\s+Automatic$/m);
+  assert.doesNotMatch(t.run('show ip dhcp binding'), /192\.168\.20\.2/); // servi par le serveur, pas par R1
+  const run = t.run('show running-config');
+  assert.match(run, /interface GigabitEthernet0\/0\.20\n encapsulation dot1Q 20\n ip address 192\.168\.20\.1 255\.255\.255\.0\n ip helper-address 192\.168\.30\.10/);
+  assert.match(run, /ip dhcp excluded-address 192\.168\.10\.1 192\.168\.10\.9\nip dhcp pool PROFS\n network 192\.168\.10\.0 255\.255\.255\.0\n default-router 192\.168\.10\.1\n dns-server 8\.8\.8\.8/);
+});
+
+test('pc : ipconfig avec bail, APIPA, /release et /renew', () => {
+  const t = session(structuredClone(DHCP_DEMO), 'pc1');
+  assert.match(t.run('ipconfig'), /IPv4 Address\.+: 192\.168\.10\.10\n.*\n {3}Default Gateway\.+: 192\.168\.10\.1\n {3}DHCP Enabled\.+: Yes\n {3}DNS Servers\.+: 8\.8\.8\.8/);
+  t.run('ipconfig /release');
+  assert.deepEqual(dev(t.doc, 'pc1').config, { ip: null, mask: null, gateway: null });
+  assert.match(t.run('ipconfig /renew'), /IPv4 Address\.+: 192\.168\.10\.10/);
+  t.run('ipconfig 192.168.10.50 255.255.255.0 192.168.10.1');
+  assert.deepEqual(dev(t.doc, 'pc1').config, { ip: '192.168.10.50', mask: 24, gateway: '192.168.10.1' });
+
+  const broken = structuredClone(DHCP_DEMO);
+  delete iface(broken, 'r1', 'G0/0.20').helperAddress;
+  const p3 = session(broken, 'pc3');
+  assert.match(p3.run('ipconfig'), /Autoconfiguration IPv4 Address\.\.: 169\.254\.\d+\.\d+[\s\S]*NetCanvas : pas de bail DHCP, R1 G0\/0\.20 n'a ni pool DHCP/);
+});
+
+test('mikrotik : serveur DHCP en RouterOS', () => {
+  const doc = structuredClone(OSPF_DEMO);
+  dev(doc, 'srv').config = { ip: null, mask: null, gateway: null, dhcp: true };
+  const t = session(doc, 'r3');
+  t.run('/ip pool add name=serveurs ranges=172.16.3.100-172.16.3.200');
+  assert.match(t.run('/ip dhcp-server add interface=ether9x address-pool=serveurs'), /input does not match any value of interface/);
+  t.run('/ip dhcp-server add interface=ether2 address-pool=serveurs name=dhcp1',
+    '/ip dhcp-server network add address=172.16.3.0/24 gateway=172.16.3.1 dns-server=1.1.1.1');
+  assert.equal(computeLeases(t.doc).get('srv').ip, '172.16.3.100');
+  assert.match(t.run('/ip dhcp-server lease print'), / 0 {3}172\.16\.3\.100\s+Serveur\s+bound/);
+  assert.ok(simulatePing(t.doc, 'pc1', '172.16.3.100').ok);
+  assert.match(t.run('/export'), /\/ip pool\nadd name=serveurs ranges=172\.16\.3\.100-172\.16\.3\.200\n\/ip dhcp-server\nadd address-pool=serveurs interface=ether2 name=dhcp1\n\/ip dhcp-server network\nadd address=172\.16\.3\.0\/24 dns-server=1\.1\.1\.1 gateway=172\.16\.3\.1/);
 });

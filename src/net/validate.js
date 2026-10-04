@@ -2,9 +2,11 @@
 import { isBroadcastAddress, isNetworkAddress, isValidCidr, isValidIp, networkLabel, sameSubnet } from './ip.js';
 import { buildTopology, isHost } from './topology.js';
 import { computeRouting } from './routing.js';
+import { withLeases } from './dhcp.js';
 
 // ctx : topologie et routage déjà calculés par l'éditeur (évite de tout refaire)
-export function validate(doc, ctx = {}) {
+export function validate(rawDoc, ctx = {}) {
+  const doc = ctx.topo ? rawDoc : withLeases(rawDoc);
   const topo = ctx.topo ?? buildTopology(doc);
   const issues = [];
   const add = (device, level, text) => issues.push({ device, level, text });
@@ -77,6 +79,17 @@ export function validate(doc, ctx = {}) {
     for (const i of d.config?.interfaces ?? []) {
       for (const [dir, key] of [['entrée', 'aclIn'], ['sortie', 'aclOut']]) {
         if (i[key] && !d.config?.acls?.[i[key]]) add(d.id, 'warning', `${d.label} ${i.name} : l'ACL ${i[key]} appliquée en ${dir} n'existe pas, tout passe.`);
+      }
+    }
+  }
+
+  // DHCP : clients sans bail, et pools qui ne couvrent aucun réseau du serveur
+  for (const d of topo.devices.values()) {
+    if (d.config?.dhcpError) add(d.id, 'error', `${d.label} n'obtient pas d'adresse DHCP : ${d.config.dhcpError}.`);
+    for (const p of d.config?.dhcp?.pools ?? []) {
+      if (!isValidIp(p.network) || !isValidCidr(p.mask)) add(d.id, 'error', `${d.label} : le pool DHCP ${p.name ?? ''} n'a pas de réseau valide.`);
+      else if (p.defaultRouter && !sameSubnet(p.network, p.defaultRouter, Number(p.mask))) {
+        add(d.id, 'warning', `${d.label} : la passerelle ${p.defaultRouter} du pool ${p.name ?? p.network} est hors du réseau ${networkLabel(p.network, Number(p.mask))}.`);
       }
     }
   }

@@ -12,6 +12,7 @@ import { buildTopology, isHost, isL3Switch, isRouting } from './topology.js';
 import { isMikrotik, modelOf } from './catalog.js';
 import { evaluateAcl, evaluateFirewall } from './acl.js';
 import { destNat, isPrivate, natGlobals, sourceNat } from './nat.js';
+import { withLeases } from './dhcp.js';
 import { flood } from './l2.js';
 import { computeRouting, lookup } from './routing.js';
 
@@ -26,7 +27,9 @@ class SimError extends Error {
 
 // options : topo et routing déjà calculés (BGP vérifie ses sessions avec ce ping), srcIp imposée,
 //           oneWay : seulement l'aller (réponse ICMP d'un routeur pour traceroute)
-export function simulatePing(doc, sourceId, dstIp, options = {}) {
+export function simulatePing(rawDoc, sourceId, dstIp, options = {}) {
+  // Sans topologie fournie, on part du document effectif (clients DHCP avec leur bail)
+  const doc = options.topo ? rawDoc : withLeases(rawDoc);
   const topo = options.topo ?? buildTopology(doc);
   const routing = options.routing ?? computeRouting(doc, topo);
   const ctx = { topo, routing, natTable: [] }; // natTable : traductions faites pendant ce ping
@@ -199,6 +202,9 @@ function hostDecision(topo, id, dstIp, name) {
     );
   }
   if (!topo.isUp(iface.link)) throw new SimError(`${name(id)} : câble hors service. ${topo.status.get(iface.link).reason}`, id);
+  if (iface.dhcpError) {
+    throw new SimError(`${name(id)} n'a pas obtenu d'adresse DHCP : ${iface.dhcpError}. Il s'est donné ${iface.ip} (APIPA), sans passerelle.`, id);
+  }
   if (!isValidIp(iface.ip) || !isValidCidr(iface.mask)) {
     throw new SimError(`${name(id)} n'a pas d'adresse IP ou de masque valide.`, id);
   }

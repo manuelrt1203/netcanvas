@@ -274,11 +274,61 @@ Object.assign(NAT_DEMO.devices.find((d) => d.id === 'r1').config, {
   nat: { statics: [{ local: '192.168.1.100', global: '203.0.113.5' }], dynamic: [{ acl: '1', iface: 'G0/1', overload: true }] },
 });
 
+// DHCP : R1 distribue le VLAN 10 ; le VLAN 20 passe par un relais (ip helper-address) vers le serveur du VLAN 30.
+const dhcpPc = (id, label, x, y) => ({ id, type: 'pc', model: 'PC-PT', label, position: { x, y }, config: { ip: null, mask: null, gateway: null, dhcp: true } });
+export const DHCP_DEMO = {
+  format: 'netcanvas',
+  version: 3,
+  name: 'Démo : DHCP (serveur et relais)',
+  devices: [
+    dhcpPc('pc1', 'PC Profs 1', -192, 448),
+    dhcpPc('pc2', 'PC Profs 2', -32, 448),
+    dhcpPc('pc3', 'PC Élèves', 128, 448),
+    {
+      ...pc('srv', 'Serveur DHCP', '192.168.30.10', 24, '192.168.30.1', 288, 448, 'Server-PT', 'server'),
+    },
+    {
+      id: 'sw1', type: 'switch', model: '2960-24TT', label: 'SW1', position: { x: 48, y: 256 },
+      config: {
+        ports: [
+          { link: 'h1', name: 'Fa0/1', mode: 'access', vlan: 10 },
+          { link: 'h2', name: 'Fa0/2', mode: 'access', vlan: 10 },
+          { link: 'h3', name: 'Fa0/3', mode: 'access', vlan: 20 },
+          { link: 'h4', name: 'Fa0/4', mode: 'access', vlan: 30 },
+          { link: 'h5', name: 'G0/1', mode: 'trunk' },
+        ],
+        vlans: [{ id: 10, name: 'PROFS' }, { id: 20, name: 'ELEVES' }, { id: 30, name: 'SERVEURS' }],
+      },
+    },
+    router('r1', 'R1', '2911', 48, 32, [
+      ['h5', 'G0/0', null, null],
+      [null, 'G0/0.10', '192.168.10.1', 24, { parent: 'G0/0', vlan: 10 }],
+      [null, 'G0/0.20', '192.168.20.1', 24, { parent: 'G0/0', vlan: 20, helperAddress: '192.168.30.10' }],
+      [null, 'G0/0.30', '192.168.30.1', 24, { parent: 'G0/0', vlan: 30 }],
+    ]),
+  ],
+  links: [
+    link('h1', 'pc1', 'Fa0', 'sw1', 'Fa0/1', 'straight', ['t', 'b']),
+    link('h2', 'pc2', 'Fa0', 'sw1', 'Fa0/2', 'straight', ['t', 'b']),
+    link('h3', 'pc3', 'Fa0', 'sw1', 'Fa0/3', 'straight', ['t', 'b']),
+    link('h4', 'srv', 'Fa0', 'sw1', 'Fa0/4', 'straight', ['t', 'b']),
+    link('h5', 'r1', 'G0/0', 'sw1', 'G0/1', 'straight', ['b', 't']),
+  ],
+};
+DHCP_DEMO.devices.find((d) => d.id === 'r1').config.dhcp = {
+  pools: [{ name: 'PROFS', network: '192.168.10.0', mask: 24, defaultRouter: '192.168.10.1', dns: '8.8.8.8' }],
+  excluded: [['192.168.10.1', '192.168.10.9']],
+};
+DHCP_DEMO.devices.find((d) => d.id === 'srv').config.dhcp = {
+  pools: [{ name: 'ELEVES', network: '192.168.20.0', mask: 24, defaultRouter: '192.168.20.1', dns: '8.8.8.8' }],
+};
+
 export const DEMOS = [
   { id: 'vlan', label: '2 VLAN, 2 routeurs (statique)', doc: DEMO },
   { id: 'roas', label: 'Router-on-a-stick (802.1Q)', doc: ROAS_DEMO },
   { id: 'l3', label: 'Switch niveau 3 (SVI, ip routing)', doc: L3_DEMO },
   { id: 'nat', label: 'NAT / PAT (box, FAI, serveur publié)', doc: NAT_DEMO },
+  { id: 'dhcp', label: 'DHCP (serveur et relais)', doc: DHCP_DEMO },
   { id: 'ospf', label: 'OSPF 2 zones (Cisco + MikroTik)', doc: OSPF_DEMO },
   { id: 'bgp', label: 'BGP eBGP + iBGP', doc: BGP_DEMO },
 ];

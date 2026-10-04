@@ -14,6 +14,7 @@ Menu **Démos** :
 - **Router-on-a-stick** : un trunk 802.1Q entre le switch et R1, une sous-interface par VLAN ;
 - **Switch niveau 3** : un 3560 route 3 VLAN par ses interfaces VLAN (SVI) et sort vers Internet par R1 ;
 - **NAT / PAT** : une box en PAT, un serveur web local publié en NAT statique, un FAI qui ne connaît aucune adresse privée ;
+- **DHCP** : R1 distribue le VLAN 10, le VLAN 20 obtient ses adresses d'un serveur du VLAN 30 par relais (`ip helper-address`) ;
 - **OSPF 2 zones** : R1 en zone 1, R2 en ABR, un MikroTik en zone 0 qui annonce la route par défaut vers Internet ;
 - **BGP eBGP + iBGP** : AS 65001 (iBGP entre loopbacks, OSPF comme IGP) et un MikroTik dans l'AS 65002.
 
@@ -85,7 +86,15 @@ La particularité de NetCanvas reste là : un `ping` tapé dans un terminal s'an
 
 **NAT / PAT** : `ip nat inside|outside`, `ip nat inside source list N interface X overload` (PAT), `… pool NOM [overload]` + `ip nat pool`, `ip nat inside source static A B`, `show ip nat translations` ; MikroTik : `/ip firewall nat` (masquerade, src-nat, dst-nat). Ordre IOS respecté : ACL d'entrée, NAT de destination, routage, NAT de source, ACL de sortie. La réponse est dé-traduite par la table des traductions du ping. Le routeur répond en ARP pour ses adresses de NAT statique et de pool. Quand un routeur d'Internet reçoit un paquet vers une adresse privée, NetCanvas rappelle qu'il faut du NAT sur le routeur de bordure. Containerlab : `iptables -t nat` (MASQUERADE, SNAT, DNAT), vérifié par de vrais pings.
 
-Pas encore simulé (le terminal le dit) : EIGRP, DHCP, table ARP / MAC.
+**DHCP** :
+- **Serveurs** : routeur ou switch niveau 3 (`ip dhcp pool` : `network`, `default-router`, `dns-server` ; `ip dhcp excluded-address`), serveur Server-PT (formulaire), MikroTik (`/ip pool`, `/ip dhcp-server`, `/ip dhcp-server network`).
+- **Relais** : `ip helper-address`.
+- **Clients** : PC en « Automatique (DHCP) » ou `ipconfig /renew`.
+- **Attribution** : la demande est diffusée dans le VLAN du client. Le premier serveur ou relais répond, avec la première adresse libre du pool (sans les exclues, les adresses statiques ni les baux déjà donnés).
+- **Échec** : le PC prend une adresse 169.254.x.x (APIPA), et NetCanvas explique pourquoi (pas de serveur ni de relais dans le VLAN, relais vers une adresse injoignable, pas de pool pour le réseau du relais, pool épuisé).
+- **Affichage** : `show ip dhcp binding`, `/ip dhcp-server lease print`, `ipconfig` avec le serveur DNS. Containerlab installe les baux calculés.
+
+Pas encore simulé (le terminal le dit) : EIGRP, table ARP / MAC.
 
 ## Matériel et câblage (`src/net/catalog.js`, `src/net/cabling.js`)
 
@@ -171,7 +180,7 @@ Les fichiers v1 et v2 s'importent toujours : le modèle est déduit des ports ut
 ## Tests
 
 ```bash
-npm test           # 122 tests : calculs IP, ping, validation, JSON, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
+npm test           # 134 tests : calculs IP, ping, validation, JSON, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
 npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : édition, contrôles, ping, persistance, exports, câblage, terminaux (IOS, RouterOS, PC), démos OSPF et BGP (show ip ospf neighbor, next-hop-self retiré)
 ```
 
@@ -179,5 +188,5 @@ npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : éditi
 
 ## Prochaines étapes
 
-1. Simulation : DHCP, tables ARP / MAC.
+1. Simulation : tables ARP / MAC, DNS.
 2. Backend + base (PostgreSQL `jsonb`), liens partageables et page `/embed/:id`.

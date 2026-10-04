@@ -2,31 +2,34 @@
 import { tokenize } from './engine.js';
 import { maskToCidr, ping } from './device.js';
 import { traceroute } from '../net/traceroute.js';
+import { withLeases } from '../net/dhcp.js';
 import { cidrToMask, isBroadcastAddress, isNetworkAddress, isValidCidr, isValidIp, sameSubnet } from '../net/ip.js';
 
 const HELP = [
   'Commandes disponibles :',
   '  ipconfig                         affiche la configuration IP',
   '  ipconfig <ip> <masque> [passerelle]  configure l\'adresse IP',
+  '  ipconfig /renew | /release       adresse par DHCP / rendre l\'adresse',
   '  ping <ip> [-n nombre]            envoie des echo request',
   '  tracert <ip>                     routeurs traversés jusqu\'à la destination',
   '  cls                              efface l\'écran',
   '',
 ];
 
-function ipconfig(dev) {
-  const c = dev.config ?? {};
+// c : configuration effective (bail DHCP appliqué)
+function ipconfig(c, all = false) {
   const ok = isValidIp(c.ip) && isValidCidr(c.mask);
-  return [
-    '',
-    'FastEthernet0 Connection:(default port)',
-    '',
-    '   Connection-specific DNS Suffix..: ',
-    `   IPv4 Address....................: ${ok ? c.ip : '0.0.0.0'}`,
-    `   Subnet Mask.....................: ${ok ? cidrToMask(c.mask) : '0.0.0.0'}`,
-    `   Default Gateway.................: ${isValidIp(c.gateway) ? c.gateway : '0.0.0.0'}`,
-    '',
-  ];
+  const lines = ['', 'FastEthernet0 Connection:(default port)', '', '   Connection-specific DNS Suffix..: '];
+  if (c.dhcpError) {
+    lines.push(`   Autoconfiguration IPv4 Address..: ${c.ip}`, `   Subnet Mask.....................: ${cidrToMask(c.mask)}`,
+      '   Default Gateway.................: 0.0.0.0', '', `NetCanvas : pas de bail DHCP, ${c.dhcpError}.`);
+  } else {
+    lines.push(`   IPv4 Address....................: ${ok ? c.ip : '0.0.0.0'}`, `   Subnet Mask.....................: ${ok ? cidrToMask(c.mask) : '0.0.0.0'}`,
+      `   Default Gateway.................: ${isValidIp(c.gateway) ? c.gateway : '0.0.0.0'}`);
+    if (all || c.lease) lines.push(`   DHCP Enabled....................: ${c.dhcp ? 'Yes' : 'No'}`);
+    if (c.lease?.dns) lines.push(`   DNS Servers.....................: ${c.lease.dns}`);
+  }
+  return [...lines, ''];
 }
 
 export const host = {
@@ -48,8 +51,24 @@ export const host = {
         ctx.effects.push({ type: 'clear' });
         break;
       case 'ipconfig': {
-        if (!args.length || args[0].toLowerCase() === '/all') {
-          out.push(...ipconfig(dev));
+        const live = () => withLeases(ctx.doc).devices.find((d) => d.id === dev.id)?.config ?? dev.config ?? {};
+        const flag = args[0]?.toLowerCase();
+        if (!args.length || flag === '/all') {
+          out.push(...ipconfig(live(), flag === '/all'));
+          break;
+        }
+        if (flag === '/renew') {
+          // Passe en DHCP : le bail est calculé sur le schéma avec ce PC en client
+          dev.config = { ip: null, mask: null, gateway: null, dhcp: true };
+          ctx.changed = true;
+          const eff = withLeases({ ...doc, devices: doc.devices.map((d) => (d.id === dev.id ? dev : d)) }).devices.find((d) => d.id === dev.id).config;
+          out.push(...ipconfig(eff));
+          break;
+        }
+        if (flag === '/release') {
+          dev.config = { ip: null, mask: null, gateway: null };
+          ctx.changed = true;
+          out.push('', '   IP Address......................: 0.0.0.0', '   Subnet Mask.....................: 0.0.0.0', '');
           break;
         }
         const [ip, mask, gw] = args;
@@ -66,7 +85,8 @@ export const host = {
           out.push(`Invalid gateway: ${gw} n'est pas dans le réseau de ${ip}/${cidr}.`, '');
           break;
         }
-        dev.config = { ...dev.config, ip, mask: cidr, gateway: gw ?? dev.config?.gateway ?? null };
+        const { dhcp, ...rest } = dev.config ?? {};
+        dev.config = { ...rest, ip, mask: cidr, gateway: gw ?? (dhcp === true ? null : rest.gateway) ?? null };
         ctx.changed = true;
         break;
       }

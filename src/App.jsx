@@ -27,6 +27,7 @@ import { traceroute } from './net/traceroute.js';
 import { validate } from './net/validate.js';
 import { HOST_TYPES, buildTopology } from './net/topology.js';
 import { computeRouting } from './net/routing.js';
+import { withLeases } from './net/dhcp.js';
 import { CABLES, MODELS, TYPES } from './net/catalog.js';
 import { pickPorts } from './net/cabling.js';
 import { EMPTY_SIM, LinkContext, SimContext } from './SimContext.js';
@@ -97,10 +98,11 @@ function Editor() {
   const timer = useRef(null);
 
   const doc = useMemo(() => toJSON(nodes, edges, name), [nodes, edges, name]);
-  // Topologie et routage calculés une fois par modification, partagés par les contrôles et l'affichage
-  const topo = useMemo(() => buildTopology(doc), [doc]);
-  const routing = useMemo(() => computeRouting(doc, topo), [doc, topo]);
-  const issues = useMemo(() => validate(doc, { topo, routing }), [doc, topo, routing]);
+  // Document effectif (clients DHCP avec leur bail), topologie et routage : calculés une fois par modification
+  const live = useMemo(() => withLeases(doc), [doc]);
+  const topo = useMemo(() => buildTopology(live), [live]);
+  const routing = useMemo(() => computeRouting(live, topo), [live, topo]);
+  const issues = useMemo(() => validate(live, { topo, routing }), [live, topo, routing]);
   const linkStatus = topo.status;
   const labels = useMemo(() => new Map(nodes.map((n) => [n.id, n.data.label])), [nodes]);
   const selectedNodes = nodes.filter((n) => n.selected);
@@ -376,15 +378,15 @@ function Editor() {
 
   // Un ping tapé dans un terminal s'anime aussi sur le plan
   const pingFromTerminal = (src, dst) => {
-    const result = simulatePing(doc, src, dst);
+    const result = simulatePing(live, src, dst, { topo, routing });
     setSim({ result, sig: configSig(doc), playing: false, view: EMPTY_SIM });
     play(result);
   };
 
   // Ping ou traceroute (la trace réutilise l'animation du ping)
   const runSim = (src, dst, mode = 'ping') => {
-    const result = simulatePing(doc, src, dst, { topo, routing });
-    if (mode === 'trace') result.trace = traceroute(doc, src, dst);
+    const result = simulatePing(live, src, dst, { topo, routing });
+    if (mode === 'trace') result.trace = traceroute(live, src, dst);
     setSim({ result, sig: configSig(doc), playing: false, view: EMPTY_SIM });
     play(result);
   };
@@ -587,6 +589,7 @@ function Editor() {
                 <DeviceInspector key={selected.id} node={selected} edges={edges} labels={labels}
                   update={updateNode(selected.id)} onDelete={deleteSelected} mode={configMode} onMode={setConfigMode}
                   routing={routing.routers.get(selected.id)} issues={issues.filter((i) => i.device === selected.id)}
+                  live={live.devices.find((d) => d.id === selected.id)?.config}
                   terminal={hasTerminal(selectedDevice) && (
                     <Suspense fallback={<p className="hint">Chargement du terminal…</p>}>
                       <Terminal key={selected.id} device={selectedDevice} doc={doc} sessions={sessions.current}
@@ -608,7 +611,7 @@ function Editor() {
                   {sim.result && sim.sig !== configSig(doc) && (
                     <p className="notice">Le schéma a changé depuis cette simulation. Relance-la.</p>
                   )}
-                  <SimPanel doc={doc} form={simForm} setForm={setSimForm} result={sim.result} playing={sim.playing}
+                  <SimPanel doc={live} form={simForm} setForm={setSimForm} result={sim.result} playing={sim.playing}
                     onRun={runSim} onReplay={() => play(sim.result)} onReset={resetSim} />
                 </>
               )}

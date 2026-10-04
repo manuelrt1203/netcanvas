@@ -5,6 +5,7 @@ import { pad } from './device.js';
 import { cidrToWildcard, computeRouting, prefixText, wildcardToCidr } from '../net/routing.js';
 import { formatIp, isValidIp, networkOf, sameSubnet, splitCidr } from '../net/ip.js';
 import { firewallRuleText, parseFirewallRule } from '../net/acl.js';
+import { computeLeases } from '../net/dhcp.js';
 import { buildTopology } from '../net/topology.js';
 
 const natRuleText = (r) => [
@@ -28,6 +29,10 @@ export const ROUTING_MENUS = {
   'routing bgp session': { menus: [], commands: ['print'] },
   'ip firewall': { menus: ['address-list', 'filter', 'nat'], commands: [] },
   'ip firewall nat': { menus: [], commands: ['add', 'print', 'remove'] },
+  'ip pool': { menus: [], commands: ['add', 'print', 'remove'] },
+  'ip dhcp-server': { menus: ['network', 'lease'], commands: ['add', 'print', 'remove'] },
+  'ip dhcp-server network': { menus: [], commands: ['add', 'print', 'remove'] },
+  'ip dhcp-server lease': { menus: [], commands: ['print'] },
   'ip firewall filter': { menus: [], commands: ['add', 'print', 'remove'] },
   'ip firewall address-list': { menus: [], commands: ['add', 'print', 'remove'] },
 };
@@ -58,6 +63,11 @@ export function runRouting(ctx, p) {
   const cfg = (dev.config ??= {});
   const n = p.named;
   const changed = () => { ctx.changed = true; };
+  const dhcpCfg = () => {
+    if (!cfg.dhcp || cfg.dhcp === true) cfg.dhcp = { pools: [] };
+    return cfg.dhcp;
+  };
+  const ifaceExists = (name) => (cfg.interfaces ?? []).some((i) => i.name === name) || /^ether\d+$|^sfp/.test(name);
   const where = `${p.path.join(' ')}|${p.command}`;
 
   switch (where) {
@@ -281,6 +291,50 @@ export function runRouting(ctx, p) {
       return true;
     }
 
+    // --- DHCP ------------------------------------------------------------------------
+    case 'ip pool|add': {
+      const [a, b] = (n.ranges ?? '').split('-');
+      if (!n.name || !isValidIp(a) || !isValidIp(b ?? a)) return out.push('failure: name et ranges=début-fin attendus', ''), true;
+      (dhcpCfg().ranges ??= {})[n.name] = [a, b ?? a];
+      changed();
+      return true;
+    }
+    case 'ip pool|print':
+      out.push(` #   ${pad('NAME', 20)}RANGES`);
+      Object.entries(dhcpCfg().ranges ?? {}).forEach(([name, [a, b]], i) => out.push(` ${pad(i, 4)}${pad(name, 20)}${a}-${b}`));
+      return out.push(''), true;
+    case 'ip dhcp-server|add': {
+      if (!n.interface || !ifaceExists(n.interface)) return out.push('input does not match any value of interface', ''), true;
+      if (n['address-pool'] && !dhcpCfg().ranges?.[n['address-pool']]) return out.push('input does not match any value of address-pool', ''), true;
+      (dhcpCfg().servers ??= []).push({ name: n.name ?? `dhcp${(dhcpCfg().servers ?? []).length + 1}`, iface: n.interface, pool: n['address-pool'] });
+      changed();
+      return true;
+    }
+    case 'ip dhcp-server|print':
+      out.push(` #   ${pad('NAME', 12)}${pad('INTERFACE', 12)}ADDRESS-POOL`);
+      (dhcpCfg().servers ?? []).forEach((x, i) => out.push(` ${pad(i, 4)}${pad(x.name, 12)}${pad(x.iface, 12)}${x.pool ?? 'static-only'}`));
+      return out.push(''), true;
+    case 'ip dhcp-server network|add': {
+      const s = splitCidr(n.address ?? '');
+      if (!s) return out.push('failure: address=réseau/masque attendu', ''), true;
+      (dhcpCfg().pools ??= []).push({ name: `${s.ip}/${s.cidr}`, network: formatIp(networkOf(s.ip, s.cidr)), mask: s.cidr, defaultRouter: n.gateway, dns: n['dns-server'] });
+      changed();
+      return true;
+    }
+    case 'ip dhcp-server network|print':
+      out.push(` #   ${pad('ADDRESS', 20)}${pad('GATEWAY', 16)}DNS-SERVER`);
+      (dhcpCfg().pools ?? []).forEach((x, i) => out.push(` ${pad(i, 4)}${pad(`${x.network}/${x.mask}`, 20)}${pad(x.defaultRouter ?? '', 16)}${x.dns ?? ''}`));
+      return out.push(''), true;
+    case 'ip dhcp-server lease|print': {
+      out.push(` #   ${pad('ADDRESS', 17)}${pad('HOST-NAME', 20)}STATUS`);
+      let i = 0;
+      for (const [id, l] of computeLeases(doc)) {
+        if (l.server !== dev.id) continue;
+        out.push(` ${pad(i++, 4)}${pad(l.ip, 17)}${pad(doc.devices.find((d) => d.id === id)?.label ?? id, 20)}bound`);
+      }
+      return out.push(''), true;
+    }
+
     // --- NAT -------------------------------------------------------------------------
     case 'ip firewall nat|add': {
       const rule = {
@@ -367,6 +421,12 @@ export function routingScript(dev) {
   const out = [];
   if (cfg.firewall?.length) out.push('/ip firewall filter', ...cfg.firewall.map((r) => `add ${firewallRuleText(r)}`));
   if (cfg.natRules?.length) out.push('/ip firewall nat', ...cfg.natRules.map((r) => `add ${natRuleText(r)}`));
+  const dh = cfg.dhcp && cfg.dhcp !== true ? cfg.dhcp : null;
+  if (dh?.ranges) out.push('/ip pool', ...Object.entries(dh.ranges).map(([name, [a, b]]) => `add name=${name} ranges=${a}-${b}`));
+  if (dh?.servers?.length) out.push('/ip dhcp-server', ...dh.servers.map((x) => `add ${x.pool ? `address-pool=${x.pool} ` : ''}interface=${x.iface} name=${x.name}`));
+  if (dh?.pools?.length) {
+    out.push('/ip dhcp-server network', ...dh.pools.map((x) => `add address=${x.network}/${x.mask}${x.dns ? ` dns-server=${x.dns}` : ''}${x.defaultRouter ? ` gateway=${x.defaultRouter}` : ''}`));
+  }
   const o = cfg.ospf;
   if (o) {
     const instance = o.instance ?? 'default-v2';

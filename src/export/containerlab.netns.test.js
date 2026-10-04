@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { BGP_DEMO, DEMO, L3_DEMO, NAT_DEMO, OSPF_DEMO, ROAS_DEMO } from '../examples.js';
+import { BGP_DEMO, DEMO, DHCP_DEMO, L3_DEMO, NAT_DEMO, OSPF_DEMO, ROAS_DEMO } from '../examples.js';
 import { isRouting } from '../net/topology.js';
 import { simulatePing } from '../net/simulate.js';
 import { clabCommands } from './containerlab.js';
@@ -171,4 +171,9 @@ test('containerlab : NAT/PAT et NAT statique (iptables -t nat)', { skip }, () =>
   const off = structuredClone(NAT_DEMO);
   for (const i of off.devices.find((d) => d.id === 'r1').config.interfaces) delete i.natInside;
   assertMatchesSimulator(off, [['pc1', '198.51.100.10', false]]);
+});
+
+test('containerlab : DHCP (baux calculés installés, relais compris)', { skip }, () => {
+  // PC1 : 192.168.10.10 (pool de R1), PC3 : 192.168.20.2 (serveur via relais)
+  assertMatchesSimulator(structuredClone(DHCP_DEMO), [['pc1', '192.168.20.2', true], ['pc3', '192.168.30.10', true]]);
 });

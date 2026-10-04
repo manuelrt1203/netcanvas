@@ -6,6 +6,7 @@ import { CABLES, CLOCK_RATES, MEDIA_LABEL, MODELS, MODULES, TYPES, devicePorts, 
 import { useLinkStatus } from './SimContext.js';
 import { LoopbacksForm, RoutingForm, SubInterfaces } from './RoutingForm.jsx';
 import { InterfaceSecurity, SecurityForm } from './SecurityForm.jsx';
+import { DhcpClientStatus, DhcpServerForm } from './DhcpForm.jsx';
 
 const otherEnd = (e, id) => (e.source === id ? e.target : e.source);
 // Côté DCE d'une liaison série : l'équipement source, sauf indication contraire
@@ -59,19 +60,40 @@ function IpCidrFields({ ip, mask, onChange, ipLabel = 'Adresse IP' }) {
   );
 }
 
-function HostForm({ node, update }) {
+function HostForm({ node, update, live, labels }) {
   const d = node.data;
+  const isClient = d.dhcp === true;
   return (
     <>
-      <IpCidrFields ip={d.ip} mask={d.mask} onChange={(patch) => update((x) => ({ ...x, ...patch }))} />
-      <Field
-        label="Passerelle par défaut"
-        placeholder="192.168.1.254"
-        value={d.gateway ?? ''}
-        error={ipError(d.gateway)}
-        inputMode="decimal"
-        onChange={(e) => update((x) => ({ ...x, gateway: e.target.value.trim() }))}
-      />
+      <div className="field">
+        <label htmlFor={`addr-${node.id}`}>Adressage</label>
+        <select id={`addr-${node.id}`} value={isClient ? 'dhcp' : 'static'}
+          onChange={(e) => update((x) => {
+            const { dhcp, ...rest } = x;
+            // Un serveur DHCP (Server-PT) garde ses pools en adressage statique
+            if (e.target.value === 'dhcp') return { ...rest, dhcp: true, ip: '', mask: '', gateway: '' };
+            return dhcp && dhcp !== true ? x : rest;
+          })}>
+          <option value="static">Statique</option>
+          <option value="dhcp">Automatique (DHCP)</option>
+        </select>
+      </div>
+      {isClient ? (
+        <DhcpClientStatus live={live} labels={labels} />
+      ) : (
+        <>
+          <IpCidrFields ip={d.ip} mask={d.mask} onChange={(patch) => update((x) => ({ ...x, ...patch }))} />
+          <Field
+            label="Passerelle par défaut"
+            placeholder="192.168.1.254"
+            value={d.gateway ?? ''}
+            error={ipError(d.gateway)}
+            inputMode="decimal"
+            onChange={(e) => update((x) => ({ ...x, gateway: e.target.value.trim() }))}
+          />
+        </>
+      )}
+      {node.type === 'server' && !isClient && <DhcpServerForm node={node} update={update} />}
     </>
   );
 }
@@ -124,6 +146,10 @@ function RouterForm({ node, edges, labels, update, routing, issues }) {
             </legend>
             <IpCidrFields ip={p.ip} mask={p.mask} onChange={(patch) => patchIface(p, patch)} />
             <InterfaceSecurity node={node} name={p.name} patch={(patch) => patchIface(p, patch)} />
+            {!serial && !MODELS[modelId({ type: node.type, model: node.data.model })].vendor && (
+              <Field label="Relais DHCP (ip helper-address)" placeholder="adresse du serveur DHCP" value={p.helperAddress ?? ''} error={ipError(p.helperAddress)}
+                onChange={(e) => patchIface(p, { helperAddress: e.target.value.trim() || undefined })} />
+            )}
             {!serial && <SubInterfaces node={node} parent={p.name} update={update} />}
             {dce && <ClockRate link={p.link} value={p.clockRate} onChange={(clockRate) => patchIface(p, { clockRate })} />}
             {node.data.ospf && (
@@ -138,6 +164,7 @@ function RouterForm({ node, edges, labels, update, routing, issues }) {
       <LoopbacksForm node={node} update={update} />
       <RoutingForm node={node} update={update} ports={ports} state={routing} />
       <SecurityForm node={node} update={update} issues={issues} ifaceNames={ports.map((p) => p.name)} />
+      <DhcpServerForm node={node} update={update} />
     </>
   );
 }
@@ -226,6 +253,7 @@ function SwitchForm({ node, edges, labels, update, routing }) {
       {l3 && node.data.ipRouting ? (
         <>
           <StaticRoutes routes={node.data.routes ?? []} update={update} />
+          <DhcpServerForm node={node} update={update} />
           <RoutingForm node={node} update={update} state={routing}
             ports={Object.keys(node.data.ifaces ?? {}).filter((n) => /^Vlan\d+$/.test(n)).map((name) => ({ name }))} />
         </>
@@ -342,7 +370,7 @@ function ModeSwitch({ mode, onMode, vendor }) {
   );
 }
 
-export function DeviceInspector({ node, edges, labels, update, onDelete, mode, onMode, terminal, routing, issues }) {
+export function DeviceInspector({ node, edges, labels, update, onDelete, mode, onMode, terminal, routing, issues, live }) {
   const Form = HOST_TYPES.has(node.type) ? HostForm : node.type === 'router' ? RouterForm : node.type === 'switch' ? SwitchForm : null;
   const vendor = HOST_TYPES.has(node.type) ? node.type : MODELS[modelId({ type: node.type, model: node.data.model })].vendor;
   if (terminal && mode === 'terminal') {
@@ -361,7 +389,7 @@ export function DeviceInspector({ node, edges, labels, update, onDelete, mode, o
       {terminal && <ModeSwitch mode={mode} onMode={onMode} vendor={vendor} />}
       <Field label="Nom" value={node.data.label} onChange={(e) => update((d) => ({ ...d, label: e.target.value }))} />
       <Hardware node={node} edges={edges} update={update} />
-      {Form ? <Form node={node} edges={edges} labels={labels} update={update} routing={routing} issues={issues} /> : <p className="hint">Un hub répète chaque trame sur tous ses ports : rien à configurer.</p>}
+      {Form ? <Form node={node} edges={edges} labels={labels} update={update} routing={routing} issues={issues} live={live} /> : <p className="hint">Un hub répète chaque trame sur tous ses ports : rien à configurer.</p>}
       <button type="button" className="danger" onClick={onDelete}>Supprimer l'équipement</button>
     </>
   );

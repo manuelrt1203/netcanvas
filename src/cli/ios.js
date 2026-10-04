@@ -4,8 +4,9 @@ import { dataPorts, ensureEntry, getEntry, linkOf, maskToCidr, pad, ping, withDe
 import { buildTopology, isLoopbackName } from '../net/topology.js';
 import { cidrToMask, formatIp, isBroadcastAddress, isNetworkAddress, isValidIp, networkOf, parseIp, sameSubnet } from '../net/ip.js';
 import { isSviName, modelOf } from '../net/catalog.js';
-import { hostname as iosHostname, iosAclLines, iosInterfaceExtras, iosLongName, iosNatLines, iosRoutingLines } from '../export/cisco.js';
+import { hostname as iosHostname, iosAclLines, iosInterfaceExtras, iosDhcpLines, iosLongName, iosNatLines, iosRoutingLines } from '../export/cisco.js';
 import { traceroute } from '../net/traceroute.js';
+import { dhcpConfigCommand, dhcpTree, helperCommands, showDhcp } from './ios-dhcp.js';
 import { natConfigCommand, natInterfaceCommands, showNatTranslations } from './ios-nat.js';
 import { accessGroupCommands, aclConfigCommands, aclShows, aclTree, showAccessLists } from './ios-acl.js';
 import { bgpTree, interfaceRoutingCommands, ospfTree, ripTree, routeFilters, routerCommands, routingShows, showIpRoute } from './ios-routing.js';
@@ -111,7 +112,7 @@ function runningConfig(dev) {
     for (const r of c.routes ?? []) {
       if (isValidIp(r.network) && r.mask != null && isValidIp(r.nextHop)) lines.push(`ip route ${r.network} ${cidrToMask(r.mask)} ${r.nextHop}`);
     }
-    lines.push(...iosRoutingLines(c), ...iosAclLines(c), '!');
+    lines.push(...iosDhcpLines(c), ...iosRoutingLines(c), ...iosAclLines(c), '!');
   } else {
     for (const p of allInterfaces(dev)) {
       const e = getEntry(dev, p.name);
@@ -125,6 +126,7 @@ function runningConfig(dev) {
       lines.push('!');
     }
     lines.push(...iosRoutingLines(dev.config ?? {}));
+    lines.push(...iosDhcpLines(dev.config ?? {}));
     lines.push(...iosNatLines(dev.config ?? {}));
     lines.push(...iosAclLines(dev.config ?? {}));
     lines.push('ip classless');
@@ -309,6 +311,12 @@ function showTree(dev) {
           children: routeFilters(),
         }), ...routingShows()] : []),
         kw('access-lists', 'List IP access lists', { run: (c) => c.out.push(...showAccessLists(c.dev)) }),
+        kw('dhcp', 'Show items in the DHCP database', {
+          children: [
+            kw('binding', 'DHCP address bindings', { run: (c) => c.out.push(...showDhcp(c.dev, c.doc, 'binding')) }),
+            kw('pool', 'DHCP pools information', { run: (c) => c.out.push(...showDhcp(c.dev, c.doc, 'pool')) }),
+          ],
+        }),
         ...(isSwitch ? [] : [kw('nat', 'IP NAT information', { children: [kw('translations', 'Translation entries', { run: (c) => c.out.push(...showNatTranslations(c.dev)) })] })]),
       ],
     }),
@@ -416,7 +424,7 @@ function configTree(dev) {
         ...(!isSwitch || modelOf(dev).l3 ? [kw('route', 'Establish static routes', { children: [routeArgs(addRoute)] })] : []),
         kw('domain-lookup', 'Enable IP Domain Name System hostname translation', { run() {} }),
         accept('domain-name', 'Define the default domain name'),
-        kw('dhcp', 'Configure DHCP server and relay parameters', { run: (c) => c.out.push(...NOT_SIMULATED('DHCP')), children: [rest('x', 'LINE', '', (c) => c.out.push(...NOT_SIMULATED('DHCP')))] }),
+        ...(!isSwitch || modelOf(dev).l3 ? [dhcpConfigCommand()] : []),
         kw('routing', 'Enable IP routing', { run: (c) => setIpRouting(c, true) }),
       ],
     }),
@@ -437,6 +445,7 @@ function configTree(dev) {
             kw('domain-lookup', 'Enable IP Domain Name System hostname translation', { run() {} }),
             aclConfigCommands().noIpNamed,
             natConfigCommand(true),
+            dhcpConfigCommand(true),
           ],
         })]),
         ...(isSwitch ? [
@@ -563,7 +572,7 @@ function interfaceTree(dev) {
     children.push(kw('ip', 'Interface Internet Protocol config commands', {
       children: [kw('address', 'Set the IP address of an interface', {
         children: [arg('ip', 'A.B.C.D', 'IP address', isIp, { children: [arg('mask', 'A.B.C.D', 'IP subnet mask', isIp, { run: onSvi(setIpAddress) })] })],
-      }), accessGroupCommands(forIfaces).add],
+      }), accessGroupCommands(forIfaces).add, helperCommands(forIfaces).add],
     }));
     no.push(kw('ip', '', { children: [kw('address', '', { run: onSvi((c) => forIfaces(c, (e) => { e.ip = null; e.mask = null; })) }), accessGroupCommands(forIfaces).remove] }));
     children.push(
@@ -597,7 +606,7 @@ function interfaceTree(dev) {
           kw('address', 'Set the IP address of an interface', {
             children: [arg('ip', 'A.B.C.D', 'IP address', isIp, { children: [arg('mask', 'A.B.C.D', 'IP subnet mask', isIp, { run: setIpAddress })] })],
           }),
-          kw('helper-address', 'Specify a destination address for UDP broadcasts', { children: [arg('x', 'A.B.C.D', '', isIp, { run: (c) => c.out.push(...NOT_SIMULATED('le relais DHCP')) })] }),
+          helperCommands(forIfaces).add,
           interfaceRoutingCommands(forIfaces).ipOspf,
           accessGroupCommands(forIfaces).add,
           natInterfaceCommands(forIfaces).add,
@@ -627,7 +636,7 @@ function interfaceTree(dev) {
       }),
     );
     no.push(
-      kw('ip', '', { children: [kw('address', 'Set the IP address of an interface', { run: (c) => forIfaces(c, (e) => { e.ip = null; e.mask = null; }) }), interfaceRoutingCommands(forIfaces).noIpOspf, accessGroupCommands(forIfaces).remove, natInterfaceCommands(forIfaces).remove] }),
+      kw('ip', '', { children: [kw('address', 'Set the IP address of an interface', { run: (c) => forIfaces(c, (e) => { e.ip = null; e.mask = null; }) }), interfaceRoutingCommands(forIfaces).noIpOspf, accessGroupCommands(forIfaces).remove, natInterfaceCommands(forIfaces).remove, helperCommands(forIfaces).remove] }),
       interfaceRoutingCommands(forIfaces).noBandwidth,
       kw('clock', '', { children: [kw('rate', '', { run: (c) => forIfaces(c, (e) => { delete e.clockRate; }) })] }),
     );
@@ -682,12 +691,13 @@ const TREES = {
   'router-rip': (d) => ripTree([endCmd(), doCmd(d)]),
   'router-bgp': (d) => bgpTree([endCmd(), doCmd(d)]),
   'acl-std': (d) => aclTree([endCmd(), doCmd(d)]),
+  dhcp: (d) => dhcpTree([endCmd(), doCmd(d)]),
   'acl-ext': (d) => aclTree([endCmd(), doCmd(d)]),
 };
 
 const SUFFIX = { user: '>', priv: '#', config: '(config)#', if: '(config-if)#', 'if-range': '(config-if-range)#', vlan: '(config-vlan)#', line: '(config-line)#',
   'router-ospf': '(config-router)#', 'router-rip': '(config-router)#', 'router-bgp': '(config-router)#',
-  'acl-std': '(config-std-nacl)#', 'acl-ext': '(config-ext-nacl)#' };
+  'acl-std': '(config-std-nacl)#', 'acl-ext': '(config-ext-nacl)#', dhcp: '(dhcp-config)#' };
 
 export const ios = {
   banner: (dev) => [`${modelOf(dev).label} : terminal IOS simulé. Tape « ? » pour l'aide, Tab pour compléter.`, ''],
