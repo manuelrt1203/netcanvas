@@ -119,6 +119,13 @@ Commandes :
 - PC : `arp -a`, `arp -d` ;
 - RouterOS : `/ip arp print`, `/interface print` (colonne MAC-ADDRESS).
 
+**Simulation pas à pas** (bouton « Pas à pas », ou « Revoir trame par trame » après un ping) : le ping est découpé en trames, comme le mode Simulation de Packet Tracer :
+- la requête ARP diffusée allume tous les câbles qu'elle parcourt, puis la réponse revient ;
+- chaque trame ICMP avance d'un câble à la fois ;
+- au retour, plus d'ARP : les deux côtés ont appris les adresses à l'aller.
+
+Pour chaque trame, on voit les en-têtes (Ethernet II, 802.1Q sur un trunk, ARP, HDLC sur une liaison série, IPv4, ICMP) et ce que l'équipement émetteur a décidé (route choisie, NAT, ACL). On y suit la réécriture des MAC à chaque routeur, le TTL qui baisse et l'adresse source changée par le NAT. Navigation au clavier avec les flèches ← →.
+
 **Onglet Tables** : toutes les tables de l'équipement sélectionné (routage, cache ARP, table MAC, traductions NAT, baux DHCP distribués, voisins OSPF, sessions BGP), avec l'âge et l'expiration de chaque entrée, et un bouton « Vider ». Disponible aussi en lecture seule.
 
 Pas encore simulé (le terminal le dit) : EIGRP, STP, DNS.
@@ -244,7 +251,7 @@ Les fichiers v1 et v2 s'importent toujours : le modèle est déduit des ports ut
 ## Tests
 
 ```bash
-npm test           # 151 tests : calculs IP, ping, validation, JSON, TP, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
+npm test           # 154 tests : calculs IP, ping, validation, JSON, TP, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
 npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : édition, contrôles, ping, persistance, exports, câblage, terminaux (IOS, RouterOS, PC), démos OSPF et BGP (show ip ospf neighbor, next-hop-self retiré)
 ```
 

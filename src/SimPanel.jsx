@@ -2,9 +2,61 @@ import { useMemo } from 'react';
 import { buildTopology, isHost } from './net/topology.js';
 
 const CUSTOM = '__custom__';
+const KIND = { 'arp-request': 'ARP', 'arp-reply': 'ARP', icmp: 'ICMP', done: 'Fin', drop: 'Perdu' };
+
+// Simulation pas à pas : liste des trames, en-têtes de la trame choisie, décisions de l'équipement
+function Stepper({ frames, step, onStep, labels }) {
+  const frame = frames[step];
+  const label = (id) => labels.get(id) ?? id;
+  const route = (f) => (f.hops.length ? `${label(f.hops[0].from)} → ${f.hops.length > 1 && f.kind === 'arp-request' ? 'diffusion' : label(f.at)}` : label(f.at));
+  return (
+    <section className="stepper" aria-label="Simulation pas à pas (flèches gauche et droite)"
+      onKeyDown={(e) => {
+        if (e.key === 'ArrowRight' && step < frames.length - 1) onStep(step + 1);
+        else if (e.key === 'ArrowLeft' && step > 0) onStep(step - 1);
+        else return;
+        e.preventDefault();
+      }}>
+      <div className="stepper-bar">
+        <button type="button" className="ghost small-btn" disabled={step === 0} onClick={() => onStep(step - 1)} aria-label="Trame précédente">◀</button>
+        <span className="stepper-count">Trame {step + 1} / {frames.length}</span>
+        <button type="button" className="ghost small-btn" disabled={step === frames.length - 1} onClick={() => onStep(step + 1)} aria-label="Trame suivante">▶</button>
+      </div>
+      <div className="frame-detail">
+        <p className={`frame-summary kind-${frame.kind}`}><strong>{frame.summary}</strong>{frame.hops.length > 0 && <span className="muted"> · {route(frame)}</span>}</p>
+        {frame.notes.length > 0 && (
+          <ul className="frame-notes">
+            {frame.notes.map((n, i) => <li key={i} className={`log-${n.level}`}>{n.text}</li>)}
+          </ul>
+        )}
+        {frame.layers.map((l) => (
+          <details key={l.name} className="layer" open>
+            <summary>{l.name}</summary>
+            <dl>
+              {l.fields.map(([k, v]) => (
+                <div key={k}><dt>{k}</dt><dd><code>{v}</code></dd></div>
+              ))}
+            </dl>
+          </details>
+        ))}
+      </div>
+      <ol className="frame-list">
+        {frames.map((f, i) => (
+          <li key={i}>
+            <button type="button" className={`frame-row${i === step ? ' current' : ''}`} aria-current={i === step ? 'step' : undefined} onClick={() => onStep(i)}>
+              <span className="frame-n">{i + 1}</span>
+              <span className={`frame-kind kind-${f.kind} phase-${f.phase}`}>{KIND[f.kind]}</span>
+              <span className="frame-route">{route(f)}</span>
+            </button>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
 
 // form/setForm viennent d'App : le choix source/destination survit au changement d'onglet
-export default function SimPanel({ doc, form, setForm, result, playing, onRun, onReplay, onReset }) {
+export default function SimPanel({ doc, form, setForm, result, playing, onRun, onReplay, onReset, step, onStep, labels }) {
   const { sources, targets } = useMemo(() => {
     const topo = buildTopology(doc);
     const sources = doc.devices.filter((d) => isHost(d) || d.type === 'router' || (d.type === 'switch' && topo.l3Ifaces(d.id).length));
@@ -64,6 +116,7 @@ export default function SimPanel({ doc, form, setForm, result, playing, onRun, o
         )}
         <div className="row">
           <button type="submit" disabled={!src || !dstIp || playing}>{playing ? 'Simulation…' : 'Lancer le ping'}</button>
+          <button type="button" className="ghost" disabled={!src || !dstIp || playing} onClick={() => onRun(src, dstIp, 'step')}>Pas à pas</button>
           <button type="button" className="ghost" disabled={!src || !dstIp || playing} onClick={() => onRun(src, dstIp, 'trace')}>Traceroute</button>
           {result && (
             <>
@@ -94,7 +147,11 @@ export default function SimPanel({ doc, form, setForm, result, playing, onRun, o
               {result.trace.reason && <p className="field-error">{result.trace.reason}</p>}
             </section>
           )}
-          {phases.map(([phase, title]) => {
+          {step != null && result.frames?.length > 0 && <Stepper frames={result.frames} step={step} onStep={onStep} labels={labels} />}
+          {step == null && result.frames?.length > 0 && !playing && (
+            <button type="button" className="ghost small-btn" onClick={() => onStep(0)}>Revoir trame par trame</button>
+          )}
+          {step == null && phases.map(([phase, title]) => {
             const entries = result.log.filter((l) => l.phase === phase);
             if (!entries.length) return null;
             return (

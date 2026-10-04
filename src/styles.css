@@ -449,3 +449,31 @@ table.data code { font-size: .78rem; }
 .tp-objectives li > div { display: grid; gap: 6px; justify-items: start; }
 .tp-hint { margin: 0; font-size: .85rem; background: var(--bg); padding: 6px 8px; border-radius: 6px; }
 button.linklike { background: none; border: 0; padding: 0; min-height: 0; color: var(--primary); text-decoration: underline; cursor: pointer; font: inherit; }
+
+/* --- Simulation pas à pas ------------------------------------------------------------ */
+.react-flow__edge-path.cable.sim-arp { stroke: var(--warn); stroke-width: 3.5; }
+.packet-arp { fill: var(--warn); }
+.stepper { display: grid; gap: 10px; margin-top: 8px; }
+.stepper-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.stepper-count { font-weight: 600; font-variant-numeric: tabular-nums; }
+.frame-detail { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; display: grid; gap: 6px; }
+.frame-summary { margin: 0; }
+.frame-notes { margin: 0; padding-left: 18px; font-size: .85rem; }
+.layer { border-top: 1px solid var(--border); padding-top: 4px; }
+.layer summary { font-weight: 600; font-size: .85rem; cursor: pointer; }
+.layer dl { margin: 4px 0 0; display: grid; gap: 2px; }
+.layer dl div { display: grid; grid-template-columns: 9em 1fr; gap: 8px; font-size: .8rem; }
+.layer dt { color: var(--muted); }
+.layer dd { margin: 0; overflow-wrap: anywhere; }
+.frame-list { list-style: none; margin: 0; padding: 0; max-height: 240px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+.frame-row { width: 100%; display: grid; grid-template-columns: 2em 3.6em 1fr; gap: 6px; align-items: center; text-align: left;
+  background: transparent; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; min-height: 34px; padding: 0 8px; font-size: .8rem; color: var(--text); font-weight: 400; }
+.frame-list li:last-child .frame-row { border-bottom: 0; }
+.frame-row.current { background: var(--bg); font-weight: 600; box-shadow: inset 3px 0 0 var(--primary); }
+.frame-n { color: var(--muted); font-variant-numeric: tabular-nums; }
+.frame-kind { font-size: .72rem; font-weight: 700; border-radius: 4px; padding: 1px 4px; text-align: center; color: var(--surface); background: var(--request); }
+.frame-kind.phase-reply { background: var(--reply); }
+.frame-kind.kind-arp-request, .frame-kind.kind-arp-reply { background: var(--warn); }
+.frame-kind.kind-drop { background: var(--danger); }
+.frame-kind.kind-done { background: var(--ok); }
+.frame-route { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

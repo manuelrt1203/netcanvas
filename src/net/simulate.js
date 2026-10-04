@@ -14,7 +14,7 @@ import { evaluateAcl, evaluateFirewall } from './acl.js';
 import { destNat, isPrivate, natGlobals, sourceNat } from './nat.js';
 import { withLeases } from './dhcp.js';
 import { NAT_ICMP_TIMEOUT, activeNat, runtimeOf } from './runtime.js';
-import { macOf } from './mac.js';
+import { macCisco, macOf } from './mac.js';
 import { flood } from './l2.js';
 import { computeRouting, lookup } from './routing.js';
 
@@ -40,11 +40,14 @@ export function simulatePing(rawDoc, sourceId, dstIp, options = {}) {
     topo, routing, natTable: [...activeNat(runtime)], now: runtime.time, natAdded: [],
     arpCache: (runtime.arp ?? []).filter((e) => e.expires > runtime.time),
     learned: { arp: [], mac: [] }, // entrées ARP / MAC apprises pendant ce ping
+    frames: [], // trames une par une, avec leurs en-têtes (simulation pas à pas)
+    cursor: 0, // journal déjà rattaché à une trame
   };
   // path : équipements atteints et adresse d'entrée (sert à traceroute)
   const result = { ok: false, hops: [], path: [], log: [], failedAt: null, srcIp: null };
   result.natAdded = ctx.natAdded; // traductions créées, à enregistrer dans la table persistante
   result.learned = ctx.learned;
+  result.frames = ctx.frames;
   const log = (phase, text, level = 'info', device = null) => result.log.push({ phase, text, level, device });
   const name = (id) => topo.devices.get(id)?.label ?? id;
 
@@ -65,11 +68,13 @@ export function simulatePing(rawDoc, sourceId, dstIp, options = {}) {
     log('reply', `${name(rep.arrivedAt)} reçoit l'echo reply : ping réussi (TTL ${rep.ttl}).`, 'ok', rep.arrivedAt);
     result.ok = true;
     result.ttl = rep.ttl;
+    endFrame(ctx, result, { kind: 'done', phase: 'reply', at: rep.arrivedAt, summary: 'Ping réussi' });
   } catch (err) {
     if (!(err instanceof SimError)) throw err;
     const phase = result.log.at(-1)?.phase ?? 'request';
     log(phase, err.message, 'error', err.device);
     result.failedAt = err.device ?? null;
+    endFrame(ctx, result, { kind: 'drop', phase, at: err.device ?? sourceId, summary: 'Paquet perdu' });
   }
   return result;
 }
@@ -144,7 +149,9 @@ function forward(ctx, startId, target, phase, result, log, name, fixedSrc = null
     result.path.push({ phase, device: l2.endpoint, ip: l2.iface?.ip ?? null });
     const via = l2.vlan != null ? ` (VLAN ${l2.vlan})` : '';
     const serial = topo.links.get(step.iface.link)?.cable === 'serial';
-    const cached = !serial && ctx.arpCache.some((e) => e.device === current && e.ip === step.nextHop);
+    // En cache : entrée encore valide, ou apprise pendant ce ping (la cible d'une requête ARP apprend l'émetteur)
+    const known = (e) => e.device === current && e.ip === step.nextHop;
+    const cached = !serial && (ctx.arpCache.some(known) || ctx.learned.arp.some(known));
     if (!serial) learn(ctx, dev, step, l2);
     log(
       phase,
@@ -154,9 +161,73 @@ function forward(ctx, startId, target, phase, result, log, name, fixedSrc = null
       'info',
       l2.endpoint,
     );
+    addFrames(ctx, result, { dev, step, l2, phase, serial, cached, packet: { src: srcIp, dst: dstIp, ttl } });
     arrived = l2.iface?.name ?? null;
     current = l2.endpoint;
   }
+}
+
+// --- Trames pour la simulation pas à pas ---------------------------------------------------
+// Chaque trame : { kind: arp-request | arp-reply | icmp | done | drop, phase, hops (câbles allumés
+// ensemble), at (équipement qui la reçoit), summary, layers [{ name, fields: [[champ, valeur]] }],
+// notes (ce que l'équipement émetteur a décidé, d'après le journal) }
+const ETHERTYPE_IP = '0x0800 (IPv4)';
+const BROADCAST = 'ffff.ffff.ffff';
+
+function takeNotes(ctx, result) {
+  const notes = result.log.slice(ctx.cursor).map((l) => ({ text: l.text, level: l.level }));
+  ctx.cursor = result.log.length;
+  return notes;
+}
+
+function ethLayers(src, dst, type, tag) {
+  const layers = [{ name: 'Ethernet II', fields: [['MAC destination', dst], ['MAC source', src], ['Type', type]] }];
+  if (tag != null) layers.push({ name: '802.1Q', fields: [['TPID', '0x8100'], ['VLAN', String(tag)]] });
+  return layers;
+}
+
+function addFrames(ctx, result, { dev, step, l2, phase, serial, cached, packet }) {
+  const notes = takeNotes(ctx, result);
+  const target = ctx.topo.devices.get(l2.endpoint);
+  const senderMac = macCisco(macOf(dev, step.iface.name));
+  const targetMac = macCisco(macOf(target, l2.iface?.name));
+  const frames = [];
+  if (!serial && !cached) {
+    const arp = (op, smac, sip, tmac, tip) => ({
+      name: 'ARP',
+      fields: [['Opération', op === 1 ? '1 (request)' : '2 (reply)'], ['MAC émetteur', smac], ['IP émetteur', sip], ['MAC cible', tmac], ['IP cible', tip]],
+    });
+    frames.push({
+      kind: 'arp-request', phase, hops: l2.traversed ?? l2.hops, at: l2.endpoint,
+      summary: `ARP request (diffusion) : qui a ${step.nextHop} ?`,
+      layers: [...ethLayers(senderMac, BROADCAST, '0x0806 (ARP)', l2.hops[0]?.tag), arp(1, senderMac, step.iface.ip, '0000.0000.0000', step.nextHop)],
+    });
+    for (const h of [...l2.hops].reverse()) {
+      frames.push({
+        kind: 'arp-reply', phase, hops: [{ ...h, from: h.to, to: h.from }], at: h.from,
+        summary: `ARP reply : ${step.nextHop} est à ${targetMac}`,
+        layers: [...ethLayers(targetMac, senderMac, '0x0806 (ARP)', h.tag), arp(2, targetMac, step.nextHop, senderMac, step.iface.ip)],
+      });
+    }
+  }
+  const ip = { name: 'IPv4', fields: [['Source', packet.src], ['Destination', packet.dst], ['TTL', String(packet.ttl)], ['Protocole', '1 (ICMP)']] };
+  const icmp = { name: 'ICMP', fields: [['Type', phase === 'request' ? '8 (echo request)' : '0 (echo reply)'], ['Code', '0'], ['Identifiant', '1'], ['Séquence', '1']] };
+  for (const h of l2.hops) {
+    frames.push({
+      kind: 'icmp', phase, hops: [h], at: h.to,
+      summary: `ICMP echo ${phase === 'request' ? 'request' : 'reply'} ${packet.src} → ${packet.dst}`,
+      layers: serial
+        ? [{ name: 'HDLC', fields: [['Adresse', '0x0F'], ['Protocole', ETHERTYPE_IP]] }, ip, icmp]
+        : [...ethLayers(senderMac, targetMac, ETHERTYPE_IP, h.tag), ip, icmp],
+    });
+  }
+  // Ce que l'émetteur a décidé est affiché avec sa première trame
+  if (frames.length) frames[0].notes = notes;
+  ctx.frames.push(...frames.map((f) => ({ notes: [], ...f })));
+}
+
+function endFrame(ctx, result, frame) {
+  ctx.frames.push({ hops: [], layers: [], ...frame, notes: takeNotes(ctx, result) });
 }
 
 // Apprentissage d'une livraison de niveau 2 : caches ARP de l'émetteur et de la cible,
@@ -337,13 +408,13 @@ function noRoute(topo, routing, id, dstIp, name) {
 function deliver(topo, fromId, linkId, targetIp, name, tag = null, sviVlan = null) {
   if (linkId != null && !topo.isUp(linkId)) throw new SimError(`${name(fromId)} : câble hors service. ${topo.status.get(linkId).reason}`, fromId);
   const target = parseIp(targetIp);
-  const { endpoints, drops, vlansSeen, switches } = flood(topo, fromId, linkId, tag, sviVlan);
+  const { endpoints, drops, vlansSeen, switches, traversed } = flood(topo, fromId, linkId, tag, sviVlan);
   for (const e of endpoints) {
     const iface = e.svi != null ? topo.l3Ifaces(e.device).find((s) => s.svi && s.vlan === e.svi) : topo.l3IfaceOn(e.device, e.inLink, e.tag);
     // Le routeur répond aussi en ARP pour ses adresses publiques de NAT statique
     const natOwner = iface && natGlobals(topo.devices.get(e.device), iface.name).includes(targetIp);
     if (iface && isValidIp(iface.ip) && (parseIp(iface.ip) === target || natOwner)) {
-      return { endpoint: e.device, inLink: e.inLink, tag: e.tag, hops: e.hops, vlan: e.vlan, iface, switches };
+      return { endpoint: e.device, inLink: e.inLink, tag: e.tag, hops: e.hops, vlan: e.vlan, iface, switches, traversed };
     }
   }
   const where = vlansSeen.size ? ` dans le VLAN ${[...vlansSeen].join(', ')}` : ' sur ce lien';

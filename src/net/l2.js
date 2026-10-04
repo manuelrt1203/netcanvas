@@ -9,13 +9,14 @@ import { NATIVE_VLAN } from './topology.js';
 export function flood(topo, fromId, linkId, startTag = null, sviVlan = null) {
   const queue = linkId == null
     ? [{ device: fromId, inLink: null, tag: null, vlan: sviVlan, internal: true, hops: [] }]
-    : [{ device: topo.other(linkId, fromId), inLink: linkId, tag: startTag, vlan: startTag, hops: [{ edge: linkId, from: fromId, to: topo.other(linkId, fromId) }] }];
+    : [{ device: topo.other(linkId, fromId), inLink: linkId, tag: startTag, vlan: startTag, hops: [{ edge: linkId, from: fromId, to: topo.other(linkId, fromId), tag: startTag }] }];
   const seen = new Set();
   const reached = new Set();
   const endpoints = [];
   const drops = [];
   const vlansSeen = new Set();
   const switches = []; // switches atteints par la diffusion : { device, inLink, vlan } (apprentissage MAC)
+  const traversed = queue[0].hops.slice(); // tous les câbles parcourus par la diffusion (simulation pas à pas)
 
   while (queue.length) {
     const { device, inLink, tag, vlan, hops, internal } = queue.shift();
@@ -33,7 +34,9 @@ export function flood(topo, fromId, linkId, startTag = null, sviVlan = null) {
           continue;
         }
         const next = topo.other(out, device);
-        queue.push({ device: next, inLink: out, tag, vlan, hops: [...hops, { edge: out, from: device, to: next }] });
+        const hop = { edge: out, from: device, to: next, tag };
+        traversed.push(hop);
+        queue.push({ device: next, inLink: out, tag, vlan, hops: [...hops, hop] });
       }
       continue;
     }
@@ -72,7 +75,9 @@ export function flood(topo, fromId, linkId, startTag = null, sviVlan = null) {
           continue;
         }
         const next = topo.other(out, device);
-        queue.push({ device: next, inLink: out, tag: outTag, vlan: v, hops: [...hops, { edge: out, from: device, to: next }] });
+        const hop = { edge: out, from: device, to: next, tag: outTag };
+        traversed.push(hop);
+        queue.push({ device: next, inLink: out, tag: outTag, vlan: v, hops: [...hops, hop] });
       }
       continue;
     }
@@ -89,5 +94,5 @@ export function flood(topo, fromId, linkId, startTag = null, sviVlan = null) {
     reached.add(key);
     endpoints.push({ device, inLink, tag, hops, vlan });
   }
-  return { endpoints, drops, vlansSeen, switches };
+  return { endpoints, drops, vlansSeen, switches, traversed };
 }

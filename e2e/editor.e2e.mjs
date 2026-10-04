@@ -337,6 +337,26 @@ await page.getByTestId('rf__node-sw1').click();
 await page.click('role=button[name="+1 h"]');
 assert.ok(await macTable.getByText(/Vide : le switch apprend/).isVisible(), 'table MAC vidée par le vieillissement');
 
+step('simulation pas à pas : trames, en-têtes, plan');
+await openDemo('2 VLAN, 2 routeurs (statique)');
+await page.click('role=tab[name="Simulation"]');
+await page.selectOption('#sim-src', { label: 'PC Compta' });
+await page.selectOption('#sim-dst', { label: 'PC Atelier · 192.168.20.10' });
+await page.click('role=button[name="Pas à pas"]');
+assert.equal(await page.locator('.stepper-count').textContent(), 'Trame 1 / 15');
+assert.match(await page.locator('.frame-summary').textContent(), /ARP request \(diffusion\) : qui a 192\.168\.10\.1 \?/);
+assert.equal(await page.locator('.layer', { hasText: 'Ethernet II' }).locator('dd').first().textContent(), 'ffff.ffff.ffff');
+assert.equal(await page.locator('.packet-arp').count(), 3, 'diffusion ARP : trois câbles');
+await page.click('role=button[name="Trame suivante"]');
+await page.keyboard.press('ArrowRight');
+await page.keyboard.press('ArrowRight');
+assert.match(await page.locator('.frame-summary').textContent(), /ICMP echo request 192\.168\.10\.10 → 192\.168\.20\.10/);
+assert.equal(await page.locator('.layer').filter({ has: page.locator('summary', { hasText: /^IPv4$/ }) }).locator('dd').nth(2).textContent(), '64');
+await page.locator('.frame-row').last().click();
+assert.match(await page.locator('.frame-summary').textContent(), /Ping réussi/);
+await page.locator('.frame-row').nth(9).click();
+await page.screenshot({ path: 'e2e/pas-a-pas.png' });
+
 step('TP : objectifs en direct, indices, ajout d\'un objectif');
 await openDemo('TP : inter-VLAN en panne (3 pannes)');
 await page.click('role=tab[name=/^TP/]');

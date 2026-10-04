@@ -9,6 +9,10 @@ export const HOP_MS = 550;
 function Packet({ x1, y1, x2, y2, phase }) {
   const [t, setT] = useState(0);
   useEffect(() => {
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      setT(1);
+      return undefined;
+    }
     let frame;
     const start = performance.now();
     const tick = (now) => {
@@ -38,7 +42,7 @@ function CableEdge({ id, source, target, sourceX, sourceY, targetX, targetY, sel
   const [path, midX, midY] = getStraightPath({ sourceX, sourceY, targetX, targetY });
 
   const traversed = sim.edges.get(id);
-  const hop = sim.hop?.edge === id ? sim.hop : null;
+  const hop = sim.hop?.edge === id ? sim.hop : sim.hops?.find((h) => h.edge === id) ?? null;
   const tag = cable === 'console' ? null : vlanTag(ends, [data?.sourceIface, data?.targetIface]);
   const labelAt = (t) => [sourceX + (targetX - sourceX) * t, sourceY + (targetY - sourceY) * t];
 

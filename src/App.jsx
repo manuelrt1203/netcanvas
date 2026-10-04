@@ -499,8 +499,32 @@ function Editor() {
     const result = simulatePing(live, src, dst, { topo, routing });
     keepNat(result);
     if (mode === 'trace') result.trace = traceroute(live, src, dst);
-    setSim({ result, sig: configSig(doc), playing: false, view: EMPTY_SIM });
-    play(result);
+    setSim({ result, sig: configSig(doc), playing: false, view: EMPTY_SIM, step: null });
+    if (mode === 'step') showFrame(result, 0);
+    else play(result);
+  };
+
+  // Pas à pas : trame i affichée sur le plan (câbles allumés ensemble, déjà parcourus en couleur)
+  const kindClass = (f) => (f.kind.startsWith('arp') ? 'arp' : f.phase);
+  const showFrame = (result, i) => {
+    stopSim();
+    const frames = result.frames ?? [];
+    const frame = frames[i];
+    if (!frame) return;
+    const before = frames.slice(0, i);
+    setSim((s) => ({
+      ...s,
+      result,
+      step: i,
+      playing: false,
+      view: {
+        hop: null,
+        hops: frame.hops.map((h, k) => ({ ...h, phase: kindClass(frame), key: `${i}-${k}` })),
+        edges: new Map(before.filter((f) => f.kind === 'icmp').flatMap((f) => f.hops.map((h) => [h.edge, f.phase]))),
+        nodes: new Set([...before, frame].flatMap((f) => f.hops.flatMap((h) => [h.from, h.to]))),
+        failedAt: frame.kind === 'drop' ? result.failedAt : null,
+      },
+    }));
   };
 
   const resetSim = () => {
@@ -779,7 +803,8 @@ function Editor() {
                     <p className="notice">Le schéma a changé depuis cette simulation. Relance-la.</p>
                   )}
                   <SimPanel doc={live} form={simForm} setForm={setSimForm} result={sim.result} playing={sim.playing}
-                    onRun={runSim} onReplay={() => play(sim.result)} onReset={resetSim} />
+                    onRun={runSim} onReplay={() => { setSim((s) => ({ ...s, step: null })); play(sim.result); }} onReset={resetSim}
+                    step={sim.step ?? null} onStep={(i) => showFrame(sim.result, i)} labels={labels} />
                 </>
               )}
               {tab === 'export' && (
