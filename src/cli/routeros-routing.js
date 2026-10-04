@@ -468,9 +468,16 @@ export function routingScript(dev) {
     out.push('/routing ospf area', ...areas.map((a) => `add area-id=${areaId(a)} instance=${instance} name=${areaName(o, a)}`));
     out.push('/routing ospf interface-template');
     const passive = new Set(o.passive ?? []);
-    for (const x of o.networks ?? []) out.push(`add area=${areaName(o, x.area)} networks=${x.network}/${wildcardToCidr(x.wildcard)}`);
+    // Modèles par interface d'abord : RouterOS applique le premier modèle qui correspond.
+    // Une interface passive sans modèle propre en reçoit un, dans la zone du réseau qui la couvre.
     for (const x of o.interfaces ?? []) out.push(`add area=${areaName(o, x.area)} interfaces=${x.name}${passive.has(x.name) ? ' passive' : ''}`);
-    for (const name of passive) if (!(o.interfaces ?? []).some((x) => x.name === name)) out.push(`# ${name} : passive-interface (ajoute « passive » au modèle qui la couvre)`);
+    for (const name of passive) {
+      if ((o.interfaces ?? []).some((x) => x.name === name)) continue;
+      const ip = (cfg.interfaces ?? []).find((i) => i.name === name)?.ip;
+      const net = (o.networks ?? []).find((x) => isValidIp(ip) && networkOf(ip, wildcardToCidr(x.wildcard)) === networkOf(x.network, wildcardToCidr(x.wildcard)));
+      out.push(`add area=${areaName(o, net?.area ?? 0)} interfaces=${name} passive`);
+    }
+    for (const x of o.networks ?? []) out.push(`add area=${areaName(o, x.area)} networks=${x.network}/${wildcardToCidr(x.wildcard)}`);
   }
   const r = cfg.rip;
   if (r) {

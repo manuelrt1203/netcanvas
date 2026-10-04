@@ -337,6 +337,31 @@ await page.getByTestId('rf__node-sw1').click();
 await page.click('role=button[name="+1 h"]');
 assert.ok(await macTable.getByText(/Vide : le switch apprend/).isVisible(), 'table MAC vidée par le vieillissement');
 
+step('import d\'une config Cisco dans un routeur');
+await openDemo('2 VLAN, 2 routeurs (statique)');
+await page.click('role=tab[name=/^Propriétés/]');
+await page.getByTestId('rf__node-r1').click();
+await page.click('role=button[name="Importer une config…"]');
+const importDialog = page.locator('.import-dialog');
+await importDialog.getByLabel('Configuration').fill([
+  'Building configuration...', '!', 'hostname R1-Import', '!',
+  'interface GigabitEthernet0/0', ' ip address 192.168.10.1 255.255.255.0', ' no shutdown', '!',
+  'interface GigabitEthernet0/1', ' ip address 192.168.20.1 255.255.255.0', '!',
+  'interface Serial0/0/0', ' ip address 10.0.0.1 255.255.255.252', ' clock rate 64000', '!',
+  'interface Serial9/9', ' ip address 10.9.9.1 255.255.255.0', '!',
+  'ip route 0.0.0.0 0.0.0.0 10.0.0.2', 'end',
+].join('\n'));
+assert.match(await importDialog.locator('.import-report').textContent(), /10 lignes appliquées, 2 ignorées/);
+assert.match(await importDialog.locator('.import-ignored').textContent(), /ligne 16 interface Serial9\/9 Invalid interface type and number/);
+await importDialog.getByRole('button', { name: 'Appliquer' }).click();
+
+assert.ok(await page.getByTestId('rf__node-r1').getByText('R1-Import').isVisible());
+await page.click('role=tab[name="Simulation"]');
+await page.selectOption('#sim-src', { label: 'PC Compta' });
+await page.selectOption('#sim-dst', { label: 'PC Atelier · 192.168.20.10' });
+await page.click('text=Lancer le ping');
+await page.waitForSelector('.sim-verdict.ok', { timeout: 15000 });
+
 step('simulation pas à pas : trames, en-têtes, plan');
 await openDemo('2 VLAN, 2 routeurs (statique)');
 await page.click('role=tab[name="Simulation"]');

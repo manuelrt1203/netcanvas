@@ -370,7 +370,7 @@ function ModeSwitch({ mode, onMode, vendor }) {
   );
 }
 
-export function DeviceInspector({ node, edges, labels, update, onDelete, mode, onMode, terminal, routing, issues, live }) {
+export function DeviceInspector({ node, edges, labels, update, onDelete, mode, onMode, terminal, importer, routing, issues, live }) {
   const Form = HOST_TYPES.has(node.type) ? HostForm : node.type === 'router' ? RouterForm : node.type === 'switch' ? SwitchForm : null;
   const vendor = HOST_TYPES.has(node.type) ? node.type : MODELS[modelId({ type: node.type, model: node.data.model })].vendor;
   if (terminal && mode === 'terminal') {
@@ -379,6 +379,7 @@ export function DeviceInspector({ node, edges, labels, update, onDelete, mode, o
         <h2>{node.data.label} <span className="muted">· {MODELS[modelId({ type: node.type, model: node.data.model })].label}</span></h2>
         <ModeSwitch mode={mode} onMode={onMode} vendor={vendor} />
         {terminal}
+        {importer}
         <p className="hint">Les commandes modifient la même configuration que le formulaire. « ? » pour l'aide, Tab pour compléter, ↑ ↓ pour l'historique.</p>
       </>
     );
@@ -387,6 +388,7 @@ export function DeviceInspector({ node, edges, labels, update, onDelete, mode, o
     <>
       <h2>{TYPES[node.type].label}</h2>
       {terminal && <ModeSwitch mode={mode} onMode={onMode} vendor={vendor} />}
+      {importer}
       <Field label="Nom" value={node.data.label} onChange={(e) => update((d) => ({ ...d, label: e.target.value }))} />
       <Hardware node={node} edges={edges} update={update} />
       {Form ? <Form node={node} edges={edges} labels={labels} update={update} routing={routing} issues={issues} live={live} /> : <p className="hint">Un hub répète chaque trame sur tous ses ports : rien à configurer.</p>}

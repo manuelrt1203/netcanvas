@@ -31,6 +31,7 @@ import { withLeases } from './net/dhcp.js';
 import { EMPTY_RUNTIME, activeNat, formatTime } from './net/runtime.js';
 import { mergeLearned } from './net/tables.js';
 import TablesPanel from './TablesPanel.jsx';
+import ConfigImport from './ConfigImport.jsx';
 import ExercisePanel from './ExercisePanel.jsx';
 import { evaluateExercise } from './net/exercise.js';
 import { createShared, loadShared, myShares, parseShareLocation, rememberShare, saveShared, shareEnabled, shareLinks } from './share.js';
@@ -771,6 +772,9 @@ function Editor() {
                   update={updateNode(selected.id)} onDelete={deleteSelected} mode={configMode} onMode={setConfigMode}
                   routing={routing.routers.get(selected.id)} issues={issues.filter((i) => i.device === selected.id)}
                   live={live.devices.find((d) => d.id === selected.id)?.config}
+                  importer={!readOnly && (selected.type === 'router' || selected.type === 'switch') && (
+                    <ConfigImport device={selectedDevice} doc={doc} onApply={(dev) => updateNode(selected.id)(() => deviceToData(dev, doc.links))} />
+                  )}
                   terminal={hasTerminal(selectedDevice) && (
                     <Suspense fallback={<p className="hint">Chargement du terminal…</p>}>
                       <Terminal key={selected.id} device={selectedDevice} doc={doc} sessions={sessions.current}

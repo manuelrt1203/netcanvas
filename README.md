@@ -130,6 +130,19 @@ Pour chaque trame, on voit les en-têtes (Ethernet II, 802.1Q sur un trunk, ARP,
 
 Pas encore simulé (le terminal le dit) : EIGRP, STP, DNS.
 
+## Import de configuration (`src/cli/import.js`)
+
+Bouton « Importer une config… » dans l'inspecteur d'un routeur ou d'un switch : on colle la sortie de `show running-config` (Cisco) ou de `/export` (MikroTik), ou on choisit un fichier. Chaque ligne passe par le terminal simulé, avec les mêmes contrôles que si on la tapait. Un aperçu donne les lignes appliquées et les lignes ignorées, avec leur numéro et la raison. Option : remplacer la config actuelle ou l'ajouter.
+
+Comme sur IOS, une commande inconnue dans un sous-mode (`interface`, `router ospf`…) est essayée en mode global : une config se colle d'un bloc, sans `exit`. Sont ignorés sans bruit :
+- les en-têtes (`Building configuration`, `version`, `!`, `end`) ;
+- les bannières ;
+- le bloc `interface Vlan1` par défaut des switches.
+
+Quand une section est refusée (interface absente du modèle), ses lignes indentées sont ignorées avec elle et signalées comme telles. Les lignes sans effet sur la simulation (`service`, `duplex`, `crypto`…) sont acceptées comme dans le terminal.
+
+Le test d'aller-retour exporte la config de chaque routeur et switch des démos, la réimporte sur un équipement vierge et vérifie que la config obtenue est identique.
+
 ## Mode TP (`src/net/exercise.js`, onglet « TP »)
 
 Un schéma peut porter un exercice : un titre, une consigne et des objectifs vérifiés en direct à chaque modification. Types d'objectifs :
@@ -251,7 +264,7 @@ Les fichiers v1 et v2 s'importent toujours : le modèle est déduit des ports ut
 ## Tests
 
 ```bash
-npm test           # 154 tests : calculs IP, ping, validation, JSON, TP, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
+npm test           # 156 tests : calculs IP, ping, validation, JSON, TP, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
 npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : édition, contrôles, ping, persistance, exports, câblage, terminaux (IOS, RouterOS, PC), démos OSPF et BGP (show ip ospf neighbor, next-hop-self retiré)
 ```
 

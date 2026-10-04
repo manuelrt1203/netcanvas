@@ -32,7 +32,7 @@ const allInterfaces = (dev) => [
 ];
 
 // --- Noms d'interfaces -------------------------------------------------------------
-const IF_TYPES = [['gigabitethernet', 'G'], ['fastethernet', 'Fa'], ['serial', 'Se'], ['ethernet', 'Eth'], ['loopback', 'Lo']];
+const IF_TYPES = [['gigabitethernet', 'G'], ['fastethernet', 'Fa'], ['serial', 'Se'], ['ethernet', 'Eth'], ['loopback', 'Lo'], ['vlan', 'Vlan']];
 
 // « g0/0 », « GigabitEthernet 0/0/0 », « fa0/1 - 5, fa0/7 » -> liste de noms courts
 export function parseInterfaces(text, dev, { range = false } = {}) {
@@ -49,6 +49,12 @@ export function parseInterfaces(text, dev, { range = false } = {}) {
     if (types[0][1] === 'Lo') {
       if (dev.type !== 'router' || m[4] || !/^\d+$/.test(m[2])) return { error: '% Invalid interface type and number' };
       out.push(`Lo${Number(m[2])}`);
+      continue;
+    }
+    // Interface VLAN (SVI) d'un switch : « Vlan10 », comme l'affiche show running-config
+    if (types[0][1] === 'Vlan') {
+      if (dev.type !== 'switch' || m[4] || !/^\d+$/.test(m[2]) || Number(m[2]) < 1 || Number(m[2]) > 4094) return { error: '% Invalid interface type and number' };
+      out.push(`Vlan${Number(m[2])}`);
       continue;
     }
     const nums = m[2].split('/');
@@ -429,6 +435,7 @@ function configTree(dev) {
         ...(!isSwitch || modelOf(dev).l3 ? [kw('route', 'Establish static routes', { children: [routeArgs(addRoute)] })] : []),
         kw('domain-lookup', 'Enable IP Domain Name System hostname translation', { run() {} }),
         accept('domain-name', 'Define the default domain name'),
+        kw('classless', 'Follow classless routing forwarding rules', { run() {} }),
         ...(!isSwitch || modelOf(dev).l3 ? [dhcpConfigCommand()] : []),
         kw('routing', 'Enable IP routing', { run: (c) => setIpRouting(c, true) }),
       ],
@@ -718,6 +725,18 @@ export const ios = {
     if (p.error === 'invalid' && p.index === 0 && (s.mode === 'user' || s.mode === 'priv')) {
       ctx.out.push(`Translating "${p.tokens[0].text}"...domain server (255.255.255.255)`, '% Unknown command or computer name, or unable to find computer address', '');
       return ctx;
+    }
+    // Comme IOS : dans un sous-mode de configuration, une commande inconnue est essayée en mode global
+    // (c'est ce qui permet de coller une configuration entière)
+    if (p.error === 'invalid' && s.mode !== 'config' && s.mode !== 'user' && s.mode !== 'priv') {
+      const global = configTree(dev);
+      const g = parse(global, line);
+      if (g.error !== 'invalid') {
+        Object.assign(s, { mode: 'config', ifaces: [], vlan: null });
+        const err = treeExecute(global, line, ctx, this.prompt(s, dev).length);
+        if (err) ctx.out.push(...err);
+        return ctx;
+      }
     }
     const err = treeExecute(tree, line, ctx, this.prompt(s, dev).length);
     if (err) ctx.out.push(...err);

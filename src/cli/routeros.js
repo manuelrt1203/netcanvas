@@ -33,8 +33,20 @@ const match = (word, options) => {
 const err = (text, col) => [`${text} (line 1 column ${col})`, ''];
 
 // Analyse : chemin + commande + arguments (clé=valeur ou valeurs sans nom)
+// Mots séparés par des espaces ; une valeur entre guillemets peut en contenir (name="R3 MikroTik")
+function tokenizeRos(line) {
+  const tokens = [];
+  const re = /(?:[^\s"]+|"(?:[^"\\]|\\.)*")+/g;
+  let m;
+  while ((m = re.exec(line))) {
+    const text = m[0].replace(/^([^=]+=)?"(.*)"$/, (_, key = '', v) => key + v.replace(/\\(.)/g, '$1'));
+    tokens.push({ text, start: m.index });
+  }
+  return tokens;
+}
+
 function parseLine(line, cwd) {
-  const tokens = tokenize(line);
+  const tokens = tokenizeRos(line);
   let path = [...cwd];
   let i = 0;
   if (tokens[0]?.text.startsWith('/')) {

@@ -317,7 +317,7 @@ test('mikrotik : OSPF en RouterOS v7, adjacence avec un Cisco', () => {
   assert.match(t.run('/routing ospf interface-template add networks=10.9.0.0/24 area=zone9'), /input does not match any value of area/);
   const script = t.run('/export');
   assert.match(script, /\/routing ospf instance\nadd name=default-v2 version=2 router-id=3\.3\.3\.3 originate-default=if-installed/);
-  assert.match(script, /\/routing ospf interface-template\nadd area=backbone-v2 networks=10\.0\.23\.0\/30\nadd area=backbone-v2 networks=172\.16\.3\.0\/24/);
+  assert.match(script, /\/routing ospf interface-template\nadd area=backbone-v2 interfaces=ether2 passive\nadd area=backbone-v2 networks=10\.0\.23\.0\/30\nadd area=backbone-v2 networks=172\.16\.3\.0\/24/);
 });
 
 test('mikrotik : BGP en RouterOS v7 avec un Cisco (eBGP)', () => {
