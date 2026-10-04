@@ -323,6 +323,31 @@ DHCP_DEMO.devices.find((d) => d.id === 'srv').config.dhcp = {
   pools: [{ name: 'ELEVES', network: '192.168.20.0', mask: 24, defaultRouter: '192.168.20.1', dns: '8.8.8.8' }],
 };
 
+// Triangle de switches : STP bloque un port pour casser la boucle (SW Cœur est root bridge)
+const trunk = (name) => ({ name, mode: 'trunk' });
+export const STP_DEMO = {
+  format: 'netcanvas',
+  version: 3,
+  name: 'Démo : STP (triangle de switches)',
+  devices: [
+    { id: 'sw1', type: 'switch', model: '2960-24TT', label: 'SW Cœur', position: { x: 320, y: 48 },
+      config: { ports: [{ link: 'a', ...trunk('G0/1') }, { link: 'c', ...trunk('G0/2') }], stp: { priority: { 1: 4096 } } } },
+    { id: 'sw2', type: 'switch', model: '2960-24TT', label: 'SW Gauche', position: { x: 96, y: 288 },
+      config: { ports: [{ link: 'a', ...trunk('G0/1') }, { link: 'b', ...trunk('G0/2') }, { link: 'h1', name: 'Fa0/1', mode: 'access', vlan: 1 }] } },
+    { id: 'sw3', type: 'switch', model: '2960-24TT', label: 'SW Droite', position: { x: 544, y: 288 },
+      config: { ports: [{ link: 'b', ...trunk('G0/1') }, { link: 'c', ...trunk('G0/2') }, { link: 'h2', name: 'Fa0/1', mode: 'access', vlan: 1 }] } },
+    { id: 'pc1', type: 'pc', model: 'PC-PT', label: 'PC A', position: { x: 96, y: 496 }, config: { ip: '192.168.1.10', mask: 24, gateway: '' } },
+    { id: 'pc2', type: 'pc', model: 'PC-PT', label: 'PC B', position: { x: 544, y: 496 }, config: { ip: '192.168.1.20', mask: 24, gateway: '' } },
+  ],
+  links: [
+    { id: 'a', source: 'sw1', target: 'sw2', sourceHandle: 'l', targetHandle: 't', cable: 'cross', sourceIface: 'G0/1', targetIface: 'G0/1' },
+    { id: 'b', source: 'sw2', target: 'sw3', sourceHandle: 'r', targetHandle: 'l', cable: 'cross', sourceIface: 'G0/2', targetIface: 'G0/1' },
+    { id: 'c', source: 'sw1', target: 'sw3', sourceHandle: 'r', targetHandle: 't', cable: 'cross', sourceIface: 'G0/2', targetIface: 'G0/2' },
+    { id: 'h1', source: 'pc1', target: 'sw2', sourceHandle: 't', targetHandle: 'b', cable: 'straight', sourceIface: 'Fa0', targetIface: 'Fa0/1' },
+    { id: 'h2', source: 'pc2', target: 'sw3', sourceHandle: 't', targetHandle: 'b', cable: 'straight', sourceIface: 'Fa0', targetIface: 'Fa0/1' },
+  ],
+};
+
 // --- TP prêts à l'emploi : un réseau en panne et des objectifs vérifiés en direct --------------
 const broken = (doc, name, exercise, breakIt) => {
   const copy = structuredClone(doc);
@@ -375,6 +400,7 @@ export const DEMOS = [
   { id: 'l3', label: 'Switch niveau 3 (SVI, ip routing)', doc: L3_DEMO },
   { id: 'nat', label: 'NAT / PAT (box, FAI, serveur publié)', doc: NAT_DEMO },
   { id: 'dhcp', label: 'DHCP (serveur et relais)', doc: DHCP_DEMO },
+  { id: 'stp', label: 'STP (triangle de switches)', doc: STP_DEMO },
   { id: 'tp-vlan', label: 'TP : inter-VLAN en panne (3 pannes)', doc: TP_INTERVLAN },
   { id: 'tp-ospf', label: 'TP : OSPF ne monte pas (3 pannes)', doc: TP_OSPF },
   { id: 'ospf', label: 'OSPF 2 zones (Cisco + MikroTik)', doc: OSPF_DEMO },

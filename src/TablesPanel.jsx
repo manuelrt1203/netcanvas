@@ -5,8 +5,10 @@ import { macCisco, macColon, macWindows } from './net/mac.js';
 import { prefixText } from './net/routing.js';
 import { activeNat, formatDuration, formatTime, runtimeOf } from './net/runtime.js';
 import { isMikrotik } from './net/catalog.js';
-import { isHost } from './net/topology.js';
 import { computeLeases } from './net/dhcp.js';
+import { buildTopology, isHost } from './net/topology.js';
+
+const STP_ROLE = { root: 'racine', designated: 'désigné', alternate: 'alternatif' };
 
 function Table({ title, head, rows, empty, action }) {
   return (
@@ -70,6 +72,24 @@ export default function TablesPanel({ device, doc, routing, labels, onRuntime, r
         empty="Vide : le switch apprend les adresses des trames qui le traversent (5 min de vieillissement)." action={rows.length > 0 && clear(clearMac(device.id))}
         rows={rows.map((e) => [e.vlan, <code key="m">{macCisco(e.mac)}</code>, e.port, age(e.age), age(e.expiresIn)])} />,
     );
+  }
+  if (device.type === 'switch') {
+    const stp = buildTopology(doc).stp;
+    for (const [vlan, info] of stp.vlans) {
+      const me = info.switches.get(device.id);
+      if (!me) continue;
+      const root = [...info.switches.values()].find((s) => s.bridge === me.root);
+      const title = !me.enabled ? `Spanning Tree · VLAN ${vlan} (désactivé)`
+        : me.isRoot ? `Spanning Tree · VLAN ${vlan} · root bridge (priorité ${me.priority})`
+          : `Spanning Tree · VLAN ${vlan} · root ${labels.get([...info.switches].find(([, s]) => s === root)?.[0])} (priorité ${root.priority}), coût ${me.rootCost}`;
+      const rows = [...info.ports].filter(([k]) => k.startsWith(`${device.id}|`)).map(([, p]) => p)
+        .sort((a, b) => (a.portId & 255) - (b.portId & 255));
+      blocks.push(
+        <Table key={`stp-${vlan}`} title={title} head={['Port', 'Rôle', 'État', 'Coût', 'Prio.N°']}
+          empty={me.enabled ? 'Aucun port dans ce VLAN.' : 'STP désactivé sur ce VLAN : une boucle provoquerait une tempête de diffusion.'}
+          rows={me.enabled ? rows.map((p) => [p.name, STP_ROLE[p.role], p.state === 'blocking' ? <span key="b" className="stp-blocked">bloqué</span> : 'transmet', p.cost, `${p.portId >> 8}.${p.portId & 255}`]) : []} />,
+      );
+    }
   }
   if (device.config?.nat || device.config?.natRules?.length) {
     const rows = activeNat(rt).filter((e) => e.router === device.id);

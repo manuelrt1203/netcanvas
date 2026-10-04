@@ -1,5 +1,6 @@
 // Vue « réseau » d'un schéma exporté (format v3, v2 toléré) : qui est relié à qui, par quel port et
 // quel câble, l'état de chaque câble et la config de chaque interface.
+import { computeStp } from './stp.js';
 import { isValidCidr, isValidIp } from './ip.js';
 import { devicePorts, isDataMedia, isSviName, modelId, modelOf } from './catalog.js';
 import { autoCable, checkLink } from './cabling.js';
@@ -162,8 +163,16 @@ export function buildTopology(doc) {
     return all.filter((i) => isValidIp(i.ip) && isValidCidr(i.mask) && (includeDown || up(i)));
   }
 
-  return {
+  const topo = {
     devices, ports, links, linksOf, consoleLinks, status, other, portName, isUp,
     hostIface, routerIface, switchPort, l3IfaceOn, l3Ifaces, subIfaces, svis, sviUp,
   };
+  // Spanning Tree : ports bloqués par VLAN, tempêtes de diffusion ; noté aussi sur l'état des câbles (voyants)
+  topo.stp = computeStp(topo);
+  for (const [id, st] of status) {
+    const l = links.get(id);
+    const ends = [l.source, l.target].map((d) => ({ device: d, vlans: topo.stp.blockedVlans(d, id) })).filter((e) => e.vlans.length);
+    if (ends.length) status.set(id, { ...st, stpBlocked: ends });
+  }
+  return topo;
 }

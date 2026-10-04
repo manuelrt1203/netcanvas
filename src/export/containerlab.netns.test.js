@@ -4,7 +4,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { BGP_DEMO, DEMO, DHCP_DEMO, L3_DEMO, NAT_DEMO, OSPF_DEMO, ROAS_DEMO } from '../examples.js';
+import { BGP_DEMO, DEMO, DHCP_DEMO, L3_DEMO, NAT_DEMO, OSPF_DEMO, ROAS_DEMO, STP_DEMO } from '../examples.js';
+import { buildTopology } from '../net/topology.js';
 import { isRouting } from '../net/topology.js';
 import { simulatePing } from '../net/simulate.js';
 import { clabCommands } from './containerlab.js';
@@ -18,7 +19,8 @@ const skip = probe.status !== 0 && 'namespaces utilisateur indisponibles (unshar
 if (skip && process.env.NETCANVAS_REQUIRE_NETNS) throw new Error(`Tests réseau réels impossibles : ${skip}\n${probe.stderr}`);
 
 // Monte le réseau puis lance les pings ; renvoie { "src>ip": true|false }
-function runLab(doc, pings) {
+// wait : secondes avant les pings (STP : écoute puis apprentissage) ; probes : commandes dont on veut la sortie
+function runLab(doc, pings, { wait = 1, probes = [] } = {}) {
   const { table } = interfaceTable(doc);
   const commands = clabCommands(doc);
   const script = ['set -e', 'mount -t tmpfs none /run', 'mkdir -p /run/netns'];
@@ -39,7 +41,8 @@ function runLab(doc, pings) {
   for (const d of doc.devices) {
     for (const c of commands.get(d.id)) script.push(`ip netns exec ${d.id} sh -c ${sh(c)}`);
   }
-  script.push('set +e', 'sleep 1'); // laisse les bridges passer en forwarding
+  script.push('set +e', `sleep ${wait}`); // laisse les bridges passer en forwarding
+  for (const [key, ns, cmd] of probes) script.push(`echo "${key} $(ip netns exec ${ns} ${cmd} | tr '\n' ' ')"`);
   for (const [src, ip] of pings) {
     script.push(`ip netns exec ${src} ping -c1 -W1 ${ip} >/dev/null 2>&1 && echo "${src}>${ip} ok" || echo "${src}>${ip} ko"`);
   }
@@ -47,8 +50,9 @@ function runLab(doc, pings) {
   const r = spawnSync('unshare', ['-rnm', 'sh', '-c', script.join('\n')], { encoding: 'utf8', timeout: 60_000 });
   assert.equal(r.status, 0, r.stderr);
   return Object.fromEntries(r.stdout.trim().split('\n').map((line) => {
-    const [key, verdict] = line.split(' ');
-    return [key, verdict === 'ok'];
+    const [key, ...rest] = line.split(' ');
+    const verdict = rest.join(' ');
+    return [key, verdict === 'ok' ? true : verdict === 'ko' ? false : verdict];
   }));
 }
 
@@ -178,4 +182,23 @@ test('containerlab : NAT/PAT et NAT statique (iptables -t nat)', { skip }, () =>
 test('containerlab : DHCP (baux calculés installés, relais compris)', { skip }, () => {
   // PC1 : 192.168.10.10 (pool de R1), PC3 : 192.168.20.2 (serveur via relais)
   assertMatchesSimulator(structuredClone(DHCP_DEMO), [['pc1', '192.168.20.2', true], ['pc3', '192.168.30.10', true]]);
+});
+
+test('containerlab : STP du noyau Linux, même port bloqué que NetCanvas, ping par la racine', { skip }, () => {
+  const doc = structuredClone(STP_DEMO);
+  const { table } = interfaceTable(doc);
+  const topo = buildTopology(doc);
+  const [[blockedKey]] = [...topo.stp.vlans.get(1).ports].filter(([, p]) => p.state === 'blocking');
+  const [sw, link] = blockedKey.split('|');
+  const eth = `eth${table.get(sw).find((r) => r.link === link).index + 1}`;
+  const res = runLab(doc, [['pc1', '192.168.1.20']], {
+    wait: 7,
+    probes: doc.devices.filter((d) => d.type === 'switch').map((d) => [`stp-${d.id}`, d.id, 'bridge link show']),
+  });
+  assert.equal(res['pc1>192.168.1.20'], true);
+  assert.equal(simulatePing(doc, 'pc1', '192.168.1.20').ok, true);
+  // Un seul port bloqué dans tout le réseau, et c'est celui calculé par NetCanvas
+  const blocking = Object.entries(res).filter(([k]) => k.startsWith('stp-'))
+    .flatMap(([k, v]) => [...v.matchAll(/(eth\d+)@?\S*:.*?state blocking/g)].map((m) => `${k.slice(4)}|${m[1]}`));
+  assert.deepEqual(blocking, [`${sw}|${eth}`]);
 });

@@ -242,6 +242,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .link-light { stroke: var(--surface); stroke-width: 1.5; }
 .link-light.on { fill: var(--ok); }
 .link-light.off { fill: var(--danger); }
+.link-light.stp { fill: #ea580c; }
 @media (prefers-color-scheme: dark) {
   .react-flow__edge-path.cable-fiber { stroke: #fb923c; }
   .react-flow__edge-path.cable-serial { stroke: #f87171; }
@@ -486,3 +487,7 @@ button.linklike { background: none; border: 0; padding: 0; min-height: 0; color:
 .file-btn input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 .import-ignored { margin: 0 0 12px; padding-left: 18px; max-height: 180px; overflow-y: auto; font-size: .8rem; display: grid; gap: 4px; }
 .import-ignored code { overflow-wrap: anywhere; }
+.stp-row { align-items: end; }
+.stp-row .check { min-width: 6.5em; margin-bottom: 10px !important; }
+.stp-blocked { color: #c2410c; font-weight: 600; }
+@media (prefers-color-scheme: dark) { .stp-blocked { color: #fb923c; } }

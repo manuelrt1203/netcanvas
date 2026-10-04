@@ -337,6 +337,30 @@ await page.getByTestId('rf__node-sw1').click();
 await page.click('role=button[name="+1 h"]');
 assert.ok(await macTable.getByText(/Vide : le switch apprend/).isVisible(), 'table MAC vidée par le vieillissement');
 
+step('STP : port bloqué sur le plan, tables, tempête sans STP');
+await openDemo('STP (triangle de switches)');
+assert.equal(await page.locator('.link-light.stp').count(), 1, 'un seul port bloqué (orange)');
+await page.getByTestId('rf__node-sw3').click();
+await page.click('role=tab[name="Tables"]');
+const stpTable = page.locator('.table-block', { hasText: 'Spanning Tree · VLAN 1' });
+assert.match(await stpTable.locator('h3').textContent(), /root SW Cœur \(priorité 4097\), coût 4/);
+assert.equal(await stpTable.locator('.stp-blocked').count(), 1);
+await page.click('role=tab[name=/^Propriétés/]');
+for (const id of ['sw1', 'sw2', 'sw3']) {
+  await page.getByTestId(`rf__node-${id}`).click();
+  const stpBox = page.locator('details.proto', { hasText: 'Spanning Tree' });
+  if (!(await stpBox.evaluate((e) => e.open))) await stpBox.locator('summary').click();
+  await stpBox.getByLabel('VLAN 1', { exact: true }).uncheck();
+}
+assert.equal(await page.locator('.link-light.stp').count(), 0);
+await page.getByTestId('rf__pane').click({ position: { x: 20, y: 20 } }).catch(() => {});
+await page.click('role=tab[name="Simulation"]');
+await page.selectOption('#sim-src', { label: 'PC A' });
+await page.selectOption('#sim-dst', { label: 'PC B · 192.168.1.20' });
+await page.click('text=Lancer le ping');
+await page.waitForSelector('.sim-verdict.fail', { timeout: 15000 });
+assert.match(await page.locator('.sim-log .log-error').last().textContent(), /^Tempête de diffusion dans le VLAN 1/);
+
 step('import d\'une config Cisco dans un routeur');
 await openDemo('2 VLAN, 2 routeurs (statique)');
 await page.click('role=tab[name=/^Propriétés/]');

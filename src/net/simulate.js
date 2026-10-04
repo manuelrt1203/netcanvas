@@ -408,7 +408,11 @@ function noRoute(topo, routing, id, dstIp, name) {
 function deliver(topo, fromId, linkId, targetIp, name, tag = null, sviVlan = null) {
   if (linkId != null && !topo.isUp(linkId)) throw new SimError(`${name(fromId)} : câble hors service. ${topo.status.get(linkId).reason}`, fromId);
   const target = parseIp(targetIp);
-  const { endpoints, drops, vlansSeen, switches, traversed } = flood(topo, fromId, linkId, tag, sviVlan);
+  const { endpoints, drops, vlansSeen, switches, traversed, storm } = flood(topo, fromId, linkId, tag, sviVlan);
+  if (storm) {
+    const names = storm.switches.map((id) => name(id)).join(', ');
+    throw new SimError(`Tempête de diffusion dans le VLAN ${storm.vlan} : la requête ARP tourne sans fin dans la boucle entre ${names}, car STP est désactivé. Le réseau est saturé et plus rien ne passe. Réactive STP (« spanning-tree vlan ${storm.vlan} ») ou retire un câble de la boucle.`, fromId);
+  }
   for (const e of endpoints) {
     const iface = e.svi != null ? topo.l3Ifaces(e.device).find((s) => s.svi && s.vlan === e.svi) : topo.l3IfaceOn(e.device, e.inLink, e.tag);
     // Le routeur répond aussi en ARP pour ses adresses publiques de NAT statique

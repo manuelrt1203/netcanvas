@@ -128,7 +128,7 @@ Pour chaque trame, on voit les en-têtes (Ethernet II, 802.1Q sur un trunk, ARP,
 
 **Onglet Tables** : toutes les tables de l'équipement sélectionné (routage, cache ARP, table MAC, traductions NAT, baux DHCP distribués, voisins OSPF, sessions BGP), avec l'âge et l'expiration de chaque entrée, et un bouton « Vider ». Disponible aussi en lecture seule.
 
-Pas encore simulé (le terminal le dit) : EIGRP, STP, DNS.
+Pas encore simulé (le terminal le dit) : EIGRP, DNS.
 
 ## Import de configuration (`src/cli/import.js`)
 
@@ -160,6 +160,28 @@ Un schéma peut porter un exercice : un titre, une consigne et des objectifs vé
 Indices progressifs pour l'élève : 1. l'objectif n'est pas atteint ; 2. l'équipement où ça bloque (bouton « Voir ») ; 3. l'explication du simulateur.
 
 Parcours : l'enseignant règle le réseau qui marche, ajoute les objectifs (tous verts), introduit les pannes et partage le lien de lecture. L'élève clique « Dupliquer pour modifier » et répare dans son brouillon. Deux TP sont fournis dans le menu Démos (inter-VLAN, OSPF), avec trois pannes chacun.
+
+## Spanning Tree (`src/net/stp.js`)
+
+PVST+, comme les switches Cisco par défaut : un arbre par VLAN. Le calcul échange des BPDU jusqu'à convergence :
+- la plus petite priorité (4096 × n, plus le numéro de VLAN), puis la plus petite MAC, devient root bridge ;
+- chaque switch garde le meilleur chemin vers la racine : coût IEEE (Fa = 19, Gi = 4), puis pont et port émetteurs ;
+- sur chaque câble, le côté qui annonce le meilleur chemin est désigné, l'autre bloque, sauf s'il est port racine.
+
+Un switch sans STP relaie les BPDU comme des trames ordinaires : les autres cassent quand même la boucle à travers lui. S'il reste une boucle (STP désactivé partout dans le VLAN), c'est une **tempête de diffusion** : le ping échoue avec l'explication, et les contrôles signalent l'erreur.
+
+Où on le voit :
+- sur le plan, un voyant orange marque le port bloqué ;
+- l'onglet Tables donne, par VLAN, la racine, le coût, puis le rôle et l'état de chaque port ;
+- la diffusion ARP et le ping ne passent pas par les ports bloqués.
+
+Configuration :
+- formulaire : mode, et par VLAN l'activation et la priorité ; PortFast sur les ports en access ;
+- terminal IOS : `show spanning-tree [vlan X]`, `spanning-tree mode pvst|rapid-pvst`, `spanning-tree vlan X priority N`, `spanning-tree vlan X root primary|secondary`, `no spanning-tree vlan X` ; sur l'interface, `spanning-tree portfast`, `spanning-tree cost N`, `spanning-tree port-priority N`.
+
+Export Containerlab : s'il y a une boucle, le bridge Linux active STP avec la MAC du switch, sa priorité et les coûts de port. Linux ne fait qu'un arbre (802.1D), pris sur la config du VLAN 1. Un test sur vrai réseau vérifie que le noyau bloque le même port que NetCanvas.
+
+Démo : « STP (triangle de switches) ».
 
 ## Matériel et câblage (`src/net/catalog.js`, `src/net/cabling.js`)
 
@@ -264,7 +286,7 @@ Les fichiers v1 et v2 s'importent toujours : le modèle est déduit des ports ut
 ## Tests
 
 ```bash
-npm test           # 156 tests : calculs IP, ping, validation, JSON, TP, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
+npm test           # 162 tests : calculs IP, ping, validation, JSON, TP, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
 npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : édition, contrôles, ping, persistance, exports, câblage, terminaux (IOS, RouterOS, PC), démos OSPF et BGP (show ip ospf neighbor, next-hop-self retiré)
 ```
 
@@ -272,5 +294,5 @@ npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : éditi
 
 ## Prochaines étapes
 
-1. Simulation : STP (boucles de switches), DNS.
+1. Simulation : DNS et services, IPv6.
 2. Partage : historique des versions, expiration des liens, comptes utilisateurs (« Mes schémas »).

@@ -4,9 +4,10 @@ import { dataPorts, ensureEntry, getEntry, linkOf, maskToCidr, pad, ping, withDe
 import { buildTopology, isLoopbackName } from '../net/topology.js';
 import { cidrToMask, formatIp, isBroadcastAddress, isNetworkAddress, isValidIp, networkOf, parseIp, sameSubnet } from '../net/ip.js';
 import { isSviName, modelOf } from '../net/catalog.js';
-import { hostname as iosHostname, iosAclLines, iosInterfaceExtras, iosDhcpLines, iosLongName, iosNatLines, iosRoutingLines } from '../export/cisco.js';
+import { hostname as iosHostname, iosStpLines, iosStpPortLines, iosAclLines, iosInterfaceExtras, iosDhcpLines, iosLongName, iosNatLines, iosRoutingLines } from '../export/cisco.js';
 import { traceroute } from '../net/traceroute.js';
 import { ipArpShow, tableClears, tableShows } from './ios-tables.js';
+import { stpConfigCommand, stpInterfaceCommands, stpNoConfigCommand, stpShowCommand } from './ios-stp.js';
 import { clearDhcpCommand, dhcpConfigCommand, dhcpTree, helperCommands, showDhcp } from './ios-dhcp.js';
 import { clearNatCommand, natConfigCommand, natInterfaceCommands, showNatTranslations } from './ios-nat.js';
 import { accessGroupCommands, aclConfigCommands, aclShows, aclTree, showAccessLists } from './ios-acl.js';
@@ -96,12 +97,14 @@ function showIpIntBrief(dev, doc) {
 function runningConfig(dev) {
   const lines = ['!', 'version 15.1', 'no service timestamps log datetime msec', '!', `hostname ${iosHostname(dev.label, dev.type)}`, '!'];
   if (dev.type === 'switch') {
+    lines.push(...iosStpLines(dev.config ?? {}), '!');
     for (const p of dataPorts(dev)) {
       const e = getEntry(dev, p.name);
       lines.push(`interface ${long(p.name)}`);
       if (e?.description) lines.push(` description ${e.description}`);
       if (e?.mode === 'trunk') lines.push(' switchport mode trunk');
       else if (e && (Number(e.vlan) || 1) !== 1) lines.push(` switchport access vlan ${e.vlan}`);
+      lines.push(...iosStpPortLines(e));
       if (e?.shutdown) lines.push(' shutdown');
       lines.push('!');
     }
@@ -334,6 +337,7 @@ function showTree(dev) {
   ];
   if (isSwitch) {
     kids.push(kw('vlan', 'VTP VLAN status', { run: (c) => c.out.push(...showVlanBrief(c.dev)), children: [kw('brief', 'VTP all VLAN status in brief', { run: (c) => c.out.push(...showVlanBrief(c.dev)) })] }));
+    kids.push(stpShowCommand());
   }
   kids.push(...tableShows(dev, parseInterfaces));
   return kw('show', 'Show running system information', { children: kids });
@@ -471,6 +475,7 @@ function configTree(dev) {
             ],
           }),
           kw('vlan', 'Vlan commands', { children: [arg('vlan', '<1-4094>', 'VLAN ID', isNum(2, 4094), { run: removeVlan })] }),
+          stpNoConfigCommand(),
         ] : []),
         accept('service', ''),
         accept('banner', ''),
@@ -481,6 +486,7 @@ function configTree(dev) {
     doCmd(dev),
   ];
   if (isSwitch) {
+    children.push(stpConfigCommand());
     children.push(kw('vlan', 'Vlan commands', {
       children: [arg('vlan', '<1-4094>', 'ISL VLAN IDs 1-1005', isNum(1, 4094), {
         run: (c) => {
@@ -606,8 +612,9 @@ function interfaceTree(dev) {
           kw('nonegotiate', 'Device will not engage in negotiation protocol on this interface', { run() {} }),
         ],
       }),
-      accept('spanning-tree', 'Spanning Tree Subsystem'),
+      stpInterfaceCommands(forIfaces).add,
     );
+    no.push(stpInterfaceCommands(forIfaces).remove);
     no.push(kw('switchport', 'Set switching mode characteristics', {
       children: [kw('access', '', { children: [kw('vlan', '', { run: (c) => forIfaces(c, (e) => { e.vlan = 1; }) })] })],
     }));

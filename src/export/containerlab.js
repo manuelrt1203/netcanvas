@@ -1,7 +1,9 @@
 // Export Containerlab (.clab.yml) : chaque équipement devient un conteneur Linux configuré au démarrage.
 //   routeur : ip_forward + adresses + loopbacks + table de routage. Les conteneurs n'exécutent pas
 //             OSPF / RIP / BGP : on installe en statique les routes de l'état convergé calculé par NetCanvas.
-//   switch  : bridge Linux avec filtrage VLAN (access = PVID non étiqueté, trunk = VLAN étiquetés + natif 1)
+//   switch  : bridge Linux avec filtrage VLAN (access = PVID non étiqueté, trunk = VLAN étiquetés + natif 1).
+//             STP (s'il y a une boucle) : le bridge Linux n'a qu'un arbre (802.1D) ; on reprend la config du VLAN 1
+//             (activé, priorité), la MAC du switch et les coûts de port, pour qu'il bloque le même port que NetCanvas.
 //   hôte    : adresse + route par défaut
 // Containerlab réserve eth0 au management : le 1er câble d'un équipement est eth1, le 2e eth2…
 import { isValidCidr, isValidIp } from '../net/ip.js';
@@ -11,6 +13,8 @@ import { isMikrotik } from '../net/catalog.js';
 import { wildcardToCidr } from '../net/routing.js';
 import { withLeases } from '../net/dhcp.js';
 import { ascii, interfaceTable, switchVlans, uniqueNames } from './common.js';
+import { bridgePriority, portCost, stpEnabled } from '../net/stp.js';
+import { macOf } from '../net/mac.js';
 
 export const CLAB_IMAGE = 'nicolaka/netshoot:latest'; // iproute2 + bridge + ping + tcpdump
 
@@ -53,10 +57,17 @@ export function clabCommands(rawDoc) {
       cmds.push('ip link add br0 type bridge', 'ip link set br0 up');
       for (const r of rows) cmds.push(`ip link set ${ifname(r.index)} master br0`, `ip link set ${ifname(r.index)} up`);
     } else if (d.type === 'switch') {
-      cmds.push('ip link add br0 type bridge vlan_filtering 1', 'ip link set br0 up');
+      // STP seulement s'il y a une boucle à casser : sinon le bridge transmet tout de suite (pas d'attente)
+      const loop = [...topo.stp.vlans.values()].some((v) => [...v.ports.values()].some((p) => p.state === 'blocking'));
+      const stp = loop && stpEnabled(d, 1);
+      const mac = macOf(d, 'Vlan1').map((b) => b.toString(16).padStart(2, '0')).join(':');
+      cmds.push(stp
+        ? `ip link add br0 address ${mac} type bridge vlan_filtering 1 stp_state 1 priority ${bridgePriority(d, 1) + 1} forward_delay 200 hello_time 100`
+        : 'ip link add br0 type bridge vlan_filtering 1', 'ip link set br0 up');
       for (const r of rows) {
         const dev = ifname(r.index);
         cmds.push(`ip link set ${dev} master br0`, `ip link set ${dev} up`);
+        if (stp) cmds.push(`bridge link set dev ${dev} cost ${Number(r.stpCost) || portCost(r.name)}`);
         if (r.mode === 'trunk') {
           // VLAN 1 reste natif (non étiqueté), les autres passent étiquetés
           for (const v of allVlans) cmds.push(`bridge vlan add vid ${v} dev ${dev}`);

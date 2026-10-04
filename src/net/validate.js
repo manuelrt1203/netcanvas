@@ -142,5 +142,11 @@ export function validate(rawDoc, ctx = {}) {
       add(owners[0].id, 'error', `Adresse ${ip} en double : ${owners.map((o) => o.where).join(', ')}.`);
     }
   }
+  // Boucle de switches sans Spanning Tree : tempête de diffusion
+  for (const storm of topo.stp?.storms ?? []) {
+    const names = storm.switches.map((id) => topo.devices.get(id).label).join(', ');
+    add(storm.switches[0], 'error', `Boucle de switches sans STP dans le VLAN ${storm.vlan} (${names}) : tempête de diffusion, plus rien ne passe dans ce VLAN. Réactive STP ou retire un câble.`);
+  }
+
   return issues;
 }

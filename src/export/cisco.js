@@ -135,9 +135,11 @@ function switchConfig(d, rows) {
       const vlan = Number(row.vlan) || 1;
       if (vlan !== 1) lines.push(` switchport access vlan ${vlan}`);
     }
+    lines.push(...iosStpPortLines(row));
     if (row.shutdown) lines.push(' shutdown');
     lines.push(' exit');
   }
+  lines.push(...iosStpLines(d.config ?? {}));
   // Niveau 3 / administration : interfaces VLAN, ip routing, passerelle, routes, protocoles
   const c = d.config ?? {};
   for (const svi of (c.interfaces ?? []).filter((i) => /^Vlan\d+$/.test(i.name) && i.ip)) {
@@ -370,4 +372,21 @@ export function iosDhcpLines(cfg) {
     if (p.dns) out.push(` dns-server ${p.dns}`);
   }
   return out.length ? [...out, '!'] : [];
+}
+
+// Spanning Tree : lignes globales (mode, VLAN désactivés, priorités) et lignes d'un port
+export function iosStpLines(cfg) {
+  const stp = cfg.stp ?? {};
+  const lines = [`spanning-tree mode ${stp.mode ?? 'pvst'}`, 'spanning-tree extend system-id'];
+  for (const v of [...(stp.disabled ?? [])].sort((a, b) => a - b)) lines.push(`no spanning-tree vlan ${v}`);
+  for (const [v, p] of Object.entries(stp.priority ?? {}).sort(([a], [b]) => a - b)) lines.push(`spanning-tree vlan ${v} priority ${p}`);
+  return lines;
+}
+
+export function iosStpPortLines(e) {
+  return [
+    ...(e?.portfast ? [' spanning-tree portfast'] : []),
+    ...(e?.stpCost ? [` spanning-tree cost ${e.stpCost}`] : []),
+    ...(e?.stpPriority != null && e.stpPriority !== 128 ? [` spanning-tree port-priority ${e.stpPriority}`] : []),
+  ];
 }

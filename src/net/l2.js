@@ -17,6 +17,7 @@ export function flood(topo, fromId, linkId, startTag = null, sviVlan = null) {
   const vlansSeen = new Set();
   const switches = []; // switches atteints par la diffusion : { device, inLink, vlan } (apprentissage MAC)
   const traversed = queue[0].hops.slice(); // tous les câbles parcourus par la diffusion (simulation pas à pas)
+  let storm = null; // boucle sans STP atteinte : tempête de diffusion
 
   while (queue.length) {
     const { device, inLink, tag, vlan, hops, internal } = queue.shift();
@@ -53,7 +54,10 @@ export function flood(topo, fromId, linkId, startTag = null, sviVlan = null) {
           continue;
         }
       }
+      // Port bloqué par STP : la trame est jetée à l'entrée
+      if (!internal && topo.stp?.blocked(device, inLink, v)) continue;
       vlansSeen.add(v);
+      storm ??= topo.stp?.storm(device, v) ?? null;
       const key = `${device}|${v}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -70,6 +74,7 @@ export function flood(topo, fromId, linkId, startTag = null, sviVlan = null) {
         if (p.mode === 'trunk') outTag = v === NATIVE_VLAN ? null : v;
         else if ((Number(p.vlan) || NATIVE_VLAN) === v) outTag = null;
         else continue;
+        if (topo.stp?.blocked(device, out, v)) continue;
         if (!topo.isUp(out)) {
           drops.push(`câble ${dev.label} ${p.name} hors service : ${topo.status.get(out).reason}`);
           continue;
@@ -94,5 +99,5 @@ export function flood(topo, fromId, linkId, startTag = null, sviVlan = null) {
     reached.add(key);
     endpoints.push({ device, inLink, tag, hops, vlan });
   }
-  return { endpoints, drops, vlansSeen, switches, traversed };
+  return { endpoints, drops, vlansSeen, switches, traversed, storm };
 }

@@ -51,8 +51,10 @@ function CableEdge({ id, source, target, sourceX, sourceY, targetX, targetY, sel
     [ends[0] && !isHost(ends[0]) ? data?.sourceIface : null, labelAt(0.22)],
     [ends[1] && !isHost(ends[1]) ? data?.targetIface : null, labelAt(0.78)],
   ].filter(([name]) => name);
-  // Voyants aux deux bouts, comme dans Packet Tracer : vert = lien actif, rouge = hors service
+  // Voyants aux deux bouts, comme dans Packet Tracer : vert = lien actif, rouge = hors service,
+  // orange = port bloqué par Spanning Tree
   const lights = [labelAt(0.07), labelAt(0.93)];
+  const blockedAt = (device) => status?.stpBlocked?.find((e) => e.device === device)?.vlans ?? null;
 
   const forward = hop && hop.from === source;
 
@@ -63,11 +65,14 @@ function CableEdge({ id, source, target, sourceX, sourceY, targetX, targetY, sel
         path={path}
         className={`cable cable-${cable}${down ? ' down' : ''}${selected ? ' selected' : ''}${traversed ? ` sim-${traversed}` : ''}${tag === 'Trunk' ? ' trunk' : ''}`}
       />
-      {cable !== 'console' && lights.map(([x, y], i) => (
-        <circle key={i} className={`link-light ${down ? 'off' : 'on'}`} cx={x} cy={y} r="4">
-          <title>{down ? status.reason : 'Lien actif'}</title>
-        </circle>
-      ))}
+      {cable !== 'console' && lights.map(([x, y], i) => {
+        const blocked = !down && blockedAt(i === 0 ? source : target);
+        return (
+          <circle key={i} className={`link-light ${down ? 'off' : blocked ? 'stp' : 'on'}`} cx={x} cy={y} r="4">
+            <title>{down ? status.reason : blocked ? `Port bloqué par Spanning Tree (VLAN ${blocked.join(', ')}) : il casse une boucle` : 'Lien actif'}</title>
+          </circle>
+        );
+      })}
       {hop && (
         <Packet
           key={hop.key}

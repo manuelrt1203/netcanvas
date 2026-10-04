@@ -209,6 +209,55 @@ function SviForm({ node, update }) {
   );
 }
 
+// Spanning Tree (PVST+) : mode, et par VLAN : activé ou non, priorité du pont
+const STP_PRIORITIES = Array.from({ length: 16 }, (_, i) => i * 4096);
+function StpForm({ node, ports, update }) {
+  const stp = node.data.stp ?? {};
+  const vlans = [...new Set([1, ...Object.keys(node.data.vlans ?? {}).map(Number), ...ports.filter((p) => (p.mode ?? 'access') === 'access').map((p) => Number(p.vlan) || 1)])].sort((a, b) => a - b);
+  const set = (fn) => update((d) => {
+    const next = fn(structuredClone(d.stp ?? {}));
+    for (const k of Object.keys(next)) if (next[k] === undefined || (typeof next[k] === 'object' && !Object.keys(next[k]).length)) delete next[k];
+    return { ...d, stp: Object.keys(next).length ? next : undefined };
+  });
+  const custom = stp.mode || stp.priority || stp.disabled?.length;
+  return (
+    <details className="proto" open={Boolean(custom)}>
+      <summary>Spanning Tree {custom ? <span className="badge-on">modifié</span> : null}</summary>
+      <div className="field">
+        <label htmlFor={`stp-mode-${node.id}`}>Mode</label>
+        <select id={`stp-mode-${node.id}`} value={stp.mode ?? 'pvst'} onChange={(e) => set((x) => ({ ...x, mode: e.target.value === 'pvst' ? undefined : e.target.value }))}>
+          <option value="pvst">PVST+ (802.1D, un arbre par VLAN)</option>
+          <option value="rapid-pvst">Rapid PVST+ (802.1w)</option>
+        </select>
+      </div>
+      {vlans.map((v) => {
+        const on = !(stp.disabled ?? []).includes(v);
+        return (
+          <div key={v} className="field-row stp-row">
+            <label className="check">
+              <input type="checkbox" checked={on} onChange={(e) => set((x) => ({ ...x, disabled: e.target.checked ? (x.disabled ?? []).filter((y) => y !== v) : [...(x.disabled ?? []), v].sort((a, b) => a - b) }))} />
+              VLAN {v}
+            </label>
+            <div className="field">
+              <label htmlFor={`stp-prio-${node.id}-${v}`}>Priorité</label>
+              <select id={`stp-prio-${node.id}-${v}`} disabled={!on} value={stp.priority?.[v] ?? 32768}
+                onChange={(e) => set((x) => {
+                  const priority = { ...x.priority };
+                  if (Number(e.target.value) === 32768) delete priority[v];
+                  else priority[v] = Number(e.target.value);
+                  return { ...x, priority };
+                })}>
+                {STP_PRIORITIES.map((p) => <option key={p} value={p}>{p}{p === 32768 ? ' (défaut)' : p === 0 ? ' (toujours root)' : ''}</option>)}
+              </select>
+            </div>
+          </div>
+        );
+      })}
+      <p className="hint">La plus petite priorité (puis la plus petite MAC) devient root bridge. Un port orange sur le plan est bloqué : il casse une boucle. Sans STP, une boucle provoque une tempête de diffusion.</p>
+    </details>
+  );
+}
+
 function SwitchForm({ node, edges, labels, update, routing }) {
   const l3 = MODELS[modelId({ type: node.type, model: node.data.model })].l3;
   const ports = portsOf(node, edges);
@@ -239,10 +288,17 @@ function SwitchForm({ node, edges, labels, update, routing }) {
                   onChange={(e) => patchPort(p, { vlan: Math.max(1, Math.min(4094, Math.trunc(Number(e.target.value)) || 1)) })} />
               )}
             </div>
+            {mode === 'access' && (
+              <label className="check">
+                <input type="checkbox" checked={Boolean(p.portfast)} onChange={(e) => patchPort(p, { portfast: e.target.checked || undefined })} />
+                PortFast (poste de travail : transmet tout de suite, sans attendre STP)
+              </label>
+            )}
           </fieldset>
         );
       })}
       <p className="hint">Un trunk transporte tous les VLAN ; le VLAN 1 (natif) passe sans étiquette.</p>
+      <StpForm node={node} ports={ports} update={update} />
       <SviForm node={node} update={update} />
       {l3 && (
         <label className="check">
