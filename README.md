@@ -138,6 +138,25 @@ Un câble hors service coupe vraiment le réseau : le ping échoue à cet endroi
 
 Pas encore modélisé : router-on-a-stick (sous-interfaces), NAT, ACL, STP.
 
+## Partage par lien (sans compte)
+
+Le bouton **Partager** enregistre le schéma en ligne (Supabase) et donne trois liens :
+- **lecture seule** `…/?d=abc123` : on regarde et on simule (ping, traceroute) sans rien pouvoir modifier ; « Dupliquer pour modifier » en fait une copie locale ;
+- **édition** `…/?d=abc123#edit=jeton` : chaque modification est enregistrée en ligne une seconde après ;
+- **intégration** `…/?d=abc123&embed=1` : plan et panneau seuls, à mettre dans une iframe (Moodle, Notion, wiki).
+
+Sécurité :
+- **Table** : `diagrams`, sécurité par lignes (RLS) activée et aucune politique, donc aucun accès direct.
+- **Fonctions** : trois seulement, `create_diagram`, `get_diagram` et `update_diagram`, qui vérifient le format et la taille (2 Mo maximum).
+- **Jeton d'édition** : la base ne garde que son empreinte SHA-256. Il est placé après le `#`, donc jamais envoyé au serveur web ni écrit dans ses journaux. Il est aussi gardé dans le navigateur (« Mes partages »).
+- **Clé dans `.env`** : c'est une clé « publishable », publique par nature.
+
+Un schéma partagé ouvert n'écrase jamais le brouillon local (« Retour à mon brouillon »).
+
+```bash
+npm run test:share   # contre la vraie base (npm run dev lancé) : création, enregistrement, lecture seule verrouillée, édition, lien inconnu
+```
+
 ## Exports (onglet « Export »)
 
 | Format | Contenu |
@@ -193,4 +212,4 @@ npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : éditi
 ## Prochaines étapes
 
 1. Simulation : tables ARP / MAC, DNS.
-2. Backend + base (PostgreSQL `jsonb`), liens partageables et page `/embed/:id`.
+2. Partage : historique des versions, expiration des liens, comptes utilisateurs (« Mes schémas »).

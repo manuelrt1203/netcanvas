@@ -356,8 +356,8 @@ await page.keyboard.press('Enter');
 assert.match(await page.locator('.panel h2').first().textContent(), /Routeur/);
 await page.locator('.react-flow__pane').click({ position: { x: 40, y: 40 } });
 await page.keyboard.press('?');
-assert.ok(await page.locator('.help-dialog').isVisible());
-await page.click('.help-dialog >> text=Fermer');
+assert.ok(await page.locator('dialog[aria-labelledby="help-title"]').isVisible());
+await page.click('dialog[aria-labelledby="help-title"] >> text=Fermer');
 
 assert.deepEqual(errors, [], `erreurs console : ${errors.join(' | ')}`);
 console.log('OK');

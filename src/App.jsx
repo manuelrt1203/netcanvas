@@ -29,6 +29,7 @@ import { HOST_TYPES, buildTopology } from './net/topology.js';
 import { computeRouting } from './net/routing.js';
 import { withLeases } from './net/dhcp.js';
 import { EMPTY_RUNTIME, activeNat, formatTime } from './net/runtime.js';
+import { createShared, loadShared, myShares, parseShareLocation, rememberShare, saveShared, shareEnabled, shareLinks } from './share.js';
 import { CABLES, MODELS, TYPES } from './net/catalog.js';
 import { pickPorts } from './net/cabling.js';
 import { EMPTY_SIM, LinkContext, SimContext } from './SimContext.js';
@@ -120,14 +121,97 @@ function Editor() {
   const wideInspector = tab === 'props' && configMode === 'terminal' && hasTerminal(selectedDevice);
   const errorCount = issues.filter((i) => i.level === 'error').length;
 
-  // Sauvegarde automatique du brouillon dans le navigateur
+  // --- Partage par lien ----------------------------------------------------------
+  // shared : { id, token (édition) | null (lecture seule), embed, status: loading|saved|saving|error, savedAt, message }
+  const [shared, setShared] = useState(() => {
+    const loc = parseShareLocation();
+    return loc ? { ...loc, status: 'loading' } : null;
+  });
+  const readOnly = Boolean(shared && !shared.token);
+  const lastSaved = useRef(null); // dernier document enregistré en ligne
+  const shareDialog = useRef(null);
+
+  // Sauvegarde automatique : brouillon local, sauf pendant qu'un schéma partagé est ouvert
   useEffect(() => {
+    if (shared) return;
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(doc));
     } catch {
       /* stockage indisponible : on ignore */
     }
-  }, [doc]);
+  }, [doc, shared]);
+
+  // Ouverture d'un lien ?d=…
+  useEffect(() => {
+    if (shared?.status !== 'loading') return;
+    loadShared(shared.id)
+      .then((row) => {
+        if (!row) throw new Error('Ce lien de partage n\'existe pas (ou plus).');
+        replaceDoc(loadDoc(row.doc));
+        lastSaved.current = null; // fixé au premier rendu du document chargé
+        setShared((s) => ({ ...s, status: 'saved', savedAt: row.updatedAt }));
+        if (shared.token) rememberShare({ id: shared.id, token: shared.token, name: row.name, at: row.updatedAt });
+      })
+      .catch((err) => {
+        setError(`Partage : ${err.message}`);
+        setShared(null);
+        window.history.replaceState(null, '', '/');
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shared?.status]);
+
+  // Lien d'édition : enregistrement en ligne une seconde après la dernière modification
+  useEffect(() => {
+    if (!shared?.token || shared.status === 'loading') return undefined;
+    const snap = JSON.stringify(doc);
+    if (lastSaved.current === null) {
+      lastSaved.current = snap;
+      return undefined;
+    }
+    if (snap === lastSaved.current) return undefined;
+    const t = setTimeout(() => {
+      setShared((s) => ({ ...s, status: 'saving' }));
+      saveShared(shared.id, shared.token, doc)
+        .then((at) => {
+          lastSaved.current = snap;
+          setShared((s) => ({ ...s, status: 'saved', savedAt: at, message: null }));
+          rememberShare({ id: shared.id, token: shared.token, name: doc.name, at });
+        })
+        .catch((err) => setShared((s) => ({ ...s, status: 'error', message: err.message })));
+    }, 1000);
+    return () => clearTimeout(t);
+  }, [doc, shared?.token, shared?.status === 'loading']);
+
+  const share = async () => {
+    if (shared?.token) {
+      shareDialog.current?.showModal();
+      return;
+    }
+    try {
+      setShared({ id: null, token: null, status: 'saving' });
+      const { id, token } = await createShared(doc);
+      window.history.replaceState(null, '', `/?d=${id}#edit=${token}`);
+      lastSaved.current = JSON.stringify(doc);
+      const at = new Date().toISOString();
+      setShared({ id, token, embed: false, status: 'saved', savedAt: at });
+      rememberShare({ id, token, name: doc.name, at });
+      shareDialog.current?.showModal();
+    } catch (err) {
+      setShared(null);
+      setError(`Partage impossible : ${err.message}`);
+    }
+  };
+
+  // Quitter le schéma partagé : retour au brouillon local (« garder » : le schéma devient le brouillon)
+  const leaveShared = (keep) => {
+    if (keep && draft?.nodes.length && !confirm('Remplacer ton brouillon local par ce schéma ?')) return;
+    window.history.replaceState(null, '', '/');
+    setShared(null);
+    if (!keep) {
+      const local = loadDraft();
+      replaceDoc(local ?? { nodes: [], edges: [], name: 'Mon réseau', runtime: null });
+    }
+  };
 
   useEffect(() => () => clearTimeout(timer.current), []);
 
@@ -308,6 +392,7 @@ function Editor() {
   // Raccourcis clavier (hors champs de saisie : là, Ctrl+Z reste celui du navigateur)
   const shortcuts = useRef({});
   shortcuts.current = {
+    readOnly,
     undo, redo, copy, paste, duplicateSelection,
     hasSelection: () => nodes.some((n) => n.selected),
     hasClipboard: () => Boolean(clipboard.current?.nodes.length),
@@ -317,6 +402,7 @@ function Editor() {
       if (isTyping(e.target)) return;
       const mod = e.ctrlKey || e.metaKey;
       const k = e.key.toLowerCase();
+      if (shortcuts.current.readOnly && mod && ['z', 'y', 'v', 'd'].includes(k)) return; // lecture seule
       const run = (fn) => {
         e.preventDefault();
         shortcuts.current[fn]();
@@ -458,7 +544,7 @@ function Editor() {
   return (
     <LinkContext.Provider value={linkStatus}>
       <SimContext.Provider value={sim.view}>
-        <div className={`app${wideInspector ? ' wide-inspector' : ''}`}>
+        <div className={`app${wideInspector ? ' wide-inspector' : ''}${readOnly ? ' read-only' : ''}${shared?.embed ? ' embed' : ''}`}>
           <header className="topbar">
             <div className="brand">
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -468,7 +554,7 @@ function Editor() {
               NetCanvas
             </div>
             <label className="visually-hidden" htmlFor="name">Nom du schéma</label>
-            <input id="name" className="doc-name" value={name} onChange={(e) => setName(e.target.value)} />
+            <input id="name" className="doc-name" value={name} readOnly={readOnly} onChange={(e) => setName(e.target.value)} />
             <div className="actions">
               <div className="clock" role="group" aria-label="Temps simulé">
                 <span className="clock-time" title="Temps simulé (baux DHCP, table NAT)">⏱ {formatTime(runtime.time)}</span>
@@ -479,6 +565,7 @@ function Editor() {
                   aria-label="Remettre le temps à zéro (vide les baux et la table NAT)" title="Remettre à zéro : temps, baux DHCP, table NAT"
                   onClick={() => setRuntime({ ...EMPTY_RUNTIME })}>↺</button>
               </div>
+              {!readOnly && (<>
               <details className="demo-menu" ref={demoMenu}>
                 <summary className="button ghost">Démos</summary>
                 <div className="demo-list" role="menu">
@@ -494,13 +581,40 @@ function Editor() {
                 <button type="button" className="ghost icon" onClick={undo} disabled={!canUndo} aria-label="Annuler (Ctrl+Z)" title="Annuler (Ctrl+Z)">↶</button>
                 <button type="button" className="ghost icon" onClick={redo} disabled={!canRedo} aria-label="Rétablir (Ctrl+Y)" title="Rétablir (Ctrl+Y)">↷</button>
               </div>
+              </>)}
               <button type="button" className="ghost icon" onClick={() => helpDialog.current?.showModal()} aria-label="Raccourcis clavier" title="Raccourcis clavier (?)">?</button>
+              {shareEnabled && !readOnly && (
+                <button type="button" className="ghost" onClick={share} disabled={shared?.status === 'saving' && !shared.id}>
+                  {shared?.token ? 'Partagé' : 'Partager'}
+                </button>
+              )}
               <button type="button" onClick={() => setTab('export')}>Exporter</button>
             </div>
           </header>
+          <div className="notices">
           {error && <p className="error" role="alert">{error}</p>}
+          {shared && !shared.embed && (
+            <div className={`share-banner${readOnly ? ' ro' : ''}`} role="status">
+              {shared.status === 'loading' ? 'Ouverture du schéma partagé…'
+                : readOnly ? <>Schéma partagé en <strong>lecture seule</strong> : tu peux le parcourir et simuler des pings.</>
+                  : shared.status === 'error' ? <span className="field-error">Enregistrement en ligne impossible : {shared.message}</span>
+                    : shared.status === 'saving' ? 'Enregistrement en ligne…'
+                      : <>Schéma partagé, enregistré en ligne{shared.savedAt ? ` à ${new Date(shared.savedAt).toLocaleTimeString('fr-FR')}` : ''}.</>}
+              <span className="share-actions">
+                {readOnly ? (
+                  <button type="button" className="ghost small-btn" onClick={() => leaveShared(true)}>Dupliquer pour modifier</button>
+                ) : shared.token && (
+                  <button type="button" className="ghost small-btn" onClick={() => shareDialog.current?.showModal()}>Liens</button>
+                )}
+                {shared.status !== 'loading' && (
+                  <button type="button" className="ghost small-btn" onClick={() => leaveShared(false)}>Retour à mon brouillon</button>
+                )}
+              </span>
+            </div>
+          )}
+          </div>
 
-          <aside className="palette" aria-label="Équipements">
+          <aside className="palette" aria-label="Équipements" inert={readOnly ? '' : undefined}>
             <div className="search">
               <label className="visually-hidden" htmlFor="search">Rechercher un équipement</label>
               <input id="search" ref={searchInput} type="search" placeholder="Rechercher (nom, IP)…  Ctrl+K" value={query}
@@ -569,9 +683,11 @@ function Editor() {
               edgeTypes={edgeTypes}
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
-              onConnect={onConnect}
+              onConnect={readOnly ? undefined : onConnect}
               connectionMode={ConnectionMode.Loose}
-              deleteKeyCode={['Delete', 'Backspace']}
+              nodesDraggable={!readOnly}
+              nodesConnectable={!readOnly}
+              deleteKeyCode={readOnly ? null : ['Delete', 'Backspace']}
               multiSelectionKeyCode={['Control', 'Meta', 'Shift']}
               colorMode="system"
               snapToGrid
@@ -612,7 +728,9 @@ function Editor() {
               ))}
             </div>
             <div id="panel" role="tabpanel" aria-labelledby={`tab-${tab}`} className="panel">
-              {tab === 'props' && (selected ? (
+              {tab === 'props' && (
+                <fieldset className="ro-fieldset" disabled={readOnly}>
+                {selected ? (
                 <DeviceInspector key={selected.id} node={selected} edges={edges} labels={labels}
                   update={updateNode(selected.id)} onDelete={deleteSelected} mode={configMode} onMode={setConfigMode}
                   routing={routing.routers.get(selected.id)} issues={issues.filter((i) => i.device === selected.id)}
@@ -632,7 +750,9 @@ function Editor() {
                   updateEdge={updateEdge(selectedEdge.id)} updateNode={updateNode} onDelete={() => deleteEdge(selectedEdge.id)} />
               ) : (
                 <Overview nodes={nodes} edges={edges} issues={issues} onSelect={selectNode} />
-              ))}
+              )}
+                </fieldset>
+              )}
               {tab === 'sim' && (
                 <>
                   {sim.result && sim.sig !== configSig(doc) && (
@@ -649,6 +769,37 @@ function Editor() {
               )}
             </div>
           </aside>
+          <dialog ref={shareDialog} className="help-dialog share-dialog" aria-labelledby="share-title">
+            <h2 id="share-title">Partager ce schéma</h2>
+            {shared?.id && shared.token && (() => {
+              const links = shareLinks(shared.id, shared.token);
+              return (
+                <>
+                  {[['Lecture seule (élèves, collègues)', links.view], ['Édition (garde-le pour toi)', links.edit], ['Intégration (iframe, Moodle, Notion)', `<iframe src="${links.embed}" width="100%" height="600"></iframe>`]].map(([label, url]) => (
+                    <div className="field" key={label}>
+                      <label>{label}</label>
+                      <div className="copy-row">
+                        <input readOnly value={url} onFocus={(e) => e.target.select()} />
+                        <button type="button" className="ghost small-btn" onClick={() => navigator.clipboard?.writeText(url)}>Copier</button>
+                      </div>
+                    </div>
+                  ))}
+                  <p className="hint">Le lien d'édition contient une clé secrète : toute personne qui l'a peut modifier le schéma. Il est aussi gardé dans ce navigateur, dans « Mes partages ».</p>
+                </>
+              );
+            })()}
+            {myShares().length > 1 && (
+              <>
+                <h3>Mes partages</h3>
+                <ul className="my-shares">
+                  {myShares().slice(0, 10).map((m) => (
+                    <li key={m.id}><a href={shareLinks(m.id, m.token).edit}>{m.name || m.id}</a> <span className="muted">{m.at ? new Date(m.at).toLocaleString('fr-FR') : ''}</span></li>
+                  ))}
+                </ul>
+              </>
+            )}
+            <form method="dialog"><button type="submit">Fermer</button></form>
+          </dialog>
           <dialog ref={helpDialog} className="help-dialog" aria-labelledby="help-title">
             <h2 id="help-title">Raccourcis clavier</h2>
             <dl className="shortcuts">

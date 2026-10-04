@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "node --test \"src/**/*.test.js\"",
-    "test:e2e": "node e2e/editor.e2e.mjs"
+    "test:e2e": "node e2e/editor.e2e.mjs",
+    "test:share": "node e2e/share.e2e.mjs"
   },
   "dependencies": {
     "@xyflow/react": "^12.12.0",

@@ -398,3 +398,23 @@ textarea.rules[aria-invalid="true"] { border-color: var(--danger); }
 .clock-time { font: 600 .85rem ui-monospace, monospace; font-variant-numeric: tabular-nums; color: var(--muted); min-width: 9ch; }
 button.small-btn { min-height: 32px; padding: 0 8px; font-size: .8rem; }
 @media (max-width: 900px) { .clock { border-right: 0; } }
+
+/* --- Partage ------------------------------------------------------------------------ */
+.share-banner {
+  grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 6px 16px; font-size: .88rem;
+  background: color-mix(in srgb, var(--primary) 10%, var(--surface)); border-bottom: 1px solid var(--border);
+}
+.share-banner.ro { background: color-mix(in srgb, var(--warn) 14%, var(--surface)); }
+.share-actions { margin-left: auto; display: flex; gap: 6px; }
+.ro-fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.read-only .palette { opacity: .45; }
+.copy-row { display: flex; gap: 6px; }
+.copy-row input { font: 12px ui-monospace, monospace; }
+.share-dialog { width: min(560px, calc(100vw - 32px)); }
+.my-shares { list-style: none; padding: 0; margin: 0 0 12px; font-size: .88rem; }
+.my-shares li { padding: 3px 0; }
+/* Intégration (iframe) : le plan et le panneau seuls */
+.embed .palette, .embed .topbar .actions { display: none; }
+.app.embed { grid-template-columns: 1fr 320px; grid-template-areas: "top top" "err err" "canvas insp"; }
+.notices { grid-area: err; }
+.notices .error { grid-area: auto; }
