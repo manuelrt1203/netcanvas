@@ -100,6 +100,20 @@ const extras = (p) => Object.fromEntries(IFACE_EXTRAS.filter((k) => p[k] !== und
 const ROUTING_KEYS = ['ospf', 'rip', 'bgp', 'addressLists'];
 const routing = (src) => Object.fromEntries(ROUTING_KEYS.filter((k) => src?.[k]).map((k) => [k, structuredClone(src[k])]));
 
+// Switch : interfaces VLAN (SVI), routage IP, passerelle par défaut, routes et protocoles (niveau 3)
+function switchL3(d) {
+  const svis = Object.entries(d.ifaces ?? {}).filter(([name]) => /^Vlan\d+$/.test(name))
+    .sort(([a], [b]) => Number(a.slice(4)) - Number(b.slice(4)))
+    .map(([name, i]) => ({ link: null, name, ip: nul(i.ip), mask: nul(i.mask), ...extras(i) }));
+  return {
+    ...(svis.length ? { interfaces: svis } : {}),
+    ...(d.ipRouting ? { ipRouting: true } : {}),
+    ...(d.defaultGateway ? { defaultGateway: d.defaultGateway } : {}),
+    ...(d.routes?.length ? { routes: d.routes.map((r) => ({ network: nul(r.network), mask: nul(r.mask), nextHop: nul(r.nextHop) })) } : {}),
+    ...routing(d),
+  };
+}
+
 function deviceConfig(n, edges) {
   const d = n.data;
   if (HOST_TYPES.has(n.type)) return { ip: nul(d.ip), mask: nul(d.mask), gateway: nul(d.gateway) };
@@ -127,6 +141,7 @@ function deviceConfig(n, edges) {
         ...extras(p),
       })),
       ...(vlans.length ? { vlans } : {}),
+      ...switchL3(d),
     };
   }
   return {};
@@ -187,6 +202,11 @@ export function deviceToData(d, links = []) {
   if (d.type === 'switch') {
     data.ports = Object.fromEntries((c.ports ?? []).map((p) => [keyOf(p), { mode: p.mode, vlan: p.vlan ?? 1, ...extras(p) }]));
     if (c.vlans?.length) data.vlans = Object.fromEntries(c.vlans.map((v) => [v.id, v.name]));
+    if (c.interfaces?.length) data.ifaces = Object.fromEntries(c.interfaces.map((i) => [i.name, { ip: blank(i.ip), mask: blank(i.mask), ...extras(i) }]));
+    if (c.ipRouting) data.ipRouting = true;
+    if (c.defaultGateway) data.defaultGateway = c.defaultGateway;
+    if (c.routes?.length) data.routes = c.routes.map((r) => ({ network: blank(r.network), mask: blank(r.mask), nextHop: blank(r.nextHop) }));
+    Object.assign(data, routing(c));
   }
   return data;
 }

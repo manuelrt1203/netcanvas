@@ -75,14 +75,39 @@ function HostForm({ node, update }) {
   );
 }
 
+// Routes statiques (routeur ou switch niveau 3)
+function StaticRoutes({ routes, update }) {
+  const patchRoute = (i, patch) =>
+    update((d) => ({ ...d, routes: d.routes.map((r, j) => (j === i ? { ...r, ...patch } : r)) }));
+  return (
+    <>
+      <h3>Routes statiques</h3>
+      {routes.map((r, i) => (
+        <fieldset key={i} className="iface">
+          <legend>Route {i + 1}</legend>
+          <IpCidrFields ipLabel="Réseau" ip={r.network} mask={r.mask}
+            onChange={(patch) => patchRoute(i, { ...('ip' in patch ? { network: patch.ip } : {}), ...('mask' in patch ? { mask: patch.mask } : {}) })} />
+          <Field label="Saut suivant" placeholder="10.0.0.2" value={r.nextHop ?? ''} error={ipError(r.nextHop)}
+            onChange={(e) => patchRoute(i, { nextHop: e.target.value.trim() })} />
+          <button type="button" className="ghost small" onClick={() => update((d) => ({ ...d, routes: d.routes.filter((_, j) => j !== i) }))}>
+            Retirer la route
+          </button>
+        </fieldset>
+      ))}
+      <button type="button" className="ghost" onClick={() => update((d) => ({ ...d, routes: [...(d.routes ?? []), { network: '', mask: '', nextHop: '' }] }))}>
+        Ajouter une route
+      </button>
+      <p className="hint">Route par défaut : réseau 0.0.0.0, masque 0.</p>
+    </>
+  );
+}
+
 function RouterForm({ node, edges, labels, update, routing }) {
   const ports = portsOf(node, edges);
   const routes = node.data.routes ?? [];
 
   const patchIface = (p, patch) =>
     update((d) => ({ ...d, ifaces: { ...d.ifaces, [p.name]: { ...d.ifaces?.[p.name], ...patch } } }));
-  const patchRoute = (i, patch) =>
-    update((d) => ({ ...d, routes: d.routes.map((r, j) => (j === i ? { ...r, ...patch } : r)) }));
 
   return (
     <>
@@ -107,30 +132,55 @@ function RouterForm({ node, edges, labels, update, routing }) {
         );
       })}
 
-      <h3>Routes statiques</h3>
-      {routes.map((r, i) => (
-        <fieldset key={i} className="iface">
-          <legend>Route {i + 1}</legend>
-          <IpCidrFields ipLabel="Réseau" ip={r.network} mask={r.mask}
-            onChange={(patch) => patchRoute(i, { ...('ip' in patch ? { network: patch.ip } : {}), ...('mask' in patch ? { mask: patch.mask } : {}) })} />
-          <Field label="Saut suivant" placeholder="10.0.0.2" value={r.nextHop ?? ''} error={ipError(r.nextHop)}
-            onChange={(e) => patchRoute(i, { nextHop: e.target.value.trim() })} />
-          <button type="button" className="ghost small" onClick={() => update((d) => ({ ...d, routes: d.routes.filter((_, j) => j !== i) }))}>
-            Retirer la route
-          </button>
-        </fieldset>
-      ))}
-      <button type="button" className="ghost" onClick={() => update((d) => ({ ...d, routes: [...(d.routes ?? []), { network: '', mask: '', nextHop: '' }] }))}>
-        Ajouter une route
-      </button>
-      <p className="hint">Route par défaut : réseau 0.0.0.0, masque 0.</p>
+      <StaticRoutes routes={routes} update={update} />
       <LoopbacksForm node={node} update={update} />
       <RoutingForm node={node} update={update} ports={ports} state={routing} />
     </>
   );
 }
 
-function SwitchForm({ node, edges, labels, update }) {
+// Interfaces VLAN (SVI) d'un switch : administration, ou routage inter-VLAN sur un niveau 3
+function SviForm({ node, update }) {
+  const svis = Object.entries(node.data.ifaces ?? {}).filter(([n]) => /^Vlan\d+$/.test(n)).sort(([a], [b]) => Number(a.slice(4)) - Number(b.slice(4)));
+  const set = (name, patch) => update((d) => ({ ...d, ifaces: { ...d.ifaces, [name]: { ...d.ifaces?.[name], ...patch } } }));
+  const rename = (name, vlan) => update((d) => {
+    const ifaces = { ...d.ifaces };
+    const cur = ifaces[name];
+    delete ifaces[name];
+    ifaces[`Vlan${vlan}`] = cur;
+    return { ...d, ifaces };
+  });
+  const remove = (name) => update((d) => {
+    const ifaces = { ...d.ifaces };
+    delete ifaces[name];
+    return { ...d, ifaces };
+  });
+  const add = () => {
+    let v = 1;
+    while (svis.some(([n]) => n === `Vlan${v}`)) v = v === 1 ? 10 : v + 10;
+    set(`Vlan${v}`, { ip: '', mask: 24 });
+  };
+  return (
+    <>
+      <h3>Interfaces VLAN (SVI)</h3>
+      {svis.map(([name, i]) => (
+        <fieldset key={name} className="iface">
+          <legend>{name}</legend>
+          <div className="field-row">
+            <Field label="VLAN" type="number" min="1" max="4094" className="cidr" value={name.slice(4)}
+              onChange={(e) => { const v = Math.max(1, Math.min(4094, Number(e.target.value) || 1)); if (!svis.some(([n]) => n === `Vlan${v}`)) rename(name, v); }} />
+          </div>
+          <IpCidrFields ip={i.ip} mask={i.mask} onChange={(patch) => set(name, patch)} />
+          <button type="button" className="ghost small" onClick={() => remove(name)}>Retirer {name}</button>
+        </fieldset>
+      ))}
+      <button type="button" className="ghost" onClick={add}>Ajouter une interface VLAN</button>
+    </>
+  );
+}
+
+function SwitchForm({ node, edges, labels, update, routing }) {
+  const l3 = MODELS[modelId({ type: node.type, model: node.data.model })].l3;
   const ports = portsOf(node, edges);
   const patchPort = (p, patch) =>
     update((d) => ({ ...d, ports: { ...d.ports, [p.name]: { mode: 'access', vlan: 1, ...d.ports?.[p.name], ...patch } } }));
@@ -163,6 +213,24 @@ function SwitchForm({ node, edges, labels, update }) {
         );
       })}
       <p className="hint">Un trunk transporte tous les VLAN ; le VLAN 1 (natif) passe sans étiquette.</p>
+      <SviForm node={node} update={update} />
+      {l3 && (
+        <label className="check">
+          <input type="checkbox" checked={Boolean(node.data.ipRouting)} onChange={(e) => update((d) => ({ ...d, ipRouting: e.target.checked || undefined }))} />
+          Routage IP entre les VLAN (ip routing)
+        </label>
+      )}
+      {l3 && node.data.ipRouting ? (
+        <>
+          <StaticRoutes routes={node.data.routes ?? []} update={update} />
+          <RoutingForm node={node} update={update} state={routing}
+            ports={Object.keys(node.data.ifaces ?? {}).filter((n) => /^Vlan\d+$/.test(n)).map((name) => ({ name }))} />
+        </>
+      ) : (
+        <Field label="Passerelle par défaut (ip default-gateway)" placeholder="192.168.1.254" value={node.data.defaultGateway ?? ''}
+          error={ipError(node.data.defaultGateway)} onChange={(e) => update((d) => ({ ...d, defaultGateway: e.target.value.trim() || undefined }))} />
+      )}
+      {!l3 && <p className="hint">Un switch de niveau 2 ne route pas : choisis un 3560 ou un 3650 pour le routage inter-VLAN.</p>}
     </>
   );
 }

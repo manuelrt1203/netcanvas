@@ -238,6 +238,25 @@ await page.click('text=Lancer le ping');
 await page.waitForSelector('button:has-text("Lancer le ping"):not([disabled])', { timeout: 15000 });
 assert.ok(await page.locator('.sim-verdict.ok').isVisible(), 'Ctrl+Z remet le VLAN 20 et le ping passe');
 
+step('switch niveau 3 : formulaire (ip routing) et ping inter-VLAN');
+await openDemo('Switch niveau 3 (SVI, ip routing)');
+await page.getByTestId('rf__node-sw').click();
+await page.click('role=tab[name=/Propriétés/]');
+assert.ok(await page.locator('legend', { hasText: /^Vlan30$/ }).isVisible(), 'SVI affichée');
+await page.getByLabel('Routage IP entre les VLAN (ip routing)').uncheck();
+await page.click('role=tab[name="Simulation"]');
+await page.selectOption('#sim-src', { label: 'PC Compta' });
+await page.selectOption('#sim-dst', { label: 'Serveur · 192.168.30.10' });
+await page.click('text=Lancer le ping');
+await page.waitForSelector('button:has-text("Lancer le ping"):not([disabled])', { timeout: 15000 });
+assert.ok(await page.getByText(/le routage IP n'est pas activé/).first().isVisible());
+await page.click('role=tab[name=/Propriétés/]');
+await page.getByLabel('Routage IP entre les VLAN (ip routing)').check();
+await page.click('role=tab[name="Simulation"]');
+await page.click('text=Lancer le ping');
+await page.waitForSelector('button:has-text("Lancer le ping"):not([disabled])', { timeout: 15000 });
+assert.ok(await page.locator('.sim-verdict.ok').isVisible());
+
 step('édition : annuler / rétablir, copier-coller, sélection multiple, recherche');
 await page.click('text=Effacer');
 await page.locator('.react-flow__pane').click({ position: { x: 40, y: 40 } });

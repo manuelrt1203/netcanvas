@@ -3,7 +3,7 @@ import { accept, arg, complete as treeComplete, execute as treeExecute, help as 
 import { dataPorts, ensureEntry, getEntry, linkOf, maskToCidr, pad, ping, withDevice } from './device.js';
 import { buildTopology, isLoopbackName } from '../net/topology.js';
 import { cidrToMask, formatIp, isBroadcastAddress, isNetworkAddress, isValidIp, networkOf, parseIp, sameSubnet } from '../net/ip.js';
-import { modelOf } from '../net/catalog.js';
+import { isSviName, modelOf } from '../net/catalog.js';
 import { hostname as iosHostname, iosInterfaceExtras, iosLongName, iosRoutingLines } from '../export/cisco.js';
 import { traceroute } from '../net/traceroute.js';
 import { bgpTree, interfaceRoutingCommands, ospfTree, ripTree, routeFilters, routerCommands, routingShows, showIpRoute } from './ios-routing.js';
@@ -19,7 +19,10 @@ const loopbackEntries = (dev) => (dev.config?.interfaces ?? []).filter((e) => is
 // Ordre de show run : loopbacks, puis chaque port suivi de ses sous-interfaces
 const subEntries = (dev, parent) => (dev.config?.interfaces ?? []).filter((e) => e.parent === parent)
   .sort((a, b) => Number(a.name.split('.')[1]) - Number(b.name.split('.')[1]));
+const sviEntries = (dev) => (dev.config?.interfaces ?? []).filter((e) => isSviName(e.name))
+  .sort((a, b) => Number(a.name.slice(4)) - Number(b.name.slice(4)));
 const allInterfaces = (dev) => [
+  ...(dev.type === 'switch' ? sviEntries(dev).map((e) => ({ name: e.name, media: 'virtual' })) : []),
   ...loopbackEntries(dev).map((e) => ({ name: e.name, media: 'virtual' })),
   ...dataPorts(dev).flatMap((p) => [p, ...subEntries(dev, p.name).map((e) => ({ name: e.name, media: 'virtual' }))]),
 ];
@@ -61,6 +64,7 @@ function portState(dev, name, doc, topo) {
   const e = getEntry(dev, name);
   if (e?.shutdown) return ['administratively down', 'down'];
   if (isLoopbackName(name)) return ['up', 'up'];
+  if (isSviName(name)) return topo.sviUp(dev.id, Number(name.slice(4))) ? ['up', 'up'] : ['down', 'down'];
   // Sous-interface : état du câble de l'interface parente
   if (e?.parent && getEntry(dev, e.parent)?.shutdown) return ['down', 'down'];
   const link = linkOf(doc, dev.id, e?.parent ?? name);
@@ -91,7 +95,21 @@ function runningConfig(dev) {
       if (e?.shutdown) lines.push(' shutdown');
       lines.push('!');
     }
-    lines.push('interface Vlan1', ' no ip address', ' shutdown', '!');
+    const svis = sviEntries(dev);
+    if (!svis.some((e) => e.name === 'Vlan1')) lines.push('interface Vlan1', ' no ip address', ' shutdown', '!');
+    for (const e of svis) {
+      lines.push(`interface ${e.name}`);
+      if (e.description) lines.push(` description ${e.description}`);
+      lines.push(e.ip && e.mask != null ? ` ip address ${e.ip} ${cidrToMask(e.mask)}` : ' no ip address');
+      lines.push(...iosInterfaceExtras(dev.config ?? {}, e), ...(e.shutdown ? [' shutdown'] : []), '!');
+    }
+    const c = dev.config ?? {};
+    if (c.ipRouting) lines.push('ip routing', '!');
+    if (c.defaultGateway) lines.push(`ip default-gateway ${c.defaultGateway}`);
+    for (const r of c.routes ?? []) {
+      if (isValidIp(r.network) && r.mask != null && isValidIp(r.nextHop)) lines.push(`ip route ${r.network} ${cidrToMask(r.mask)} ${r.nextHop}`);
+    }
+    lines.push(...iosRoutingLines(c), '!');
   } else {
     for (const p of allInterfaces(dev)) {
       const e = getEntry(dev, p.name);
@@ -185,10 +203,6 @@ function showVersion(dev) {
 function doPing(ctx, ip) {
   const { dev, doc, out, effects } = ctx;
   out.push('Type escape sequence to abort.', `Sending 5, 100-byte ICMP Echos to ${ip}, timeout is 2 seconds:`);
-  if (dev.type === 'switch') {
-    out.push('.....', 'Success rate is 0 percent (0/5)', '% NetCanvas : ce switch n\'a pas d\'adresse IP (interface VLAN non simulée).', '');
-    return;
-  }
   const r = ping(doc, dev.id, ip);
   effects.push({ type: 'ping', source: dev.id, target: ip });
   if (r.ok) out.push('!!!!!', 'Success rate is 100 percent (5/5), round-trip min/avg/max = 1/1/1 ms', '');
@@ -284,7 +298,12 @@ function showTree(dev) {
         kw('interface', 'IP interface status and configuration', {
           children: [kw('brief', 'Brief summary of IP status and configuration', { run: (c) => c.out.push(...showIpIntBrief(c.dev, c.doc)) })],
         }),
-        ...(isSwitch ? [] : [kw('route', 'IP routing table', { run: (c) => c.out.push(...showIpRoute(c.dev, c.doc)), children: routeFilters() }), ...routingShows()]),
+        ...(!isSwitch || modelOf(dev).l3 ? [kw('route', 'IP routing table', {
+          run: (c) => c.out.push(...(c.dev.type === 'switch' && !c.dev.config?.ipRouting
+            ? [`Default gateway is ${c.dev.config?.defaultGateway ?? 'not set'}`, '', 'Host               Gateway           Last Use    Total Uses  Interface', 'ICMP redirect cache is empty', '']
+            : showIpRoute(c.dev, c.doc))),
+          children: routeFilters(),
+        }), ...routingShows()] : []),
       ],
     }),
     kw('cdp', 'CDP information', { children: [kw('neighbors', 'CDP neighbor entries', { run: (c) => c.out.push(...showCdp(c.dev, c.doc)) })] }),
@@ -362,7 +381,9 @@ function interfaceCmd(isSwitch) {
   return kw('interface', 'Select an interface to configure', {
     children: [
       kw('range', 'interface range command', { children: [rest('spec', 'LINE', 'Interfaces', (c) => enterInterfaces(c, true))] }),
-      ...(isSwitch ? [kw('vlan', 'Catalyst Vlans', { children: [arg('n', '<1-4094>', '', isNum(1, 4094), { run: (c) => c.out.push(...NOT_SIMULATED('l\'interface VLAN (SVI)')) })] })] : []),
+      ...(isSwitch ? [kw('vlan', 'Catalyst Vlans', {
+        children: [arg('n', '<1-4094>', 'Vlan interface number', isNum(1, 4094), { run: (c) => { c.s.mode = 'if'; c.s.ifaces = [`Vlan${Number(c.args.n)}`]; } })],
+      })] : []),
       rest('spec', 'WORD', 'Interface type and number', (c) => enterInterfaces(c, false)),
     ],
   });
@@ -379,13 +400,14 @@ function configTree(dev) {
     interfaceCmd(isSwitch),
     kw('ip', 'Global IP configuration subcommands', {
       children: [
-        ...(isSwitch
-          ? [kw('default-gateway', 'Specify default gateway', { children: [arg('gw', 'A.B.C.D', '', isIp, { run() {} })] })]
-          : [kw('route', 'Establish static routes', { children: [routeArgs(addRoute)] })]),
+        ...(isSwitch ? [kw('default-gateway', 'Specify default gateway', {
+          children: [arg('gw', 'A.B.C.D', 'IP address of default gateway', isIp, { run: (c) => { c.dev.config.defaultGateway = c.args.gw; c.changed = true; } })],
+        })] : []),
+        ...(!isSwitch || modelOf(dev).l3 ? [kw('route', 'Establish static routes', { children: [routeArgs(addRoute)] })] : []),
         kw('domain-lookup', 'Enable IP Domain Name System hostname translation', { run() {} }),
         accept('domain-name', 'Define the default domain name'),
         kw('dhcp', 'Configure DHCP server and relay parameters', { run: (c) => c.out.push(...NOT_SIMULATED('DHCP')), children: [rest('x', 'LINE', '', (c) => c.out.push(...NOT_SIMULATED('DHCP')))] }),
-        kw('routing', 'Enable IP routing', { run() {} }),
+        kw('routing', 'Enable IP routing', { run: (c) => setIpRouting(c, true) }),
       ],
     }),
     accept('enable', 'Modify enable password parameters'),
@@ -394,10 +416,10 @@ function configTree(dev) {
     accept('username', 'Establish User Name Authentication'),
     accept('crypto', 'Encryption module'),
     kw('line', 'Configure a terminal line', { children: [rest('x', 'LINE', 'Line type and number', (c) => { c.s.mode = 'line'; })] }),
-    ...(isSwitch ? [] : [routerCommands().router]),
+    ...(!isSwitch || modelOf(dev).l3 ? [routerCommands().router] : []),
     kw('no', 'Negate a command or set its defaults', {
       children: [
-        ...(isSwitch ? [] : [routerCommands().noRouter]),
+        ...(!isSwitch || modelOf(dev).l3 ? [routerCommands().noRouter] : []),
         ...(isSwitch ? [] : [kw('ip', 'Global IP configuration subcommands', {
           children: [
             kw('route', 'Establish static routes', { children: [routeArgs(removeRoute, true)] }),
@@ -405,7 +427,14 @@ function configTree(dev) {
           ],
         })]),
         ...(isSwitch ? [
-          kw('ip', 'Global IP configuration subcommands', { children: [kw('domain-lookup', '', { run() {} })] }),
+          kw('ip', 'Global IP configuration subcommands', {
+            children: [
+              kw('domain-lookup', '', { run() {} }),
+              kw('routing', 'Enable IP routing', { run: (c) => setIpRouting(c, false) }),
+              kw('default-gateway', 'Specify default gateway', { run: (c) => { delete c.dev.config.defaultGateway; c.changed = true; } }),
+              ...(modelOf(dev).l3 ? [kw('route', 'Establish static routes', { children: [routeArgs(removeRoute, true)] })] : []),
+            ],
+          }),
           kw('vlan', 'Vlan commands', { children: [arg('vlan', '<1-4094>', 'VLAN ID', isNum(2, 4094), { run: removeVlan })] }),
         ] : []),
         accept('service', ''),
@@ -440,6 +469,17 @@ function routeArgs(run, optionalHop = false) {
   return arg('net', 'A.B.C.D', 'Destination prefix', isIp, {
     children: [arg('mask', 'A.B.C.D', 'Destination prefix mask', isIp, { ...(optionalHop ? { run } : {}), children: [hop] })],
   });
+}
+
+function setIpRouting(c, on) {
+  if (c.dev.type === 'switch' && !modelOf(c.dev).l3) {
+    return c.out.push(`% NetCanvas : un ${modelOf(c.dev).short} est un switch de niveau 2, il ne route pas (choisis un 3560 ou un 3650).`, '');
+  }
+  if (c.dev.type !== 'switch') return undefined; // toujours actif sur un routeur
+  if (on) c.dev.config.ipRouting = true;
+  else delete c.dev.config.ipRouting;
+  c.changed = true;
+  return undefined;
 }
 
 function addRoute(c) {
@@ -501,6 +541,17 @@ function interfaceTree(dev) {
   ];
 
   if (isSwitch) {
+    // Adresse IP : seulement sur une interface VLAN (un port de switch est de niveau 2)
+    const onSvi = (run) => (c) => {
+      if (!c.s.ifaces.every(isSviName)) return c.out.push(`${' '.repeat(c.line.indexOf('ip') + 16)}^`, "% Invalid input detected at '^' marker.", '');
+      return run(c);
+    };
+    children.push(kw('ip', 'Interface Internet Protocol config commands', {
+      children: [kw('address', 'Set the IP address of an interface', {
+        children: [arg('ip', 'A.B.C.D', 'IP address', isIp, { children: [arg('mask', 'A.B.C.D', 'IP subnet mask', isIp, { run: onSvi(setIpAddress) })] })],
+      })],
+    }));
+    no.push(kw('ip', '', { children: [kw('address', '', { run: onSvi((c) => forIfaces(c, (e) => { e.ip = null; e.mask = null; })) })] }));
     children.push(
       kw('switchport', 'Set switching mode characteristics', {
         children: [

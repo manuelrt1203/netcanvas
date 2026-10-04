@@ -1,13 +1,17 @@
 // Vue « réseau » d'un schéma exporté (format v3, v2 toléré) : qui est relié à qui, par quel port et
 // quel câble, l'état de chaque câble et la config de chaque interface.
 import { isValidCidr, isValidIp } from './ip.js';
-import { devicePorts, isDataMedia, modelId, modelOf } from './catalog.js';
+import { devicePorts, isDataMedia, isSviName, modelId, modelOf } from './catalog.js';
 import { autoCable, checkLink } from './cabling.js';
 
 export const HOST_TYPES = new Set(['pc', 'server', 'printer', 'cloud']);
 export const NATIVE_VLAN = 1;
 
 export const isHost = (d) => HOST_TYPES.has(d?.type);
+
+// Équipement qui route : routeur, ou switch niveau 3 avec « ip routing »
+export const isL3Switch = (d) => d?.type === 'switch' && Boolean(modelOf(d).l3) && Boolean(d.config?.ipRouting);
+export const isRouting = (d) => d?.type === 'router' || isL3Switch(d);
 
 // Interface virtuelle toujours active (sauf shutdown) : Loopback0 chez Cisco, lo chez MikroTik
 export const isLoopbackName = (name) => /^(Lo\d+|lo)$/.test(name ?? '');
@@ -23,8 +27,9 @@ export function buildTopology(doc) {
 
   // Config d'une interface : rattachée au câble, ou au nom du port (configurée avant d'être câblée)
   const cfgEntry = (id, linkId, name = names.get(`${linkId}|${id}`)) => {
-    const c = devices.get(id).config ?? {};
-    const all = c.interfaces ?? c.ports ?? [];
+    const d = devices.get(id);
+    const c = d.config ?? {};
+    const all = (d.type === 'switch' ? c.ports : c.interfaces) ?? [];
     return all.find((i) => i.link === linkId) ?? (name ? all.find((i) => !i.link && i.name === name) : undefined);
   };
 
@@ -129,17 +134,36 @@ export function buildTopology(doc) {
       .map((i) => ({ ...i, sub: true, link: linksOf.get(id).find((l) => portName(l, id) === i.parent) ?? null }));
   }
 
+  // Interfaces VLAN d'un switch (SVI) : Vlan10…
+  function svis(id) {
+    return (devices.get(id).config?.interfaces ?? [])
+      .filter((i) => isSviName(i.name))
+      .map((i) => ({ ...i, svi: true, link: null, vlan: Number(i.name.slice(4)) }));
+  }
+
+  // Une SVI est active si un port actif du switch transporte son VLAN (comme sur IOS)
+  function sviUp(id, vlan) {
+    return linksOf.get(id).some((l) => {
+      if (!isUp(l)) return false;
+      const p = switchPort(id, l);
+      return p.mode === 'trunk' || (Number(p.vlan) || NATIVE_VLAN) === vlan;
+    });
+  }
+
   // Interfaces IP configurées et valides ; par défaut seulement celles dont le câble fonctionne
   function l3Ifaces(id, { includeDown = false } = {}) {
     const d = devices.get(id);
     const all = isHost(d) ? [hostIface(id)]
-      : d.type === 'router' ? [...linksOf.get(id).map((l) => routerIface(id, l)), ...subIfaces(id), ...loopbacks(id)] : [];
-    const up = (i) => (i.loopback ? !i.shutdown : i.link && isUp(i.link) && !i.shutdown);
+      : d.type === 'router' ? [...linksOf.get(id).map((l) => routerIface(id, l)), ...subIfaces(id), ...loopbacks(id)]
+        : d.type === 'switch' ? svis(id) : [];
+    const up = (i) => (i.loopback ? !i.shutdown
+      : i.svi ? !i.shutdown && sviUp(id, i.vlan)
+        : i.link && isUp(i.link) && !i.shutdown);
     return all.filter((i) => isValidIp(i.ip) && isValidCidr(i.mask) && (includeDown || up(i)));
   }
 
   return {
     devices, ports, links, linksOf, consoleLinks, status, other, portName, isUp,
-    hostIface, routerIface, switchPort, l3IfaceOn, l3Ifaces, subIfaces,
+    hostIface, routerIface, switchPort, l3IfaceOn, l3Ifaces, subIfaces, svis, sviUp,
   };
 }

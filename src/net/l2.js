@@ -5,9 +5,11 @@ import { NATIVE_VLAN } from './topology.js';
 // Renvoie les équipements de niveau 3 (hôtes, routeurs) atteints par une trame non étiquetée,
 // dans l'ordre du parcours, avec le chemin suivi ; et les trames perdues en route.
 // startTag : trame émise étiquetée (sous-interface 802.1Q d'un routeur)
-export function flood(topo, fromId, linkId, startTag = null) {
-  const first = topo.other(linkId, fromId);
-  const queue = [{ device: first, inLink: linkId, tag: startTag, vlan: startTag, hops: [{ edge: linkId, from: fromId, to: first }] }];
+// sviVlan : trame émise par l'interface VLAN d'un switch niveau 3 (linkId est alors null)
+export function flood(topo, fromId, linkId, startTag = null, sviVlan = null) {
+  const queue = linkId == null
+    ? [{ device: fromId, inLink: null, tag: null, vlan: sviVlan, internal: true, hops: [] }]
+    : [{ device: topo.other(linkId, fromId), inLink: linkId, tag: startTag, vlan: startTag, hops: [{ edge: linkId, from: fromId, to: topo.other(linkId, fromId) }] }];
   const seen = new Set();
   const reached = new Set();
   const endpoints = [];
@@ -15,7 +17,7 @@ export function flood(topo, fromId, linkId, startTag = null) {
   const vlansSeen = new Set();
 
   while (queue.length) {
-    const { device, inLink, tag, vlan, hops } = queue.shift();
+    const { device, inLink, tag, vlan, hops, internal } = queue.shift();
     const dev = topo.devices.get(device);
 
     // Hub : répète la trame telle quelle sur tous ses autres ports
@@ -36,18 +38,25 @@ export function flood(topo, fromId, linkId, startTag = null) {
     }
 
     if (dev.type === 'switch') {
-      const port = topo.switchPort(device, inLink);
       let v;
-      if (tag == null) v = port.mode === 'trunk' ? NATIVE_VLAN : Number(port.vlan) || NATIVE_VLAN;
-      else if (port.mode === 'trunk') v = tag;
+      if (internal) v = vlan;
       else {
-        drops.push(`${dev.label} ${port.name} (access) jette une trame étiquetée VLAN ${tag}`);
-        continue;
+        const port = topo.switchPort(device, inLink);
+        if (tag == null) v = port.mode === 'trunk' ? NATIVE_VLAN : Number(port.vlan) || NATIVE_VLAN;
+        else if (port.mode === 'trunk') v = tag;
+        else {
+          drops.push(`${dev.label} ${port.name} (access) jette une trame étiquetée VLAN ${tag}`);
+          continue;
+        }
       }
       vlansSeen.add(v);
       const key = `${device}|${v}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      // La trame atteint l'interface VLAN du switch (SVI)
+      if (device !== fromId && topo.l3Ifaces(device).some((s) => s.svi && s.vlan === v)) {
+        endpoints.push({ device, inLink, tag: null, svi: v, hops, vlan: v });
+      }
 
       for (const out of topo.linksOf.get(device)) {
         if (out === inLink) continue;

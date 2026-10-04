@@ -4,7 +4,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { BGP_DEMO, DEMO, OSPF_DEMO, ROAS_DEMO } from '../examples.js';
+import { BGP_DEMO, DEMO, L3_DEMO, OSPF_DEMO, ROAS_DEMO } from '../examples.js';
+import { isRouting } from '../net/topology.js';
 import { simulatePing } from '../net/simulate.js';
 import { clabCommands } from './containerlab.js';
 import { interfaceTable } from './common.js';
@@ -22,7 +23,7 @@ function runLab(doc, pings) {
 
   for (const d of doc.devices) {
     script.push(`ip netns add ${d.id}`, `ip -n ${d.id} link set lo up`);
-    if (d.type === 'router') script.push(`ip netns exec ${d.id} sh -c 'echo 1 > /proc/sys/net/ipv4/ip_forward'`);
+    script.push(`ip netns exec ${d.id} sh -c 'echo ${isRouting(d) ? 1 : 0} > /proc/sys/net/ipv4/ip_forward'`);
   }
   doc.links.forEach((l, i) => {
     const a = table.get(l.source).find((r) => r.link === l.id);
@@ -129,4 +130,14 @@ test('containerlab : router-on-a-stick (sous-interfaces 802.1Q sur un trunk)', {
   const wrong = structuredClone(ROAS_DEMO);
   wrong.devices.find((d) => d.id === 'r1').config.interfaces.find((i) => i.name === 'G0/0.20').vlan = 30;
   assertMatchesSimulator(wrong, [['pc1', '192.168.20.10', false]]);
+});
+
+test('containerlab : switch niveau 3 (SVI sur bridge Linux, routage inter-VLAN)', { skip }, () => {
+  assertMatchesSimulator(structuredClone(L3_DEMO), [
+    ['pc1', '192.168.30.10', true],
+    ['pc2', '203.0.113.2', true],
+  ]);
+  const noRouting = structuredClone(L3_DEMO);
+  delete noRouting.devices.find((d) => d.id === 'sw').config.ipRouting;
+  assertMatchesSimulator(noRouting, [['pc1', '192.168.30.10', false], ['pc1', '192.168.10.1', true]]);
 });

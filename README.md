@@ -12,6 +12,7 @@ npm run dev        # http://localhost:5173
 Menu **Démos** :
 - **2 VLAN, 2 routeurs** : routage statique, liaison série /30 entre R1 et R2 ;
 - **Router-on-a-stick** : un trunk 802.1Q entre le switch et R1, une sous-interface par VLAN ;
+- **Switch niveau 3** : un 3560 route 3 VLAN par ses interfaces VLAN (SVI) et sort vers Internet par R1 ;
 - **OSPF 2 zones** : R1 en zone 1, R2 en ABR, un MikroTik en zone 0 qui annonce la route par défaut vers Internet ;
 - **BGP eBGP + iBGP** : AS 65001 (iBGP entre loopbacks, OSPF comme IGP) et un MikroTik dans l'AS 65002.
 
@@ -77,7 +78,9 @@ La particularité de NetCanvas reste là : un `ping` tapé dans un terminal s'an
 
 **traceroute** : `traceroute` (IOS), `tracert` (PC), `/tool traceroute` (RouterOS) et le bouton du panneau Simulation. Chaque routeur répond depuis son interface d'entrée, et n'apparaît que si sa réponse revient jusqu'à la source.
 
-Pas encore simulé (le terminal le dit) : EIGRP, DHCP, interface VLAN de switch, table ARP / MAC.
+**Switch niveau 3** : `interface vlan 10` + `ip address`, `ip routing`, `ip route`, `router ospf` (3560/3650), ou le formulaire du switch. Une SVI est active si un port actif est dans son VLAN. Un 2960 peut avoir une SVI d'administration et un `ip default-gateway`, mais ne route pas, et NetCanvas l'explique (comme l'oubli de `ip routing`).
+
+Pas encore simulé (le terminal le dit) : EIGRP, DHCP, ACL, NAT, table ARP / MAC.
 
 ## Matériel et câblage (`src/net/catalog.js`, `src/net/cabling.js`)
 
@@ -86,6 +89,7 @@ Pas encore simulé (le terminal le dit) : EIGRP, DHCP, interface VLAN de switch,
 | Routeurs | Cisco 1941, 2901, 2911, ISR 4321, routeur générique (cuivre, fibre, série) |
 | MikroTik | hAP ac², RB4011, CCR2004-16G-2S+, CHR (virtuel) : ports `etherN` / `sfp-sfpplus`, auto-MDIX (droit ou croisé, les deux marchent) |
 | Switches | Cisco 2960-24TT, 2960-48TT, switch générique (avec 2 ports fibre), hub |
+| Switches niveau 3 | Cisco 3560-24PS, 3650-24PS : interfaces VLAN (SVI), `ip routing`, routes statiques, OSPF / RIP / BGP |
 | Hôtes | PC, ordinateur portable, serveur, imprimante |
 | Externe | Internet |
 
@@ -162,7 +166,7 @@ Les fichiers v1 et v2 s'importent toujours : le modèle est déduit des ports ut
 ## Tests
 
 ```bash
-npm test           # 96 tests : calculs IP, ping, validation, JSON, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
+npm test           # 106 tests : calculs IP, ping, validation, JSON, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
 npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : édition, contrôles, ping, persistance, exports, câblage, terminaux (IOS, RouterOS, PC), démos OSPF et BGP (show ip ospf neighbor, next-hop-self retiré)
 ```
 
@@ -170,5 +174,5 @@ npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : éditi
 
 ## Prochaines étapes
 
-1. Simulation : switch niveau 3, ACL, NAT/PAT, DHCP, tables ARP / MAC.
+1. Simulation : ACL, NAT/PAT, DHCP, tables ARP / MAC.
 2. Backend + base (PostgreSQL `jsonb`), liens partageables et page `/embed/:id`.

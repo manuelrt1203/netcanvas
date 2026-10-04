@@ -131,8 +131,20 @@ function switchConfig(d, rows) {
       const vlan = Number(row.vlan) || 1;
       if (vlan !== 1) lines.push(` switchport access vlan ${vlan}`);
     }
+    if (row.shutdown) lines.push(' shutdown');
     lines.push(' exit');
   }
+  // Niveau 3 / administration : interfaces VLAN, ip routing, passerelle, routes, protocoles
+  const c = d.config ?? {};
+  for (const svi of (c.interfaces ?? []).filter((i) => /^Vlan\d+$/.test(i.name) && i.ip)) {
+    lines.push(`interface ${svi.name}`, ` ip address ${svi.ip} ${cidrToMask(svi.mask)}`, ...iosInterfaceExtras(c, svi), svi.shutdown ? ' shutdown' : ' no shutdown', ' exit');
+  }
+  if (c.ipRouting) lines.push('ip routing');
+  if (c.defaultGateway) lines.push(`ip default-gateway ${c.defaultGateway}`);
+  for (const r of c.routes ?? []) {
+    if (r.network && r.mask != null && r.nextHop) lines.push(`ip route ${r.network} ${cidrToMask(r.mask)} ${r.nextHop}`);
+  }
+  lines.push(...iosRoutingLines(c).map((l) => (l === '!' ? ' exit' : l)));
   return { lines, warnings };
 }
 

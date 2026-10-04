@@ -72,6 +72,15 @@ export function validate(doc, ctx = {}) {
     }
   }
 
+  // Interfaces VLAN des switches : adresse, et état (une SVI sans port actif dans son VLAN est down)
+  for (const d of topo.devices.values()) {
+    if (d.type !== 'switch') continue;
+    for (const s of topo.svis(d.id)) {
+      checkAddress(d, `${d.label} ${s.name}`, s.ip, s.mask);
+      if (s.ip && !s.shutdown && !topo.sviUp(d.id, s.vlan)) add(d.id, 'warning', `${d.label} ${s.name} est down : aucun port actif n'est dans le VLAN ${s.vlan}.`);
+    }
+  }
+
   // Câblage : mauvais câble, port inexistant ou déjà pris, clock rate absent…
   for (const [id, st] of topo.status) {
     if (!st.up) add(topo.links.get(id).source, 'error', st.reason);

@@ -6,7 +6,7 @@
 // Containerlab réserve eth0 au management : le 1er câble d'un équipement est eth1, le 2e eth2…
 import { isValidCidr, isValidIp } from '../net/ip.js';
 import { computeRouting, lookup, prefixText } from '../net/routing.js';
-import { isLoopbackName } from '../net/topology.js';
+import { isL3Switch, isLoopbackName, isRouting } from '../net/topology.js';
 import { ascii, interfaceTable, switchVlans, uniqueNames } from './common.js';
 
 export const CLAB_IMAGE = 'nicolaka/netshoot:latest'; // iproute2 + bridge + ping + tcpdump
@@ -22,6 +22,22 @@ export function clabCommands(doc) {
   const routing = computeRouting(doc, topo);
   const allVlans = [...new Set(doc.devices.filter((d) => d.type === 'switch').flatMap((d) => switchVlans(table.get(d.id))))];
   const commands = new Map();
+
+  // Table de routage calculée -> routes Linux (BGP : next-hop résolu par l'IGP, Linux veut une passerelle directe)
+  const routeCmds = (d) => {
+    const rib = routing.ribs.get(d.id);
+    const out = [];
+    for (const route of [...rib.values()].filter((r) => !['C', 'L'].includes(r.proto)).sort((a, b) => a.net - b.net || a.mask - b.mask)) {
+      let via = route.nextHop;
+      if (route.recursive) {
+        const igp = lookup(rib, route.nextHop, (r) => r.proto !== 'B');
+        if (!igp) continue;
+        if (igp.proto !== 'C') via = igp.nextHop;
+      }
+      out.push(route.mask === 0 ? `ip route replace default via ${via}` : `ip route replace ${prefixText(route.net, route.mask)} via ${via}`);
+    }
+    return out;
+  };
 
   for (const d of doc.devices) {
     const rows = table.get(d.id).filter((r) => r.link);
@@ -42,6 +58,15 @@ export function clabCommands(doc) {
           cmds.push(`bridge vlan del vid 1 dev ${dev}`, `bridge vlan add vid ${Number(r.vlan)} dev ${dev} pvid untagged`);
         }
       }
+      // Interfaces VLAN (SVI) : br0.10… sur le bridge, routées si « ip routing »
+      for (const svi of (d.config?.interfaces ?? []).filter((i) => /^Vlan\d+$/.test(i.name) && isValidIp(i.ip) && !i.shutdown)) {
+        const v = Number(svi.name.slice(4));
+        const dev = `br0.${v}`;
+        cmds.push(`bridge vlan add vid ${v} dev br0 self`, `ip link add link br0 name ${dev} type vlan id ${v}`,
+          `ip addr add ${svi.ip}/${svi.mask} dev ${dev}`, `ip link set ${dev} up`);
+      }
+      if (isL3Switch(d)) cmds.push(...routeCmds(d));
+      else if (isValidIp(d.config?.defaultGateway)) cmds.push(`ip route replace default via ${d.config.defaultGateway}`);
     } else {
       for (const r of rows) {
         // Port actif même sans IP (parent des sous-interfaces 802.1Q)
@@ -60,17 +85,7 @@ export function clabCommands(doc) {
           if (!sub.native) cmds.push(`ip link add link ${ifname(parent.index)} name ${dev} type vlan id ${sub.vlan}`);
           cmds.push(`ip addr add ${sub.ip}/${sub.mask} dev ${dev}`, `ip link set ${dev} up`);
         }
-        const rib = routing.ribs.get(d.id);
-        for (const route of [...rib.values()].filter((r) => !['C', 'L'].includes(r.proto)).sort((a, b) => a.net - b.net || a.mask - b.mask)) {
-          // BGP : next-hop résolu par l'IGP (Linux veut une passerelle directement joignable)
-          let via = route.nextHop;
-          if (route.recursive) {
-            const igp = lookup(rib, route.nextHop, (r) => r.proto !== 'B');
-            if (!igp) continue;
-            if (igp.proto !== 'C') via = igp.nextHop;
-          }
-          cmds.push(route.mask === 0 ? `ip route replace default via ${via}` : `ip route replace ${prefixText(route.net, route.mask)} via ${via}`);
-        }
+        cmds.push(...routeCmds(d));
       } else if (rows[0]?.hasIp && isValidIp(rows[0].gateway)) {
         // Remplace la route par défaut du réseau de management
         cmds.push(`ip route replace default via ${rows[0].gateway}`);
@@ -107,8 +122,11 @@ export function toContainerlab(doc) {
   for (const d of doc.devices) {
     out.push(`    ${names.get(d.id)}:`);
     out.push(`      labels: { netcanvas-type: ${d.type}, netcanvas-label: ${q(d.label)} }`);
-    if (d.type === 'router') {
+    if (isRouting(d)) {
       out.push('      sysctls:', '        net.ipv4.ip_forward: 1', '        net.ipv4.conf.all.arp_ignore: 1');
+    } else if (d.type === 'switch') {
+      // Switch sans « ip routing » : ses interfaces VLAN ne doivent pas router (le défaut hérité peut être 1)
+      out.push('      sysctls:', '        net.ipv4.ip_forward: 0');
     }
     const cmds = commands.get(d.id);
     if (cmds.length) {

@@ -10,14 +10,15 @@ export function linkOf(doc, devId, name) {
   return doc.links.find((l) => (l.source === devId && l.sourceIface === name) || (l.target === devId && l.targetIface === name))?.id ?? null;
 }
 
-const list = (dev) => {
+// Switch : ports dans « ports », interfaces VLAN (Vlan10) dans « interfaces » ; routeur : « interfaces »
+const list = (dev, name) => {
   dev.config ??= {};
-  const key = dev.type === 'switch' ? 'ports' : 'interfaces';
+  const key = dev.type === 'switch' && !/^Vlan\d+$/.test(name ?? '') ? 'ports' : 'interfaces';
   dev.config[key] ??= [];
   return dev.config[key];
 };
 
-export const getEntry = (dev, name) => list(dev).find((e) => e.name === name);
+export const getEntry = (dev, name) => list(dev, name).find((e) => e.name === name);
 
 // Entrée de config d'un port, créée si besoin
 export function ensureEntry(dev, name, doc) {
@@ -25,10 +26,11 @@ export function ensureEntry(dev, name, doc) {
   if (!e) {
     // Sous-interface Cisco « G0/0.10 » : rattachée à sa parente, sans câble propre
     const sub = dev.type !== 'switch' && /^(.+)\.\d+$/.exec(name);
-    e = sub
-      ? { link: null, name, parent: sub[1], ip: null, mask: null }
-      : { link: linkOf(doc, dev.id, name), name, ...(dev.type === 'switch' ? { mode: 'access', vlan: 1 } : { ip: null, mask: null }) };
-    list(dev).push(e);
+    const svi = /^Vlan(\d+)$/.exec(name);
+    e = sub ? { link: null, name, parent: sub[1], ip: null, mask: null }
+      : svi ? { link: null, name, vlan: Number(svi[1]), ip: null, mask: null }
+        : { link: linkOf(doc, dev.id, name), name, ...(dev.type === 'switch' ? { mode: 'access', vlan: 1 } : { ip: null, mask: null }) };
+    list(dev, name).push(e);
   }
   return e;
 }

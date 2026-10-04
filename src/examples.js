@@ -199,9 +199,53 @@ export const ROAS_DEMO = {
   ],
 };
 
+// Switch niveau 3 : le 3560 route entre 3 VLAN (SVI + ip routing) et sort vers Internet par R1.
+export const L3_DEMO = {
+  format: 'netcanvas',
+  version: 3,
+  name: 'Démo : switch niveau 3 (SVI)',
+  devices: [
+    pc('pc1', 'PC Compta', '192.168.10.10', 24, '192.168.10.1', -160, 448),
+    pc('pc2', 'PC Atelier', '192.168.20.10', 24, '192.168.20.1', 64, 448),
+    pc('srv', 'Serveur', '192.168.30.10', 24, '192.168.30.1', 288, 448, 'Server-PT', 'server'),
+    {
+      id: 'sw', type: 'switch', model: '3560-24PS', label: 'SW-L3', position: { x: 64, y: 224 },
+      config: {
+        ports: [
+          { link: 'd1', name: 'Fa0/1', mode: 'access', vlan: 10 },
+          { link: 'd2', name: 'Fa0/2', mode: 'access', vlan: 20 },
+          { link: 'd3', name: 'Fa0/3', mode: 'access', vlan: 30 },
+          { link: 'd4', name: 'G0/1', mode: 'access', vlan: 99 },
+        ],
+        vlans: [{ id: 10, name: 'COMPTA' }, { id: 20, name: 'ATELIER' }, { id: 30, name: 'SERVEURS' }, { id: 99, name: 'UPLINK' }],
+        interfaces: [
+          { link: null, name: 'Vlan10', ip: '192.168.10.1', mask: 24 },
+          { link: null, name: 'Vlan20', ip: '192.168.20.1', mask: 24 },
+          { link: null, name: 'Vlan30', ip: '192.168.30.1', mask: 24 },
+          { link: null, name: 'Vlan99', ip: '10.0.0.1', mask: 30 },
+        ],
+        ipRouting: true,
+        routes: [{ network: '0.0.0.0', mask: 0, nextHop: '10.0.0.2' }],
+      },
+    },
+    router('r1', 'R1', '2911', 64, 0, [['d4', 'G0/0', '10.0.0.2', 30], ['d5', 'G0/1', '203.0.113.1', 30]], {
+      routes: [{ network: '192.168.0.0', mask: 16, nextHop: '10.0.0.1' }],
+    }),
+    { id: 'net', type: 'cloud', model: 'Cloud', label: 'Internet', position: { x: 384, y: 0 }, config: { ip: '203.0.113.2', mask: 30, gateway: '203.0.113.1' } },
+  ],
+  links: [
+    link('d1', 'pc1', 'Fa0', 'sw', 'Fa0/1', 'straight', ['t', 'b']),
+    link('d2', 'pc2', 'Fa0', 'sw', 'Fa0/2', 'straight', ['t', 'b']),
+    link('d3', 'srv', 'Fa0', 'sw', 'Fa0/3', 'straight', ['t', 'b']),
+    link('d4', 'r1', 'G0/0', 'sw', 'G0/1', 'straight', ['b', 't']),
+    link('d5', 'r1', 'G0/1', 'net', 'Eth0', 'straight', ['r', 'l']),
+  ],
+};
+
 export const DEMOS = [
   { id: 'vlan', label: '2 VLAN, 2 routeurs (statique)', doc: DEMO },
   { id: 'roas', label: 'Router-on-a-stick (802.1Q)', doc: ROAS_DEMO },
+  { id: 'l3', label: 'Switch niveau 3 (SVI, ip routing)', doc: L3_DEMO },
   { id: 'ospf', label: 'OSPF 2 zones (Cisco + MikroTik)', doc: OSPF_DEMO },
   { id: 'bgp', label: 'BGP eBGP + iBGP', doc: BGP_DEMO },
 ];

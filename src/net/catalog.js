@@ -77,6 +77,15 @@ export const MODELS = {
     type: 'switch', label: 'Cisco 2960-48TT', short: '2960-48',
     ports: [...range((i) => `Fa0/${i}`, 1, 48), port('G0/1'), port('G0/2'), CONSOLE],
   },
+  // Switches niveau 3 : interfaces VLAN (SVI) et « ip routing »
+  '3560-24PS': {
+    type: 'switch', l3: true, label: 'Cisco 3560-24PS (niveau 3)', short: '3560-24',
+    ports: [...range((i) => `Fa0/${i}`, 1, 24), port('G0/1'), port('G0/2'), CONSOLE],
+  },
+  '3650-24PS': {
+    type: 'switch', l3: true, label: 'Cisco 3650-24PS (niveau 3)', short: '3650-24',
+    ports: [...range((i) => `G1/0/${i}`, 1, 24), ...range((i) => `G1/1/${i}`, 1, 4, 'fiber'), CONSOLE],
+  },
   'Switch-PT': {
     type: 'switch', label: 'Switch générique', short: 'Switch-PT', generic: true,
     ports: [...range((i) => `Fa0/${i}`, 1, 24), port('G0/1'), port('G0/2'), port('G0/3', 'fiber'), port('G0/4', 'fiber'), CONSOLE],
@@ -121,6 +130,7 @@ export const CLOCK_RATES = [64000, 128000, 256000, 512000, 1000000, 2000000, 400
 
 export const vendorOf = (d) => modelOf(d).vendor ?? 'cisco';
 export const isMikrotik = (d) => vendorOf(d) === 'mikrotik';
+export const isSviName = (name) => /^Vlan\d+$/.test(name ?? '');
 
 export const modelOf = (d) => MODELS[d?.model] ?? MODELS[DEFAULT_MODEL[d?.type]] ?? MODELS['PC-PT'];
 export const modelId = (d) => (MODELS[d?.model] ? d.model : DEFAULT_MODEL[d?.type] ?? 'PC-PT');

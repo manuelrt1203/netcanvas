@@ -8,7 +8,8 @@
 //    en respectant les VLAN des ports de switch (access / trunk, VLAN natif 1). Un hub répète tout.
 //  - niveau 1 : un câble hors service (mauvais câble, port inexistant, clock rate absent) ne transmet rien.
 import { formatIp, isValidCidr, isValidIp, networkLabel, networkOf, parseIp, sameSubnet } from './ip.js';
-import { buildTopology, isHost } from './topology.js';
+import { buildTopology, isHost, isL3Switch, isRouting } from './topology.js';
+import { modelOf } from './catalog.js';
 import { flood } from './l2.js';
 import { computeRouting, lookup } from './routing.js';
 
@@ -70,28 +71,35 @@ function forward(ctx, startId, dstIp, phase, result, log, name, fixedSrc = null)
     const own = topo.l3Ifaces(current).find((i) => parseIp(i.ip) === parseIp(dstIp));
     if (own) return { arrivedAt: current, srcIp: srcIp ?? own.ip, ttl };
 
-    if (current !== startId && isHost(dev)) {
-      throw new SimError(`${name(current)} reçoit un paquet pour ${dstIp} mais n'est pas un routeur : il le jette.`, current);
+    if (current !== startId && !isRouting(dev)) {
+      const why = dev.type !== 'switch' ? "n'est pas un routeur : il le jette"
+        : modelOf(dev).l3 ? 'mais le routage IP n\'est pas activé (« ip routing »)'
+          : `ne route pas (un ${modelOf(dev).short} est un switch de niveau 2 : il faut un routeur ou un switch niveau 3)`;
+      throw new SimError(`${name(current)} reçoit un paquet pour ${dstIp} ${why}.`, current);
     }
-    // Chaque routeur traversé décrémente le TTL
-    if (dev.type === 'router' && current !== startId && --ttl === 0) {
+    // Chaque routeur (ou switch niveau 3) traversé décrémente le TTL
+    if (isRouting(dev) && current !== startId && --ttl === 0) {
       throw new SimError(`${name(current)} : TTL expiré, le paquet tourne en boucle entre les routeurs.`, current);
     }
 
-    const step = isHost(dev) ? hostDecision(topo, current, dstIp, name) : routerDecision(ctx, current, dstIp, name);
+    const step = isRouting(dev) ? routerDecision(ctx, current, dstIp, name)
+      : dev.type === 'switch' ? switchHostDecision(topo, current, dstIp, name)
+        : hostDecision(topo, current, dstIp, name);
     srcIp ??= step.iface.ip;
     if (phase === 'request') result.srcIp = srcIp;
     log(phase, step.text, 'info', current);
 
     // Sous-interface 802.1Q : la trame part étiquetée sur le trunk
     const tag = step.iface.sub && !step.iface.native ? Number(step.iface.vlan) : null;
-    const l2 = deliver(topo, current, step.iface.link, step.nextHop, name, tag);
+    const l2 = step.iface.svi
+      ? deliver(topo, current, null, step.nextHop, name, null, step.iface.vlan)
+      : deliver(topo, current, step.iface.link, step.nextHop, name, tag);
     result.hops.push(...l2.hops.map((h) => ({ ...h, phase })));
-    result.path.push({ phase, device: l2.endpoint, ip: topo.l3IfaceOn(l2.endpoint, l2.inLink, l2.tag)?.ip ?? null });
+    result.path.push({ phase, device: l2.endpoint, ip: l2.iface?.ip ?? null });
     const via = l2.vlan != null ? ` (VLAN ${l2.vlan})` : '';
     log(
       phase,
-      topo.links.get(step.iface.link).cable === 'serial'
+      topo.links.get(step.iface.link)?.cable === 'serial'
         ? `Liaison série point à point : ${name(l2.endpoint)} reçoit le paquet.`
         : `ARP : ${step.nextHop} est ${name(l2.endpoint)}${via}. Trame transmise.`,
       'info',
@@ -99,6 +107,21 @@ function forward(ctx, startId, dstIp, phase, result, log, name, fixedSrc = null)
     );
     current = l2.endpoint;
   }
+}
+
+// Switch sans routage avec une interface VLAN (administration) : se comporte comme un hôte
+function switchHostDecision(topo, id, dstIp, name) {
+  const svis = topo.l3Ifaces(id).filter((s) => s.svi);
+  if (!svis.length) throw new SimError(`${name(id)} n'a pas d'interface VLAN active avec une adresse IP.`, id);
+  const direct = svis.find((s) => sameSubnet(s.ip, dstIp, s.mask));
+  if (direct) return { iface: direct, nextHop: dstIp, text: `${name(id)} : ${dstIp} est dans le réseau de ${direct.name}, envoi direct.` };
+  const gw = topo.devices.get(id).config?.defaultGateway;
+  const out = isValidIp(gw) && svis.find((s) => sameSubnet(s.ip, gw, s.mask));
+  if (!out) {
+    const l3 = modelOf(topo.devices.get(id)).l3 && !isL3Switch(topo.devices.get(id));
+    throw new SimError(`${name(id)} : ${dstIp} est hors de ses réseaux et aucune passerelle par défaut (« ip default-gateway ») n'est utilisable${l3 ? ' ; ou active « ip routing »' : ''}.`, id);
+  }
+  return { iface: out, nextHop: gw, text: `${name(id)} : envoi à la passerelle par défaut ${gw} (${out.name}).` };
 }
 
 function hostDecision(topo, id, dstIp, name) {
@@ -173,10 +196,12 @@ function routerDecision({ topo, routing }, id, dstIp, name) {
 // Pourquoi aucune route : interface down, route statique inutilisable, protocole mal configuré
 function noRoute(topo, routing, id, dstIp, name) {
   const all = topo.l3Ifaces(id, { includeDown: true });
-  const down = all.find((i) => !i.loopback && (i.shutdown || !topo.isUp(i.link)) && sameSubnet(i.ip, dstIp, i.mask));
+  const isDown = (i) => i.shutdown || (i.svi ? !topo.sviUp(id, i.vlan) : !i.loopback && !topo.isUp(i.link));
+  const down = all.find((i) => isDown(i) && sameSubnet(i.ip, dstIp, i.mask));
   if (down) {
     const why = down.shutdown ? `${name(id)} ${down.name} est désactivée (shutdown).`
-      : down.link ? topo.status.get(down.link).reason : `${down.parent ?? down.name} n'est pas câblée.`;
+      : down.svi ? `Aucun port actif du switch n'est dans le VLAN ${down.vlan}.`
+        : down.link ? topo.status.get(down.link).reason : `${down.parent ?? down.name} n'est pas câblée.`;
     return `${name(id)} : ${networkLabel(down.ip, down.mask)} est sur ${down.name}, mais l'interface est down. ${why}`;
   }
 
@@ -197,13 +222,15 @@ function noRoute(topo, routing, id, dstIp, name) {
 
 // Résolution ARP + acheminement de la trame dans le domaine de diffusion.
 // Renvoie le chemin (liste de câbles) jusqu'à l'équipement qui possède targetIp.
-function deliver(topo, fromId, linkId, targetIp, name, tag = null) {
-  if (!topo.isUp(linkId)) throw new SimError(`${name(fromId)} : câble hors service. ${topo.status.get(linkId).reason}`, fromId);
+function deliver(topo, fromId, linkId, targetIp, name, tag = null, sviVlan = null) {
+  if (linkId != null && !topo.isUp(linkId)) throw new SimError(`${name(fromId)} : câble hors service. ${topo.status.get(linkId).reason}`, fromId);
   const target = parseIp(targetIp);
-  const { endpoints, drops, vlansSeen } = flood(topo, fromId, linkId, tag);
+  const { endpoints, drops, vlansSeen } = flood(topo, fromId, linkId, tag, sviVlan);
   for (const e of endpoints) {
-    const iface = topo.l3IfaceOn(e.device, e.inLink, e.tag);
-    if (iface && isValidIp(iface.ip) && parseIp(iface.ip) === target) return { endpoint: e.device, inLink: e.inLink, tag: e.tag, hops: e.hops, vlan: e.vlan };
+    const iface = e.svi != null ? topo.l3Ifaces(e.device).find((s) => s.svi && s.vlan === e.svi) : topo.l3IfaceOn(e.device, e.inLink, e.tag);
+    if (iface && isValidIp(iface.ip) && parseIp(iface.ip) === target) {
+      return { endpoint: e.device, inLink: e.inLink, tag: e.tag, hops: e.hops, vlan: e.vlan, iface };
+    }
   }
   const where = vlansSeen.size ? ` dans le VLAN ${[...vlansSeen].join(', ')}` : ' sur ce lien';
   const extra = drops.length ? ` (${drops.join(' ; ')})` : '';

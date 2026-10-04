@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BGP_DEMO, DEMO, OSPF_DEMO, ROAS_DEMO } from '../examples.js';
+import { BGP_DEMO, DEMO, L3_DEMO, OSPF_DEMO, ROAS_DEMO } from '../examples.js';
 import { runLine, shellFor } from './index.js';
 import { validate } from '../net/validate.js';
 import { simulatePing } from '../net/simulate.js';
@@ -358,4 +358,36 @@ test('mikrotik : router-on-a-stick en RouterOS (/interface vlan)', () => {
   assert.ok(simulatePing(t.doc, 'pc1', '192.168.20.10').ok);
   assert.match(t.run('/interface vlan print'), / 1   vlan20\s+1500\s+20\s+ether2/);
   assert.match(t.run('/export'), /\/interface vlan\nadd interface=ether2 name=vlan10 vlan-id=10\nadd interface=ether2 name=vlan20 vlan-id=20\n\/ip address\nadd address=192\.168\.10\.1\/24 interface=vlan10/);
+});
+
+test('ios switch niveau 3 : interface vlan, ip routing, route par défaut', () => {
+  const doc = structuredClone(L3_DEMO);
+  Object.assign(dev(doc, 'sw').config, { interfaces: [] });
+  delete dev(doc, 'sw').config.ipRouting;
+  delete dev(doc, 'sw').config.routes;
+  const t = session(doc, 'sw');
+  t.run('en', 'conf t', 'int fa0/1');
+  assert.match(t.run('ip address 1.1.1.1 255.0.0.0'), /% Invalid input detected/);
+  for (const [v, ip] of [[10, '192.168.10.1'], [20, '192.168.20.1'], [30, '192.168.30.1'], [99, '10.0.0.1']]) {
+    t.run(`int vlan ${v}`, `ip address ${ip} 255.255.255.${v === 99 ? 252 : 0}`);
+  }
+  t.run('exit');
+  assert.ok(!simulatePing(t.doc, 'pc1', '192.168.30.10').ok); // pas encore « ip routing »
+  t.run('ip routing', 'ip route 0.0.0.0 0.0.0.0 10.0.0.2', 'end');
+  assert.ok(simulatePing(t.doc, 'pc1', '192.168.30.10').ok);
+  assert.ok(simulatePing(t.doc, 'pc1', '203.0.113.2').ok);
+  assert.match(t.run('show ip interface brief'), /^Vlan30\s+192\.168\.30\.1\s+YES manual up\s+up$/m);
+  assert.match(t.run('show ip route'), /^S\*   0\.0\.0\.0\/0 \[1\/0\] via 10\.0\.0\.2$/m);
+  assert.match(t.run('show running-config'), /interface Vlan10\n ip address 192\.168\.10\.1 255\.255\.255\.0\n!/);
+  assert.match(t.run('show running-config'), /ip routing\n!\nip route 0\.0\.0\.0 0\.0\.0\.0 10\.0\.0\.2/);
+});
+
+test('ios switch niveau 2 : ip routing refusé, ip default-gateway', () => {
+  const t = session(structuredClone(DEMO), 'sw1');
+  t.run('en', 'conf t');
+  assert.match(t.run('ip routing'), /switch de niveau 2, il ne route pas/);
+  t.run('ip default-gateway 192.168.10.1', 'int vlan 10', 'ip address 192.168.10.2 255.255.255.0', 'end');
+  assert.equal(dev(t.doc, 'sw1').config.defaultGateway, '192.168.10.1');
+  assert.ok(simulatePing(t.doc, 'sw1', '172.16.0.10').ok); // administration à distance du switch
+  assert.match(t.run('show ip route'), /Invalid input|Default gateway/);
 });

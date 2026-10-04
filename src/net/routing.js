@@ -9,7 +9,7 @@
 // La sélection finale se fait par distance administrative, comme sur IOS.
 //
 // Chaque refus (adjacence absente, session down, route non annoncée) est expliqué dans `issues`.
-import { buildTopology } from './topology.js';
+import { buildTopology, isRouting } from './topology.js';
 import { flood } from './l2.js';
 import { formatIp, isValidCidr, isValidIp, maskBits, networkOf, parseIp, sameSubnet } from './ip.js';
 import { isMikrotik } from './catalog.js';
@@ -74,7 +74,7 @@ export function lookup(rib, ip, filter = () => true) {
 export function computeRouting(doc, topo = buildTopology(doc)) {
   const routers = new Map();
   for (const d of topo.devices.values()) {
-    if (d.type !== 'router') continue;
+    if (!isRouting(d)) continue;
     const ifaces = topo.l3Ifaces(d.id);
     routers.set(d.id, { id: d.id, dev: d, label: d.label, cfg: d.config ?? {}, ifaces, issues: [] });
   }
@@ -109,10 +109,11 @@ export function computeRouting(doc, topo = buildTopology(doc)) {
     for (const i of r.ifaces) {
       if (i.loopback) continue;
       const tag = i.sub && !i.native ? Number(i.vlan) : null;
-      for (const e of flood(topo, r.id, i.link, tag).endpoints) {
+      const reach = i.svi ? flood(topo, r.id, null, null, i.vlan) : flood(topo, r.id, i.link, tag);
+      for (const e of reach.endpoints) {
         const p = routers.get(e.device);
         if (!p) continue;
-        const theirs = topo.l3IfaceOn(p.id, e.inLink, e.tag);
+        const theirs = e.svi != null ? p.ifaces.find((x) => x.svi && x.vlan === e.svi) : topo.l3IfaceOn(p.id, e.inLink, e.tag);
         const pi = theirs && p.ifaces.find((x) => x.name === theirs.name);
         if (pi) r.peers.push({ iface: i, peer: p, peerIface: pi, p2p: topo.links.get(i.link)?.cable === 'serial' });
       }

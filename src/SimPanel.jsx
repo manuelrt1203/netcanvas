@@ -7,7 +7,7 @@ const CUSTOM = '__custom__';
 export default function SimPanel({ doc, form, setForm, result, playing, onRun, onReplay, onReset }) {
   const { sources, targets } = useMemo(() => {
     const topo = buildTopology(doc);
-    const sources = doc.devices.filter((d) => isHost(d) || d.type === 'router');
+    const sources = doc.devices.filter((d) => isHost(d) || d.type === 'router' || (d.type === 'switch' && topo.l3Ifaces(d.id).length));
     const targets = doc.devices.flatMap((d) =>
       topo.l3Ifaces(d.id).map((i) => ({ device: d.id, ip: i.ip, text: `${d.label}${d.type === 'router' ? ` ${i.name}` : ''} · ${i.ip}` })),
     );
