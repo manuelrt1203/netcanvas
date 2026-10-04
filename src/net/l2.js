@@ -15,6 +15,7 @@ export function flood(topo, fromId, linkId, startTag = null, sviVlan = null) {
   const endpoints = [];
   const drops = [];
   const vlansSeen = new Set();
+  const switches = []; // switches atteints par la diffusion : { device, inLink, vlan } (apprentissage MAC)
 
   while (queue.length) {
     const { device, inLink, tag, vlan, hops, internal } = queue.shift();
@@ -53,6 +54,7 @@ export function flood(topo, fromId, linkId, startTag = null, sviVlan = null) {
       const key = `${device}|${v}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      switches.push({ device, inLink, vlan: v });
       // La trame atteint l'interface VLAN du switch (SVI)
       if (device !== fromId && topo.l3Ifaces(device).some((s) => s.svi && s.vlan === v)) {
         endpoints.push({ device, inLink, tag: null, svi: v, hops, vlan: v });
@@ -87,5 +89,5 @@ export function flood(topo, fromId, linkId, startTag = null, sviVlan = null) {
     reached.add(key);
     endpoints.push({ device, inLink, tag, hops, vlan });
   }
-  return { endpoints, drops, vlansSeen };
+  return { endpoints, drops, vlansSeen, switches };
 }

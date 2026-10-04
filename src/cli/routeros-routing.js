@@ -6,6 +6,8 @@ import { cidrToWildcard, computeRouting, prefixText, wildcardToCidr } from '../n
 import { formatIp, isValidIp, networkOf, sameSubnet, splitCidr } from '../net/ip.js';
 import { firewallRuleText, parseFirewallRule } from '../net/acl.js';
 import { computeLeases } from '../net/dhcp.js';
+import { arpRows, clearArp } from '../net/tables.js';
+import { macColon } from '../net/mac.js';
 import { formatDuration } from '../net/runtime.js';
 import { buildTopology } from '../net/topology.js';
 
@@ -39,6 +41,7 @@ export const ROUTING_MENUS = {
   'routing bgp connection': { menus: [], commands: ['add', 'print', 'remove'] },
   'routing bgp session': { menus: [], commands: ['print'] },
   'ip firewall': { menus: ['address-list', 'filter', 'nat'], commands: [] },
+  'ip arp': { menus: [], commands: ['print', 'remove'] },
   'ip firewall nat': { menus: [], commands: ['add', 'print', 'remove'] },
   'ip pool': { menus: [], commands: ['add', 'print', 'remove'] },
   'ip dhcp-server': { menus: ['network', 'lease'], commands: ['add', 'print', 'remove'] },
@@ -301,6 +304,16 @@ export function runRouting(ctx, p) {
       changed();
       return true;
     }
+
+    // --- ARP -------------------------------------------------------------------------
+    case 'ip arp|print': {
+      out.push('Flags: X - disabled, I - invalid, H - DHCP, D - dynamic, P - published, C - complete ', ` #    ${pad('ADDRESS', 16)}${pad('MAC-ADDRESS', 19)}INTERFACE`);
+      arpRows(dev, doc).filter((e) => !e.own).forEach((e, i) => out.push(` ${pad(i, 2)} DC ${pad(e.ip, 16)}${pad(macColon(e.mac), 19)}${e.iface}`));
+      return out.push(''), true;
+    }
+    case 'ip arp|remove':
+      ctx.effects.push({ type: 'runtime', update: clearArp(dev.id) });
+      return true;
 
     // --- DHCP ------------------------------------------------------------------------
     case 'ip pool|add': {

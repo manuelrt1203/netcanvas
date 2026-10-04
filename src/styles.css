@@ -418,3 +418,17 @@ button.small-btn { min-height: 32px; padding: 0 8px; font-size: .8rem; }
 .app.embed { grid-template-columns: 1fr 320px; grid-template-areas: "top top" "err err" "canvas insp"; }
 .notices { grid-area: err; }
 .notices .error { grid-area: auto; }
+
+/* --- Onglet Tables ------------------------------------------------------------------- */
+.table-block { margin: 0 0 18px; }
+.table-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.table-title h3 { margin: 0 0 6px; }
+.table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+table.data { width: 100%; border-collapse: collapse; font-size: .8rem; font-variant-numeric: tabular-nums; }
+table.data th, table.data td { padding: 5px 8px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--border); }
+table.data th { background: var(--bg); color: var(--muted); font-weight: 600; position: sticky; top: 0; }
+table.data tr:last-child td { border-bottom: 0; }
+table.data code { font-size: .78rem; }
+/* Quatre onglets dans un panneau étroit : on resserre, et on défile si besoin */
+.tabs { overflow-x: auto; scrollbar-width: none; }
+.tab { flex: 1 0 auto; padding-left: 10px; padding-right: 10px; white-space: nowrap; font-size: .88rem; }

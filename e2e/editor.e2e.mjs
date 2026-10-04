@@ -319,6 +319,24 @@ const afterMinute = (await screenText()).split('show ip nat translations').at(-1
 assert.doesNotMatch(afterMinute, /icmp 203/, 'entrée expirée');
 await page.click('role=radio[name="Formulaire"]');
 
+step('tables : ARP et MAC remplies par un ping, puis vieillissement');
+await openDemo('2 VLAN, 2 routeurs (statique)');
+await page.click('role=tab[name="Simulation"]');
+await page.selectOption('#sim-src', { label: 'PC Compta' });
+await page.selectOption('#sim-dst', { label: 'PC Atelier · 192.168.20.10' });
+await page.click('text=Lancer le ping');
+await page.waitForSelector('button:has-text("Lancer le ping"):not([disabled])', { timeout: 15000 });
+await page.getByTestId('rf__node-sw1').click();
+await page.click('role=tab[name="Tables"]');
+const macTable = page.locator('.table-block', { hasText: 'Table MAC' });
+assert.equal(await macTable.locator('tbody tr').count(), 4);
+await page.getByTestId('rf__node-r1').click();
+assert.equal(await page.locator('.table-block', { hasText: 'Cache ARP' }).getByRole('cell', { name: '192.168.20.10', exact: true }).count(), 1);
+await page.screenshot({ path: 'e2e/tables.png' });
+await page.getByTestId('rf__node-sw1').click();
+await page.click('role=button[name="+1 h"]');
+assert.ok(await macTable.getByText(/Vide : le switch apprend/).isVisible(), 'table MAC vidée par le vieillissement');
+
 step('édition : annuler / rétablir, copier-coller, sélection multiple, recherche');
 await page.click('text=Effacer');
 await page.locator('.react-flow__pane').click({ position: { x: 40, y: 40 } });

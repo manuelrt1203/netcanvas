@@ -6,6 +6,7 @@ import { buildTopology } from '../net/topology.js';
 import { formatIp, isBroadcastAddress, isNetworkAddress, isValidCidr, isValidIp, networkOf, sameSubnet, splitCidr } from '../net/ip.js';
 import { modelOf } from '../net/catalog.js';
 import { traceroute } from '../net/traceroute.js';
+import { macColon, macOf } from '../net/mac.js';
 import { ROUTING_MENUS, routeTable, routingScript, runRouting } from './routeros-routing.js';
 
 // Menus : sous-menus et commandes de chaque chemin
@@ -15,7 +16,7 @@ const MENUS = {
   interface: { menus: ['ethernet', 'vlan'], commands: ['print', 'enable', 'disable', 'export'] },
   'interface vlan': { menus: [], commands: ['add', 'print', 'remove', 'export'] },
   'interface ethernet': { menus: [], commands: ['print', 'enable', 'disable', 'export'] },
-  ip: { menus: ['address', 'route', 'firewall', 'pool', 'dhcp-server'], commands: ['export'] },
+  ip: { menus: ['address', 'route', 'firewall', 'pool', 'dhcp-server', 'arp'], commands: ['export'] },
   'ip address': { menus: [], commands: ['add', 'print', 'remove', 'export'] },
   'ip route': { menus: [], commands: ['add', 'print', 'remove', 'export'] },
   system: { menus: ['identity'], commands: ['reboot'] },
@@ -185,12 +186,12 @@ function run(ctx, p) {
     case 'interface|print':
     case 'interface ethernet|print': {
       const topo = buildTopology(doc);
-      out.push('Flags: D - dynamic, X - disabled, R - running, S - slave ', ` #     ${pad('NAME', 36)}${pad('TYPE', 11)}ACTUAL-MTU`);
+      out.push('Flags: D - dynamic, X - disabled, R - running, S - slave ', ` #     ${pad('NAME', 20)}${pad('TYPE', 8)}${pad('ACTUAL-MTU', 12)}MAC-ADDRESS`);
       dataPorts(dev).forEach((port, i) => {
         const off = getEntry(dev, port.name)?.shutdown;
         const link = linkOf(doc, dev.id, port.name);
         const flag = off ? 'X' : link && topo.isUp(link) ? 'R' : ' ';
-        out.push(` ${pad(i, 2)} ${pad(flag, 3)}${pad(port.name, 36)}${pad('ether', 11)}${String(1500).padStart(10)}`);
+        out.push(` ${pad(i, 2)} ${pad(flag, 3)}${pad(port.name, 20)}${pad('ether', 8)}${pad(String(1500).padStart(10), 12)}${macColon(macOf(dev, port.name))}`);
       });
       return out.push('');
     }

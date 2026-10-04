@@ -98,7 +98,30 @@ La particularité de NetCanvas reste là : un `ping` tapé dans un terminal s'an
 - **Baux DHCP datés** : `lease` (1 jour par défaut, `lease infinite`), `lease-time` MikroTik. Un PC connecté renouvelle à mi-bail et garde son adresse. Un PC débranché ou supprimé garde son bail jusqu'à expiration, ce qui reproduit un vrai pool épuisé par des baux fantômes. `clear ip dhcp binding *|A` libère, `ipconfig /release` rend l'adresse jusqu'au prochain `/renew`. `show ip dhcp binding` et `/ip dhcp-server lease print` affichent l'expiration.
 - **Table NAT persistante** : chaque ping ou traceroute ajoute ses entrées ICMP (identifiant comme « port » du PAT), visibles dans `show ip nat translations` et effacées par `clear ip nat translation *`. Elles expirent après 60 s comme sur IOS. Seule une réponse suit une traduction dynamique : un ping non sollicité venu d'Internet ne traverse pas le PAT, seul le NAT statique le permet.
 
-Pas encore simulé (le terminal le dit) : EIGRP, table ARP / MAC.
+**Tables ARP et MAC** : chaque interface a une adresse MAC stable, avec l'OUI de son constructeur : Cisco `0001.42xx.xxxx`, PC `00-e0-f7-…`, MikroTik `4C:5E:0C:…`. Une sous-interface a la MAC de sa parente, une SVI celle du switch.
+
+Les tables se remplissent comme sur un vrai réseau :
+- la requête ARP diffusée fait apprendre l'émetteur à tous les switches du VLAN (sur leur port d'entrée) ;
+- la cible apprend l'émetteur ;
+- la réponse fait apprendre la cible le long du chemin.
+
+Au ping suivant, le journal indique « ARP (en cache) ». Durées de vieillissement :
+
+| Table | Durée |
+|---|---|
+| Table MAC d'un switch | 5 min |
+| ARP d'un routeur Cisco | 4 h |
+| ARP d'un PC | 2 min |
+| ARP d'un MikroTik | 30 s |
+
+Commandes :
+- IOS : `show arp` / `show ip arp`, `show mac address-table` (et `show mac-address-table`), `show interfaces [X]` (MAC, état, débit, encapsulation), `clear arp-cache`, `clear mac address-table dynamic` ;
+- PC : `arp -a`, `arp -d` ;
+- RouterOS : `/ip arp print`, `/interface print` (colonne MAC-ADDRESS).
+
+**Onglet Tables** : toutes les tables de l'équipement sélectionné (routage, cache ARP, table MAC, traductions NAT, baux DHCP distribués, voisins OSPF, sessions BGP), avec l'âge et l'expiration de chaque entrée, et un bouton « Vider ». Disponible aussi en lecture seule.
+
+Pas encore simulé (le terminal le dit) : EIGRP, STP, DNS.
 
 ## Matériel et câblage (`src/net/catalog.js`, `src/net/cabling.js`)
 
@@ -203,7 +226,7 @@ Les fichiers v1 et v2 s'importent toujours : le modèle est déduit des ports ut
 ## Tests
 
 ```bash
-npm test           # 138 tests : calculs IP, ping, validation, JSON, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
+npm test           # 145 tests : calculs IP, ping, validation, JSON, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
 npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : édition, contrôles, ping, persistance, exports, câblage, terminaux (IOS, RouterOS, PC), démos OSPF et BGP (show ip ospf neighbor, next-hop-self retiré)
 ```
 
@@ -211,5 +234,5 @@ npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : éditi
 
 ## Prochaines étapes
 
-1. Simulation : tables ARP / MAC, DNS.
+1. Simulation : STP (boucles de switches), DNS.
 2. Partage : historique des versions, expiration des liens, comptes utilisateurs (« Mes schémas »).

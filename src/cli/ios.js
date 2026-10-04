@@ -6,6 +6,7 @@ import { cidrToMask, formatIp, isBroadcastAddress, isNetworkAddress, isValidIp, 
 import { isSviName, modelOf } from '../net/catalog.js';
 import { hostname as iosHostname, iosAclLines, iosInterfaceExtras, iosDhcpLines, iosLongName, iosNatLines, iosRoutingLines } from '../export/cisco.js';
 import { traceroute } from '../net/traceroute.js';
+import { ipArpShow, tableClears, tableShows } from './ios-tables.js';
 import { clearDhcpCommand, dhcpConfigCommand, dhcpTree, helperCommands, showDhcp } from './ios-dhcp.js';
 import { clearNatCommand, natConfigCommand, natInterfaceCommands, showNatTranslations } from './ios-nat.js';
 import { accessGroupCommands, aclConfigCommands, aclShows, aclTree, showAccessLists } from './ios-acl.js';
@@ -311,6 +312,7 @@ function showTree(dev) {
           children: routeFilters(),
         }), ...routingShows()] : []),
         kw('access-lists', 'List IP access lists', { run: (c) => c.out.push(...showAccessLists(c.dev)) }),
+        ipArpShow(),
         kw('dhcp', 'Show items in the DHCP database', {
           children: [
             kw('binding', 'DHCP address bindings', { run: (c) => c.out.push(...showDhcp(c.dev, c.doc, 'binding')) }),
@@ -323,14 +325,11 @@ function showTree(dev) {
     ...aclShows(),
     kw('cdp', 'CDP information', { children: [kw('neighbors', 'CDP neighbor entries', { run: (c) => c.out.push(...showCdp(c.dev, c.doc)) })] }),
     kw('version', 'System hardware and software status', { run: (c) => c.out.push(...showVersion(c.dev)) }),
-    kw('interfaces', 'Interface status and configuration', { run: (c) => c.out.push(...NOT_SIMULATED('« show interfaces » détaillé (utilise « show ip interface brief »)')) }),
   ];
   if (isSwitch) {
     kids.push(kw('vlan', 'VTP VLAN status', { run: (c) => c.out.push(...showVlanBrief(c.dev)), children: [kw('brief', 'VTP all VLAN status in brief', { run: (c) => c.out.push(...showVlanBrief(c.dev)) })] }));
-    kids.push(kw('mac-address-table', 'MAC forwarding table', { run: (c) => c.out.push(...NOT_SIMULATED('la table MAC')) }));
-  } else {
-    kids.push(kw('arp', 'ARP table', { run: (c) => c.out.push(...NOT_SIMULATED('la table ARP')) }));
   }
+  kids.push(...tableShows(dev, parseInterfaces));
   return kw('show', 'Show running system information', { children: kids });
 }
 
@@ -344,8 +343,11 @@ function execTree(dev, privileged) {
     kw('exit', 'Exit from the EXEC', { run: (c) => logout(c) }),
     kw('logout', 'Exit from the EXEC', { run: (c) => logout(c) }),
     pingCmd(),
-    ...(privileged && dev.type === 'router' ? [kw('clear', 'Reset functions', {
-      children: [kw('ip', 'IP', { children: [clearNatCommand(), clearDhcpCommand()] })],
+    ...(privileged ? [kw('clear', 'Reset functions', {
+      children: [
+        ...(dev.type === 'router' ? [kw('ip', 'IP', { children: [clearNatCommand(), clearDhcpCommand()] })] : []),
+        ...tableClears(dev),
+      ],
     })] : []),
     kw('traceroute', 'Trace route to destination', { children: [arg('ip', 'WORD', 'Trace route to destination address', isIp, { run: (c) => doTraceroute(c, c.args.ip) })] }),
     showTree(dev),

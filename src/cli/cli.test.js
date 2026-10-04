@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { BGP_DEMO, DEMO, DHCP_DEMO, L3_DEMO, NAT_DEMO, OSPF_DEMO, ROAS_DEMO } from '../examples.js';
 import { computeLeases, withLeases } from '../net/dhcp.js';
 import { runtimeOf } from '../net/runtime.js';
+import { mergeLearned } from '../net/tables.js';
+import { macCisco, macColon, macOf, macWindows } from '../net/mac.js';
 import { runLine, shellFor } from './index.js';
 import { validate } from '../net/validate.js';
 import { simulatePing } from '../net/simulate.js';
@@ -554,4 +556,49 @@ test('ios : table NAT persistante, expiration, clear ; bail et clear ip dhcp bin
   assert.deepEqual(Object.keys(d.doc.runtime.leases).sort(), ['pc2', 'pc3']);
   d.run('clear ip dhcp binding *');
   assert.deepEqual(Object.keys(d.doc.runtime.leases), ['pc3']); // servi par le serveur du VLAN 30, pas par R1
+});
+
+// Lance un ping et enregistre ce qu'il a appris (ARP, MAC), comme l'éditeur
+const pingAndLearn = (doc, src, dst) => {
+  const r = simulatePing(doc, src, dst);
+  return { ...doc, runtime: mergeLearned(runtimeOf(doc), r.learned, doc) };
+};
+
+test('tables : show arp, show mac address-table, show interfaces, clear (IOS)', () => {
+  const doc = pingAndLearn(structuredClone(DEMO), 'pc1', '192.168.20.10');
+  const mac = (id, i) => macCisco(macOf(dev(doc, id), i));
+  const r1 = session(doc, 'r1');
+  r1.run('en');
+  const arp = r1.run('show ip arp');
+  assert.match(arp, new RegExp(`^Internet  192\\.168\\.10\\.1 +- +${mac('r1', 'G0/0').replace(/\./g, '\\.')}  ARPA   GigabitEthernet0/0$`, 'm'));
+  assert.match(arp, new RegExp(`^Internet  192\\.168\\.10\\.10 +0 +${mac('pc1', 'Fa0').replace(/\./g, '\\.')}  ARPA   GigabitEthernet0/0$`, 'm'));
+  assert.doesNotMatch(arp, /Serial/);
+  assert.equal(r1.run('show arp'), arp);
+  const ifs = r1.run('show interfaces g0/0');
+  assert.match(ifs, new RegExp(`^GigabitEthernet0/0 is up, line protocol is up\n  Hardware is CN Gigabit Ethernet, address is ${mac('r1', 'G0/0').replace(/\./g, '\\.')} \\(bia `));
+  assert.match(ifs, /Internet address is 192\.168\.10\.1\/24/);
+  r1.run('clear arp-cache');
+  assert.doesNotMatch(r1.run('show ip arp'), /192\.168\.10\.10/);
+
+  const sw = session(doc, 'sw1');
+  sw.run('en');
+  const table = sw.run('show mac address-table');
+  assert.match(table, new RegExp(`^  10    ${mac('pc1', 'Fa0').replace(/\./g, '\\.')}    DYNAMIC     Fa0/1$`, 'm'));
+  assert.match(table, /Total Mac Addresses for this criterion: 4/);
+  assert.equal(sw.run('show mac-address-table'), table);
+  sw.run('clear mac address-table dynamic');
+  assert.match(sw.run('show mac address-table'), /criterion: 0/);
+});
+
+test('tables : arp -a sur le PC, /ip arp print sur MikroTik', () => {
+  let doc = pingAndLearn(structuredClone(DEMO), 'pc1', '192.168.20.10');
+  const pc = session(doc, 'pc1');
+  assert.match(pc.run('arp -a'), new RegExp(`Interface: 192\\.168\\.10\\.10 --- 0x2\n  Internet Address      Physical Address      Type\n  192\\.168\\.10\\.1 +${macWindows(macOf(dev(doc, 'r1'), 'G0/0'))} +dynamic`));
+  pc.run('arp -d');
+  assert.match(pc.run('arp -a'), /No ARP Entries Found/);
+
+  doc = pingAndLearn(structuredClone(OSPF_DEMO), 'pc1', '172.16.3.10');
+  const mk = session(doc, 'r3');
+  assert.match(mk.run('/ip arp print'), new RegExp(`DC 172\\.16\\.3\\.10 +${macColon(macOf(dev(doc, 'srv'), 'Fa0'))} +ether2`));
+  assert.match(mk.run('/interface print'), new RegExp(`ether1 +ether +1500 +${macColon(macOf(dev(doc, 'r3'), 'ether1'))}`));
 });

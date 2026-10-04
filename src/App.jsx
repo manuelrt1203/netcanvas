@@ -29,6 +29,8 @@ import { HOST_TYPES, buildTopology } from './net/topology.js';
 import { computeRouting } from './net/routing.js';
 import { withLeases } from './net/dhcp.js';
 import { EMPTY_RUNTIME, activeNat, formatTime } from './net/runtime.js';
+import { mergeLearned } from './net/tables.js';
+import TablesPanel from './TablesPanel.jsx';
 import { createShared, loadShared, myShares, parseShareLocation, rememberShare, saveShared, shareEnabled, shareLinks } from './share.js';
 import { CABLES, MODELS, TYPES } from './net/catalog.js';
 import { pickPorts } from './net/cabling.js';
@@ -472,9 +474,9 @@ function Editor() {
   };
 
   // Les traductions NAT d'un ping entrent dans la table persistante (elles expirent avec le temps)
+  // … de même que ce qu'il a appris : caches ARP, tables MAC des switches
   const keepNat = (result) => {
-    if (!result.natAdded?.length) return;
-    setRuntime((rt) => ({ ...rt, nat: [...activeNat(rt), ...result.natAdded] }));
+    setRuntime((rt) => mergeLearned({ ...rt, nat: [...activeNat(rt), ...(result.natAdded ?? [])] }, result.learned, live));
   };
 
   // Un ping tapé dans un terminal s'anime aussi sur le plan
@@ -538,6 +540,7 @@ function Editor() {
   const TABS = [
     ['props', 'Propriétés', errorCount ? errorCount : null],
     ['sim', 'Simulation'],
+    ['tables', 'Tables'],
     ['export', 'Export'],
   ];
 
@@ -752,6 +755,10 @@ function Editor() {
                 <Overview nodes={nodes} edges={edges} issues={issues} onSelect={selectNode} />
               )}
                 </fieldset>
+              )}
+              {tab === 'tables' && (
+                <TablesPanel device={selected ? live.devices.find((d) => d.id === selected.id) : null} doc={live} routing={routing}
+                  labels={labels} readOnly={readOnly} onRuntime={(update) => setRuntime(update)} />
               )}
               {tab === 'sim' && (
                 <>

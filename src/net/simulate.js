@@ -14,6 +14,7 @@ import { evaluateAcl, evaluateFirewall } from './acl.js';
 import { destNat, isPrivate, natGlobals, sourceNat } from './nat.js';
 import { withLeases } from './dhcp.js';
 import { NAT_ICMP_TIMEOUT, activeNat, runtimeOf } from './runtime.js';
+import { macOf } from './mac.js';
 import { flood } from './l2.js';
 import { computeRouting, lookup } from './routing.js';
 
@@ -35,10 +36,15 @@ export function simulatePing(rawDoc, sourceId, dstIp, options = {}) {
   const routing = options.routing ?? computeRouting(doc, topo);
   // natTable : traductions actives (table persistante du schéma) + celles faites pendant ce ping
   const runtime = runtimeOf(doc);
-  const ctx = { topo, routing, natTable: [...activeNat(runtime)], now: runtime.time, natAdded: [] };
+  const ctx = {
+    topo, routing, natTable: [...activeNat(runtime)], now: runtime.time, natAdded: [],
+    arpCache: (runtime.arp ?? []).filter((e) => e.expires > runtime.time),
+    learned: { arp: [], mac: [] }, // entrées ARP / MAC apprises pendant ce ping
+  };
   // path : équipements atteints et adresse d'entrée (sert à traceroute)
   const result = { ok: false, hops: [], path: [], log: [], failedAt: null, srcIp: null };
   result.natAdded = ctx.natAdded; // traductions créées, à enregistrer dans la table persistante
+  result.learned = ctx.learned;
   const log = (phase, text, level = 'info', device = null) => result.log.push({ phase, text, level, device });
   const name = (id) => topo.devices.get(id)?.label ?? id;
 
@@ -137,16 +143,38 @@ function forward(ctx, startId, target, phase, result, log, name, fixedSrc = null
     result.hops.push(...l2.hops.map((h) => ({ ...h, phase })));
     result.path.push({ phase, device: l2.endpoint, ip: l2.iface?.ip ?? null });
     const via = l2.vlan != null ? ` (VLAN ${l2.vlan})` : '';
+    const serial = topo.links.get(step.iface.link)?.cable === 'serial';
+    const cached = !serial && ctx.arpCache.some((e) => e.device === current && e.ip === step.nextHop);
+    if (!serial) learn(ctx, dev, step, l2);
     log(
       phase,
-      topo.links.get(step.iface.link)?.cable === 'serial'
-        ? `Liaison série point à point : ${name(l2.endpoint)} reçoit le paquet.`
-        : `ARP : ${step.nextHop} est ${name(l2.endpoint)}${via}. Trame transmise.`,
+      serial ? `Liaison série point à point : ${name(l2.endpoint)} reçoit le paquet.`
+        : cached ? `ARP (en cache) : ${step.nextHop} est ${name(l2.endpoint)}${via}. Trame transmise.`
+          : `ARP : ${step.nextHop} est ${name(l2.endpoint)}${via}. Trame transmise.`,
       'info',
       l2.endpoint,
     );
     arrived = l2.iface?.name ?? null;
     current = l2.endpoint;
+  }
+}
+
+// Apprentissage d'une livraison de niveau 2 : caches ARP de l'émetteur et de la cible,
+// tables MAC des switches (la requête ARP diffusée, puis la réponse sur le chemin du retour)
+function learn(ctx, dev, step, l2) {
+  const { topo, learned } = ctx;
+  const target = topo.devices.get(l2.endpoint);
+  const senderMac = macOf(dev, step.iface.name);
+  const targetMac = macOf(target, l2.iface?.name);
+  learned.arp.push({ device: dev.id, ip: step.nextHop, mac: targetMac, iface: step.iface.name });
+  if (isValidIp(step.iface.ip)) learned.arp.push({ device: target.id, ip: step.iface.ip, mac: senderMac, iface: l2.iface?.name });
+  for (const s of l2.switches ?? []) {
+    if (s.inLink) learned.mac.push({ switch: s.device, mac: senderMac, vlan: s.vlan, port: topo.portName(s.inLink, s.device) });
+  }
+  for (const h of l2.hops) {
+    if (topo.devices.get(h.from)?.type === 'switch') {
+      learned.mac.push({ switch: h.from, mac: targetMac, vlan: l2.vlan ?? 1, port: topo.portName(h.edge, h.from) });
+    }
   }
 }
 
@@ -309,13 +337,13 @@ function noRoute(topo, routing, id, dstIp, name) {
 function deliver(topo, fromId, linkId, targetIp, name, tag = null, sviVlan = null) {
   if (linkId != null && !topo.isUp(linkId)) throw new SimError(`${name(fromId)} : câble hors service. ${topo.status.get(linkId).reason}`, fromId);
   const target = parseIp(targetIp);
-  const { endpoints, drops, vlansSeen } = flood(topo, fromId, linkId, tag, sviVlan);
+  const { endpoints, drops, vlansSeen, switches } = flood(topo, fromId, linkId, tag, sviVlan);
   for (const e of endpoints) {
     const iface = e.svi != null ? topo.l3Ifaces(e.device).find((s) => s.svi && s.vlan === e.svi) : topo.l3IfaceOn(e.device, e.inLink, e.tag);
     // Le routeur répond aussi en ARP pour ses adresses publiques de NAT statique
     const natOwner = iface && natGlobals(topo.devices.get(e.device), iface.name).includes(targetIp);
     if (iface && isValidIp(iface.ip) && (parseIp(iface.ip) === target || natOwner)) {
-      return { endpoint: e.device, inLink: e.inLink, tag: e.tag, hops: e.hops, vlan: e.vlan, iface };
+      return { endpoint: e.device, inLink: e.inLink, tag: e.tag, hops: e.hops, vlan: e.vlan, iface, switches };
     }
   }
   const where = vlansSeen.size ? ` dans le VLAN ${[...vlansSeen].join(', ')}` : ' sur ce lien';

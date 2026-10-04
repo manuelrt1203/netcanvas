@@ -3,6 +3,8 @@ import { tokenize } from './engine.js';
 import { maskToCidr, ping } from './device.js';
 import { traceroute } from '../net/traceroute.js';
 import { withLeases } from '../net/dhcp.js';
+import { arpRows, clearArp } from '../net/tables.js';
+import { macWindows } from '../net/mac.js';
 import { cidrToMask, isBroadcastAddress, isNetworkAddress, isValidCidr, isValidIp, sameSubnet } from '../net/ip.js';
 
 const HELP = [
@@ -12,6 +14,7 @@ const HELP = [
   '  ipconfig /renew | /release       adresse par DHCP / rendre l\'adresse',
   '  ping <ip> [-n nombre]            envoie des echo request',
   '  tracert <ip>                     routeurs traversés jusqu\'à la destination',
+  '  arp -a | arp -d                  cache ARP : afficher / vider',
   '  cls                              efface l\'écran',
   '',
 ];
@@ -113,6 +116,28 @@ export const host = {
         out.push('', `Ping statistics for ${target}:`, `    Packets: Sent = ${n}, Received = ${recv}, Lost = ${n - recv} (${r.ok ? 0 : 100}% loss),`);
         if (r.ok) out.push('Approximate round trip times in milli-seconds:', '    Minimum = 0ms, Maximum = 0ms, Average = 0ms');
         else out.push('', `NetCanvas : ${r.reason}`);
+        out.push('');
+        break;
+      }
+      case 'arp': {
+        const flag = args[0]?.toLowerCase();
+        if (flag === '-d') {
+          ctx.effects.push({ type: 'runtime', update: clearArp(dev.id) });
+          out.push('');
+          break;
+        }
+        if (flag !== '-a' && flag !== '-g') {
+          out.push('Usage : arp -a (afficher) | arp -d (vider)', '');
+          break;
+        }
+        const live = withLeases(doc).devices.find((d) => d.id === dev.id) ?? dev;
+        const rows = arpRows(live, doc);
+        if (!rows.length) {
+          out.push('No ARP Entries Found', '');
+          break;
+        }
+        out.push('', `Interface: ${live.config?.ip ?? '0.0.0.0'} --- 0x2`, '  Internet Address      Physical Address      Type');
+        for (const e of rows) out.push(`  ${e.ip.padEnd(22)}${macWindows(e.mac).padEnd(22)}dynamic`);
         out.push('');
         break;
       }
