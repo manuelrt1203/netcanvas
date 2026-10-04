@@ -391,3 +391,46 @@ test('ios switch niveau 2 : ip routing refusé, ip default-gateway', () => {
   assert.ok(simulatePing(t.doc, 'sw1', '172.16.0.10').ok); // administration à distance du switch
   assert.match(t.run('show ip route'), /Invalid input|Default gateway/);
 });
+
+test('ios : ACL numérotées et nommées, access-group, show access-lists', () => {
+  const t = session(structuredClone(DEMO), 'r1');
+  t.run('en', 'conf t');
+  assert.match(t.run('access-list 10 deny 192.168.10.0 any'), /% Invalid input detected : texte en trop/);
+  t.run('access-list 10 deny 192.168.10.0 0.0.0.255', 'access-list 10 permit any');
+  t.run('ip access-list extended BLOQUE_SRV');
+  assert.equal(t.prompt(), 'R1(config-ext-nacl)#');
+  t.run('remark pas de ping vers le serveur', 'deny icmp any host 172.16.0.10', 'permit ip any any', 'exit');
+  t.run('int se0/0/0', 'ip access-group 10 out', 'int g0/1', 'ip access-group BLOQUE_SRV in', 'end');
+  assert.match(simulatePing(t.doc, 'pc1', '172.16.0.10').log.at(-1).text, /refusé en sortie de Se0\/0\/0 par l'ACL 10/);
+  assert.match(simulatePing(t.doc, 'pc3', '172.16.0.10').log.at(-1).text, /refusé en entrée de G0\/1 par l'ACL BLOQUE_SRV, ligne 10 « deny icmp any host 172\.16\.0\.10 »/);
+  assert.ok(simulatePing(t.doc, 'pc3', '10.0.0.2').ok);
+
+  assert.equal(t.run('show access-lists'), [
+    'Standard IP access list 10',
+    '    10 deny 192.168.10.0, wildcard bits 0.0.0.255',
+    '    20 permit any',
+    'Extended IP access list BLOQUE_SRV',
+    '    10 deny icmp any host 172.16.0.10',
+    '    20 permit ip any any',
+    '',
+  ].join('\n'));
+  const run = t.run('show running-config');
+  assert.match(run, /interface Serial0\/0\/0\n ip address 10\.0\.0\.1 255\.255\.255\.252\n ip access-group 10 out\n clock rate 64000/);
+  assert.match(run, /access-list 10 deny 192\.168\.10\.0 0\.0\.0\.255\naccess-list 10 permit any\nip access-list extended BLOQUE_SRV\n remark pas de ping vers le serveur\n deny icmp any host 172\.16\.0\.10/);
+
+  t.run('conf t', 'ip access-list extended BLOQUE_SRV', 'no 10', 'end');
+  assert.ok(simulatePing(t.doc, 'pc3', '172.16.0.10').ok);
+  t.run('conf t', 'int se0/0/0', 'no ip access-group 10 out', 'end');
+  assert.ok(simulatePing(t.doc, 'pc1', '172.16.0.10').ok);
+});
+
+test('mikrotik : pare-feu /ip firewall filter', () => {
+  const t = session(structuredClone(OSPF_DEMO), 'r3');
+  assert.match(t.run('/ip firewall filter add chain=output action=drop'), /failure: chain=forward ou chain=input attendu/);
+  t.run('/ip firewall filter add chain=forward action=drop protocol=icmp src-address=192.168.1.0/24 dst-address=172.16.3.0/24');
+  assert.match(simulatePing(t.doc, 'pc1', '172.16.3.10').log.at(-1).text, /bloqué par le pare-feu, règle 0/);
+  t.run('/ip firewall filter add chain=forward action=accept src-address=192.168.1.10 place-before=0');
+  assert.match(t.run('/ip firewall filter print'), / 0 {3}chain=forward action=accept src-address=192\.168\.1\.10\n 1 {3}chain=forward action=drop/);
+  assert.ok(simulatePing(t.doc, 'pc1', '172.16.3.10').ok); // la règle accept passe avant
+  assert.match(t.run('/export'), /\/ip firewall filter\nadd chain=forward action=accept src-address=192\.168\.1\.10\nadd chain=forward action=drop protocol=icmp/);
+});

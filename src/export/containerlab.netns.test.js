@@ -141,3 +141,23 @@ test('containerlab : switch niveau 3 (SVI sur bridge Linux, routage inter-VLAN)'
   delete noRouting.devices.find((d) => d.id === 'sw').config.ipRouting;
   assertMatchesSimulator(noRouting, [['pc1', '192.168.30.10', false], ['pc1', '192.168.10.1', true]]);
 });
+
+test('containerlab : ACL Cisco et pare-feu MikroTik traduits en iptables', { skip }, () => {
+  const acl = structuredClone(DEMO);
+  const r1 = acl.devices.find((d) => d.id === 'r1');
+  r1.config.acls = {
+    10: { type: 'standard', rules: [{ action: 'deny', src: { ip: '192.168.10.0', wildcard: '0.0.0.255' } }, { action: 'permit', src: { any: true } }] },
+    BLOQUE: { type: 'extended', rules: [{ action: 'deny', protocol: 'icmp', src: { any: true }, dst: { ip: '10.0.0.2', wildcard: '0.0.0.0' } }, { action: 'permit', protocol: 'ip', src: { any: true }, dst: { any: true } }] },
+  };
+  r1.config.interfaces.find((i) => i.name === 'Se0/0/0').aclOut = '10';
+  r1.config.interfaces.find((i) => i.name === 'G0/1').aclIn = 'BLOQUE';
+  assertMatchesSimulator(acl, [
+    ['pc1', '172.16.0.10', false], // ACL 10 en sortie
+    ['pc3', '172.16.0.10', true], // BLOQUE laisse passer, puis ACL 10 laisse passer
+    ['pc3', '10.0.0.2', false], // BLOQUE en entrée
+  ]);
+
+  const fw = structuredClone(OSPF_DEMO);
+  fw.devices.find((d) => d.id === 'r3').config.firewall = [{ chain: 'forward', action: 'drop', protocol: 'icmp', src: '192.168.1.0/24', dst: '172.16.3.0/24' }];
+  assertMatchesSimulator(fw, [['pc1', '172.16.3.10', false], ['pc1', '203.0.113.2', true]]);
+});

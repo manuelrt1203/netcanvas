@@ -7,6 +7,8 @@
 import { isValidCidr, isValidIp } from '../net/ip.js';
 import { computeRouting, lookup, prefixText } from '../net/routing.js';
 import { isL3Switch, isLoopbackName, isRouting } from '../net/topology.js';
+import { isMikrotik } from '../net/catalog.js';
+import { wildcardToCidr } from '../net/routing.js';
 import { ascii, interfaceTable, switchVlans, uniqueNames } from './common.js';
 
 export const CLAB_IMAGE = 'nicolaka/netshoot:latest'; // iproute2 + bridge + ping + tcpdump
@@ -42,6 +44,7 @@ export function clabCommands(doc) {
   for (const d of doc.devices) {
     const rows = table.get(d.id).filter((r) => r.link);
     const cmds = [];
+    const filters = () => filterCmds(d, rows);
     if (d.type === 'hub') {
       // Hub : bridge sans filtrage VLAN (répète tout)
       cmds.push('ip link add br0 type bridge', 'ip link set br0 up');
@@ -65,7 +68,7 @@ export function clabCommands(doc) {
         cmds.push(`bridge vlan add vid ${v} dev br0 self`, `ip link add link br0 name ${dev} type vlan id ${v}`,
           `ip addr add ${svi.ip}/${svi.mask} dev ${dev}`, `ip link set ${dev} up`);
       }
-      if (isL3Switch(d)) cmds.push(...routeCmds(d));
+      if (isL3Switch(d)) cmds.push(...routeCmds(d), ...filters());
       else if (isValidIp(d.config?.defaultGateway)) cmds.push(`ip route replace default via ${d.config.defaultGateway}`);
     } else {
       for (const r of rows) {
@@ -85,7 +88,7 @@ export function clabCommands(doc) {
           if (!sub.native) cmds.push(`ip link add link ${ifname(parent.index)} name ${dev} type vlan id ${sub.vlan}`);
           cmds.push(`ip addr add ${sub.ip}/${sub.mask} dev ${dev}`, `ip link set ${dev} up`);
         }
-        cmds.push(...routeCmds(d));
+        cmds.push(...routeCmds(d), ...filters());
       } else if (rows[0]?.hasIp && isValidIp(rows[0].gateway)) {
         // Remplace la route par défaut du réseau de management
         cmds.push(`ip route replace default via ${rows[0].gateway}`);
@@ -94,6 +97,69 @@ export function clabCommands(doc) {
     commands.set(d.id, cmds);
   }
   return commands;
+}
+
+// --- ACL Cisco et pare-feu MikroTik -> iptables ------------------------------------------------
+// Nom Linux d'une interface du schéma : eth1…, eth1.10 (sous-interface), br0.10 (SVI), lo
+function linuxDev(d, rows, name) {
+  if (/^Vlan\d+$/.test(name)) return `br0.${name.slice(4)}`;
+  if (isLoopbackName(name)) return 'lo';
+  const sub = (d.config?.interfaces ?? []).find((i) => i.name === name && i.parent);
+  const row = rows.find((r) => r.name === (sub?.parent ?? name));
+  if (!row) return null;
+  return sub && !sub.native ? `${ifname(row.index)}.${sub.vlan}` : ifname(row.index);
+}
+
+const ipt = (spec, flag) => {
+  if (!spec || spec.any) return '';
+  const cidr = wildcardToCidr(spec.wildcard);
+  return cidr === null ? null : ` ${flag} ${spec.ip}/${cidr}`;
+};
+
+function filterCmds(d, rows) {
+  const out = [];
+  if (isMikrotik(d)) {
+    for (const r of d.config?.firewall ?? []) {
+      const parts = [`iptables -A ${r.chain === 'input' ? 'INPUT' : 'FORWARD'}`];
+      if (r.protocol) parts.push(`-p ${r.protocol}`);
+      if (r.src) parts.push(`-s ${r.src}`);
+      if (r.dst) parts.push(`-d ${r.dst}`);
+      for (const [key, flag] of [['inIface', '-i'], ['outIface', '-o']]) {
+        if (!r[key]) continue;
+        const dev = linuxDev(d, rows, r[key]);
+        if (dev) parts.push(`${flag} ${dev}`);
+      }
+      parts.push(`-j ${r.action === 'accept' ? 'ACCEPT' : 'DROP'}`);
+      out.push(parts.join(' '));
+    }
+    return out;
+  }
+  const acls = d.config?.acls ?? {};
+  const used = new Set();
+  for (const i of d.config?.interfaces ?? []) {
+    for (const [key, hooks] of [['aclIn', (dev) => [`INPUT -i ${dev}`, `FORWARD -i ${dev}`]], ['aclOut', (dev) => [`FORWARD -o ${dev}`]]]) {
+      const acl = acls[i[key]];
+      const dev = acl && linuxDev(d, rows, i.name);
+      if (!dev) continue;
+      const chain = `acl-${i[key]}`.replace(/[^\w-]/g, '_').slice(0, 28);
+      if (!used.has(chain)) {
+        used.add(chain);
+        out.push(`iptables -N ${chain}`);
+        for (const r of acl.rules ?? []) {
+          if (r.remark !== undefined) continue;
+          const src = ipt(r.src, '-s');
+          const dst = acl.type === 'extended' ? ipt(r.dst, '-d') : '';
+          if (src === null || dst === null) continue; // wildcard non contigu : pas d'équivalent iptables
+          const proto = acl.type === 'extended' && r.protocol !== 'ip' ? ` -p ${r.protocol}` : '';
+          // permit -> RETURN : le paquet continue vers les autres contrôles (ACL de sortie), comme sur IOS
+          out.push(`iptables -A ${chain}${proto}${src}${dst} -j ${r.action === 'permit' ? 'RETURN' : 'DROP'}`);
+        }
+        out.push(`iptables -A ${chain} -j DROP`); // refus implicite
+      }
+      for (const h of hooks(dev)) out.push(`iptables -A ${h} -j ${chain}`);
+    }
+  }
+  return out;
 }
 
 const q = (s) => JSON.stringify(String(s)); // chaîne YAML entre guillemets doubles

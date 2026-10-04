@@ -4,6 +4,7 @@
 import { pad } from './device.js';
 import { cidrToWildcard, computeRouting, prefixText, wildcardToCidr } from '../net/routing.js';
 import { formatIp, isValidIp, networkOf, sameSubnet, splitCidr } from '../net/ip.js';
+import { firewallRuleText, parseFirewallRule } from '../net/acl.js';
 import { buildTopology } from '../net/topology.js';
 
 export const ROUTING_MENUS = {
@@ -20,7 +21,8 @@ export const ROUTING_MENUS = {
   'routing bgp': { menus: ['connection', 'session'], commands: [] },
   'routing bgp connection': { menus: [], commands: ['add', 'print', 'remove'] },
   'routing bgp session': { menus: [], commands: ['print'] },
-  'ip firewall': { menus: ['address-list'], commands: [] },
+  'ip firewall': { menus: ['address-list', 'filter'], commands: [] },
+  'ip firewall filter': { menus: [], commands: ['add', 'print', 'remove'] },
   'ip firewall address-list': { menus: [], commands: ['add', 'print', 'remove'] },
 };
 
@@ -249,6 +251,30 @@ export function runRouting(ctx, p) {
       return out.push(''), true;
     }
 
+    // --- Pare-feu (filtrage des paquets) -----------------------------------------
+    case 'ip firewall filter|add': {
+      const text = Object.entries(n).map(([k, v]) => `${k}=${v}`).join(' ');
+      const r = parseFirewallRule(text);
+      if (r.error) return out.push(`failure: ${r.error}`, ''), true;
+      const at = n['place-before'] !== undefined ? Number(n['place-before']) : null;
+      const rules = (cfg.firewall ??= []);
+      if (at !== null && at >= 0 && at <= rules.length) rules.splice(at, 0, r.rule);
+      else rules.push(r.rule);
+      changed();
+      return true;
+    }
+    case 'ip firewall filter|print':
+      out.push('Flags: X - disabled, I - invalid, D - dynamic ');
+      (cfg.firewall ?? []).forEach((r, i) => out.push(` ${pad(i, 3)} ${firewallRuleText(r)}`));
+      return out.push(''), true;
+    case 'ip firewall filter|remove': {
+      const k = Number(n.numbers ?? p.unnamed[0]);
+      if (!cfg.firewall?.[k]) return out.push('no such item', ''), true;
+      cfg.firewall.splice(k, 1);
+      changed();
+      return true;
+    }
+
     // --- Listes d'adresses (réseaux annoncés en BGP) --------------------------
     case 'ip firewall address-list|add': {
       const s = splitCidr(n.address ?? '') ?? (isValidIp(n.address) ? { ip: n.address, cidr: 32 } : null);
@@ -302,10 +328,11 @@ export function routeTable(dev, doc) {
   return [...statics, ...dynamic];
 }
 
-// Lignes de /export pour le routage
+// Lignes de /export pour le routage et le pare-feu
 export function routingScript(dev) {
   const cfg = dev.config ?? {};
   const out = [];
+  if (cfg.firewall?.length) out.push('/ip firewall filter', ...cfg.firewall.map((r) => `add ${firewallRuleText(r)}`));
   const o = cfg.ospf;
   if (o) {
     const instance = o.instance ?? 'default-v2';

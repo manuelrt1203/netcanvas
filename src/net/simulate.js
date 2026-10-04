@@ -9,7 +9,8 @@
 //  - niveau 1 : un câble hors service (mauvais câble, port inexistant, clock rate absent) ne transmet rien.
 import { formatIp, isValidCidr, isValidIp, networkLabel, networkOf, parseIp, sameSubnet } from './ip.js';
 import { buildTopology, isHost, isL3Switch, isRouting } from './topology.js';
-import { modelOf } from './catalog.js';
+import { isMikrotik, modelOf } from './catalog.js';
+import { evaluateAcl, evaluateFirewall } from './acl.js';
 import { flood } from './l2.js';
 import { computeRouting, lookup } from './routing.js';
 
@@ -65,10 +66,13 @@ function forward(ctx, startId, dstIp, phase, result, log, name, fixedSrc = null)
   let current = startId;
   let srcIp = fixedSrc;
   let ttl = MAX_TTL;
+  let arrived = null; // interface d'entrée sur l'équipement courant
 
   while (true) {
     const dev = topo.devices.get(current);
     const own = topo.l3Ifaces(current).find((i) => parseIp(i.ip) === parseIp(dstIp));
+    // Filtrage en entrée (ACL « in », pare-feu MikroTik chain=input) ; pas sur le trafic émis par l'équipement
+    if (current !== startId && isRouting(dev) && arrived) filterIn(dev, arrived, { src: srcIp, dst: dstIp }, Boolean(own), log, phase, name);
     if (own) return { arrivedAt: current, srcIp: srcIp ?? own.ip, ttl };
 
     if (current !== startId && !isRouting(dev)) {
@@ -88,6 +92,8 @@ function forward(ctx, startId, dstIp, phase, result, log, name, fixedSrc = null)
     srcIp ??= step.iface.ip;
     if (phase === 'request') result.srcIp = srcIp;
     log(phase, step.text, 'info', current);
+    // Filtrage en sortie (ACL « out », pare-feu MikroTik chain=forward)
+    if (current !== startId && isRouting(dev)) filterOut(dev, arrived, step.iface.name, { src: srcIp, dst: dstIp }, log, phase, name);
 
     // Sous-interface 802.1Q : la trame part étiquetée sur le trunk
     const tag = step.iface.sub && !step.iface.native ? Number(step.iface.vlan) : null;
@@ -105,8 +111,45 @@ function forward(ctx, startId, dstIp, phase, result, log, name, fixedSrc = null)
       'info',
       l2.endpoint,
     );
+    arrived = l2.iface?.name ?? null;
     current = l2.endpoint;
   }
+}
+
+const ifaceCfg = (dev, name) => (dev.config?.interfaces ?? []).find((i) => i.name === name);
+const packetText = (p) => `${p.src} → ${p.dst} (ICMP)`;
+
+function checkAcl(dev, ifName, dir, packet, log, phase, name) {
+  const aclName = ifaceCfg(dev, ifName)?.[dir === 'in' ? 'aclIn' : 'aclOut'];
+  if (!aclName) return;
+  const where = `en ${dir === 'in' ? 'entrée' : 'sortie'} de ${ifName}`;
+  const acl = dev.config?.acls?.[aclName];
+  if (!acl) {
+    log(phase, `${name(dev.id)} : l'ACL ${aclName} appliquée ${where} n'existe pas : tout passe (comme sur IOS).`, 'info', dev.id);
+    return;
+  }
+  const v = evaluateAcl(acl, packet);
+  const rule = v.line ? `ligne ${v.line} « ${v.text} »` : 'refus implicite à la fin de la liste (aucune ligne ne correspond)';
+  if (!v.permit) throw new SimError(`${name(dev.id)} : paquet ${packetText(packet)} refusé ${where} par l'ACL ${aclName}, ${rule}.`, dev.id);
+  log(phase, `${name(dev.id)} : ACL ${aclName} ${where} : autorisé (${rule}).`, 'info', dev.id);
+}
+
+function checkFirewall(dev, chain, inIface, outIface, packet, log, phase, name) {
+  const v = evaluateFirewall(dev.config?.firewall, chain, packet, inIface, outIface);
+  if (v.line === null) return;
+  if (!v.permit) throw new SimError(`${name(dev.id)} : paquet ${packetText(packet)} bloqué par le pare-feu, règle ${v.line} « ${v.text} ».`, dev.id);
+  log(phase, `${name(dev.id)} : pare-feu, règle ${v.line} « ${v.text} » : accepté.`, 'info', dev.id);
+}
+
+function filterIn(dev, inIface, packet, toSelf, log, phase, name) {
+  if (isMikrotik(dev)) {
+    if (toSelf) checkFirewall(dev, 'input', inIface, null, packet, log, phase, name);
+  } else checkAcl(dev, inIface, 'in', packet, log, phase, name);
+}
+
+function filterOut(dev, inIface, outIface, packet, log, phase, name) {
+  if (isMikrotik(dev)) checkFirewall(dev, 'forward', inIface, outIface, packet, log, phase, name);
+  else checkAcl(dev, outIface, 'out', packet, log, phase, name);
 }
 
 // Switch sans routage avec une interface VLAN (administration) : se comporte comme un hôte

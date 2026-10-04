@@ -4,8 +4,9 @@ import { dataPorts, ensureEntry, getEntry, linkOf, maskToCidr, pad, ping, withDe
 import { buildTopology, isLoopbackName } from '../net/topology.js';
 import { cidrToMask, formatIp, isBroadcastAddress, isNetworkAddress, isValidIp, networkOf, parseIp, sameSubnet } from '../net/ip.js';
 import { isSviName, modelOf } from '../net/catalog.js';
-import { hostname as iosHostname, iosInterfaceExtras, iosLongName, iosRoutingLines } from '../export/cisco.js';
+import { hostname as iosHostname, iosAclLines, iosInterfaceExtras, iosLongName, iosRoutingLines } from '../export/cisco.js';
 import { traceroute } from '../net/traceroute.js';
+import { accessGroupCommands, aclConfigCommands, aclShows, aclTree, showAccessLists } from './ios-acl.js';
 import { bgpTree, interfaceRoutingCommands, ospfTree, ripTree, routeFilters, routerCommands, routingShows, showIpRoute } from './ios-routing.js';
 
 const NOT_SIMULATED = (what) => [`% NetCanvas : ${what} n'est pas encore simulé.`, ''];
@@ -109,7 +110,7 @@ function runningConfig(dev) {
     for (const r of c.routes ?? []) {
       if (isValidIp(r.network) && r.mask != null && isValidIp(r.nextHop)) lines.push(`ip route ${r.network} ${cidrToMask(r.mask)} ${r.nextHop}`);
     }
-    lines.push(...iosRoutingLines(c), '!');
+    lines.push(...iosRoutingLines(c), ...iosAclLines(c), '!');
   } else {
     for (const p of allInterfaces(dev)) {
       const e = getEntry(dev, p.name);
@@ -123,6 +124,7 @@ function runningConfig(dev) {
       lines.push('!');
     }
     lines.push(...iosRoutingLines(dev.config ?? {}));
+    lines.push(...iosAclLines(dev.config ?? {}));
     lines.push('ip classless');
     for (const r of dev.config?.routes ?? []) {
       if (isValidIp(r.network) && r.mask != null && isValidIp(r.nextHop)) lines.push(`ip route ${r.network} ${cidrToMask(r.mask)} ${r.nextHop}`);
@@ -304,8 +306,10 @@ function showTree(dev) {
             : showIpRoute(c.dev, c.doc))),
           children: routeFilters(),
         }), ...routingShows()] : []),
+        kw('access-lists', 'List IP access lists', { run: (c) => c.out.push(...showAccessLists(c.dev)) }),
       ],
     }),
+    ...aclShows(),
     kw('cdp', 'CDP information', { children: [kw('neighbors', 'CDP neighbor entries', { run: (c) => c.out.push(...showCdp(c.dev, c.doc)) })] }),
     kw('version', 'System hardware and software status', { run: (c) => c.out.push(...showVersion(c.dev)) }),
     kw('interfaces', 'Interface status and configuration', { run: (c) => c.out.push(...NOT_SIMULATED('« show interfaces » détaillé (utilise « show ip interface brief »)')) }),
@@ -398,8 +402,10 @@ function configTree(dev) {
       })],
     }),
     interfaceCmd(isSwitch),
+    aclConfigCommands().numbered,
     kw('ip', 'Global IP configuration subcommands', {
       children: [
+        aclConfigCommands().ipNamed,
         ...(isSwitch ? [kw('default-gateway', 'Specify default gateway', {
           children: [arg('gw', 'A.B.C.D', 'IP address of default gateway', isIp, { run: (c) => { c.dev.config.defaultGateway = c.args.gw; c.changed = true; } })],
         })] : []),
@@ -420,16 +426,19 @@ function configTree(dev) {
     kw('no', 'Negate a command or set its defaults', {
       children: [
         ...(!isSwitch || modelOf(dev).l3 ? [routerCommands().noRouter] : []),
+        aclConfigCommands().noNumbered,
         ...(isSwitch ? [] : [kw('ip', 'Global IP configuration subcommands', {
           children: [
             kw('route', 'Establish static routes', { children: [routeArgs(removeRoute, true)] }),
             kw('domain-lookup', 'Enable IP Domain Name System hostname translation', { run() {} }),
+            aclConfigCommands().noIpNamed,
           ],
         })]),
         ...(isSwitch ? [
           kw('ip', 'Global IP configuration subcommands', {
             children: [
               kw('domain-lookup', '', { run() {} }),
+              aclConfigCommands().noIpNamed,
               kw('routing', 'Enable IP routing', { run: (c) => setIpRouting(c, false) }),
               kw('default-gateway', 'Specify default gateway', { run: (c) => { delete c.dev.config.defaultGateway; c.changed = true; } }),
               ...(modelOf(dev).l3 ? [kw('route', 'Establish static routes', { children: [routeArgs(removeRoute, true)] })] : []),
@@ -549,9 +558,9 @@ function interfaceTree(dev) {
     children.push(kw('ip', 'Interface Internet Protocol config commands', {
       children: [kw('address', 'Set the IP address of an interface', {
         children: [arg('ip', 'A.B.C.D', 'IP address', isIp, { children: [arg('mask', 'A.B.C.D', 'IP subnet mask', isIp, { run: onSvi(setIpAddress) })] })],
-      })],
+      }), accessGroupCommands(forIfaces).add],
     }));
-    no.push(kw('ip', '', { children: [kw('address', '', { run: onSvi((c) => forIfaces(c, (e) => { e.ip = null; e.mask = null; })) })] }));
+    no.push(kw('ip', '', { children: [kw('address', '', { run: onSvi((c) => forIfaces(c, (e) => { e.ip = null; e.mask = null; })) }), accessGroupCommands(forIfaces).remove] }));
     children.push(
       kw('switchport', 'Set switching mode characteristics', {
         children: [
@@ -585,6 +594,7 @@ function interfaceTree(dev) {
           }),
           kw('helper-address', 'Specify a destination address for UDP broadcasts', { children: [arg('x', 'A.B.C.D', '', isIp, { run: (c) => c.out.push(...NOT_SIMULATED('le relais DHCP')) })] }),
           interfaceRoutingCommands(forIfaces).ipOspf,
+          accessGroupCommands(forIfaces).add,
         ],
       }),
       kw('clock', 'Configure serial interface clock', {
@@ -611,7 +621,7 @@ function interfaceTree(dev) {
       }),
     );
     no.push(
-      kw('ip', '', { children: [kw('address', 'Set the IP address of an interface', { run: (c) => forIfaces(c, (e) => { e.ip = null; e.mask = null; }) }), interfaceRoutingCommands(forIfaces).noIpOspf] }),
+      kw('ip', '', { children: [kw('address', 'Set the IP address of an interface', { run: (c) => forIfaces(c, (e) => { e.ip = null; e.mask = null; }) }), interfaceRoutingCommands(forIfaces).noIpOspf, accessGroupCommands(forIfaces).remove] }),
       interfaceRoutingCommands(forIfaces).noBandwidth,
       kw('clock', '', { children: [kw('rate', '', { run: (c) => forIfaces(c, (e) => { delete e.clockRate; }) })] }),
     );
@@ -665,10 +675,13 @@ const TREES = {
   'router-ospf': (d) => ospfTree([endCmd(), doCmd(d)]),
   'router-rip': (d) => ripTree([endCmd(), doCmd(d)]),
   'router-bgp': (d) => bgpTree([endCmd(), doCmd(d)]),
+  'acl-std': (d) => aclTree([endCmd(), doCmd(d)]),
+  'acl-ext': (d) => aclTree([endCmd(), doCmd(d)]),
 };
 
 const SUFFIX = { user: '>', priv: '#', config: '(config)#', if: '(config-if)#', 'if-range': '(config-if-range)#', vlan: '(config-vlan)#', line: '(config-line)#',
-  'router-ospf': '(config-router)#', 'router-rip': '(config-router)#', 'router-bgp': '(config-router)#' };
+  'router-ospf': '(config-router)#', 'router-rip': '(config-router)#', 'router-bgp': '(config-router)#',
+  'acl-std': '(config-std-nacl)#', 'acl-ext': '(config-ext-nacl)#' };
 
 export const ios = {
   banner: (dev) => [`${modelOf(dev).label} : terminal IOS simulé. Tape « ? » pour l'aide, Tab pour compléter.`, ''],

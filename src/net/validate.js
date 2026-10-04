@@ -72,6 +72,15 @@ export function validate(doc, ctx = {}) {
     }
   }
 
+  // ACL appliquées : elles doivent exister (sinon IOS laisse tout passer, souvent par erreur)
+  for (const d of topo.devices.values()) {
+    for (const i of d.config?.interfaces ?? []) {
+      for (const [dir, key] of [['entrée', 'aclIn'], ['sortie', 'aclOut']]) {
+        if (i[key] && !d.config?.acls?.[i[key]]) add(d.id, 'warning', `${d.label} ${i.name} : l'ACL ${i[key]} appliquée en ${dir} n'existe pas, tout passe.`);
+      }
+    }
+  }
+
   // Interfaces VLAN des switches : adresse, et état (une SVI sans port actif dans son VLAN est down)
   for (const d of topo.devices.values()) {
     if (d.type !== 'switch') continue;

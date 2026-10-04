@@ -4,6 +4,7 @@
 import { cidrToMask } from '../net/ip.js';
 import { MODELS, MODULES, isMikrotik, modelId, modelOf } from '../net/catalog.js';
 import { routerosScript } from '../cli/routeros.js';
+import { aclTypeOf, ruleText } from '../net/acl.js';
 import { ascii, interfaceTable, switchVlans, uniqueNames } from './common.js';
 
 const LONG = {
@@ -113,6 +114,7 @@ function routerConfig(d, rows, { target, table, topo }) {
     }
   }
   lines.push(...iosRoutingLines(cfg, (n) => renamed.get(n) ?? iosLongName(n)).map((l) => (l === '!' && target !== 'gns3' ? ' exit' : l)));
+  lines.push(...iosAclLines(cfg).filter((l) => l !== '!'));
   return { lines, warnings };
 }
 
@@ -145,6 +147,7 @@ function switchConfig(d, rows) {
     if (r.network && r.mask != null && r.nextHop) lines.push(`ip route ${r.network} ${cidrToMask(r.mask)} ${r.nextHop}`);
   }
   lines.push(...iosRoutingLines(c).map((l) => (l === '!' ? ' exit' : l)));
+  lines.push(...iosAclLines(c).filter((l) => l !== '!'));
   return { lines, warnings };
 }
 
@@ -268,6 +271,8 @@ export function iosInterfaceExtras(cfg, entry) {
   if (entry?.ospfCost) out.push(` ip ospf cost ${entry.ospfCost}`);
   const o = cfg.ospf?.interfaces?.find((x) => x.name === entry?.name);
   if (o) out.push(` ip ospf ${cfg.ospf.processId ?? 1} area ${o.area}`);
+  if (entry?.aclIn) out.push(` ip access-group ${entry.aclIn} in`);
+  if (entry?.aclOut) out.push(` ip access-group ${entry.aclOut} out`);
   return out;
 }
 
@@ -314,4 +319,14 @@ export function iosRoutingLines(cfg, ifName = iosLongName) {
     out.push('!');
   }
   return out;
+}
+
+// --- ACL (partagé avec le terminal : show running-config) -------------------------------------
+export function iosAclLines(cfg) {
+  const out = [];
+  for (const [name, acl] of Object.entries(cfg.acls ?? {})) {
+    if (aclTypeOf(name)) for (const r of acl.rules ?? []) out.push(`access-list ${name} ${ruleText(r, acl.type)}`);
+    else out.push(`ip access-list ${acl.type} ${name}`, ...(acl.rules ?? []).map((r) => ` ${ruleText(r, acl.type)}`));
+  }
+  return out.length ? [...out, '!'] : [];
 }
