@@ -3,6 +3,7 @@ import { arg, kw } from './engine.js';
 import { maskToCidr, pad } from './device.js';
 import { isValidIp } from '../net/ip.js';
 import { computeLeases } from '../net/dhcp.js';
+import { formatDuration, formatTime } from '../net/runtime.js';
 
 const isIp = (t) => isValidIp(t);
 const isName = (t) => /^[A-Za-z0-9_-]+$/.test(t);
@@ -67,12 +68,41 @@ export function dhcpTree(common) {
       kw('default-router', 'Default routers', { children: [arg('gw', 'A.B.C.D', 'Router\'s IP address', isIp, { run: set('defaultRouter', (c) => c.args.gw) })] }),
       kw('dns-server', 'DNS servers', { children: [arg('dns', 'A.B.C.D', 'Server\'s IP address', isIp, { run: set('dns', (c) => c.args.dns) })] }),
       kw('domain-name', 'Domain name', { children: [arg('x', 'WORD', '', null, { run() {} })] }),
-      kw('lease', 'Address lease time', { children: [arg('x', '<0-365>', 'Days', null, { run() {} })] }),
+      kw('lease', 'Address lease time', {
+        children: [
+          kw('infinite', 'Infinite lease', { run: set('leaseTime', () => 'infinite') }),
+          arg('days', '<0-365>', 'Days', (t) => /^\d+$/.test(t) && Number(t) <= 365, {
+            run: set('leaseTime', (c) => Number(c.args.days) * 86400),
+            children: [arg('hours', '<0-23>', 'Hours', (t) => /^\d+$/.test(t) && Number(t) <= 23, {
+              run: set('leaseTime', (c) => Number(c.args.days) * 86400 + Number(c.args.hours) * 3600),
+              children: [arg('minutes', '<0-59>', 'Minutes', (t) => /^\d+$/.test(t) && Number(t) <= 59, {
+                run: set('leaseTime', (c) => Number(c.args.days) * 86400 + Number(c.args.hours) * 3600 + Number(c.args.minutes) * 60),
+              })],
+            })],
+          }),
+        ],
+      }),
       kw('exit', 'Exit from DHCP pool configuration mode', { run: (c) => { c.s.mode = 'config'; } }),
       ...common,
     ],
   };
 }
+
+// « clear ip dhcp binding * | A » : libère les baux de ce serveur
+export const clearDhcpCommand = () => {
+  const clear = (ip) => (c) => c.effects.push({
+    type: 'runtime',
+    update: (rt) => ({ ...rt, leases: Object.fromEntries(Object.entries(rt.leases ?? {}).filter(([, l]) => !(l.server === c.dev.id && (ip === '*' || l.ip === ip(c))))) }),
+  });
+  return kw('dhcp', 'Delete items from the DHCP database', {
+    children: [kw('binding', 'DHCP address bindings', {
+      children: [
+        kw('*', 'Clear all automatic bindings', { run: clear('*') }),
+        arg('ip', 'A.B.C.D', 'Clear a specific binding', isIp, { run: clear((c) => c.args.ip) }),
+      ],
+    })],
+  });
+};
 
 // « ip helper-address A » sur les interfaces sélectionnées
 export function helperCommands(forIfaces) {
@@ -89,16 +119,18 @@ export function showDhcp(dev, doc, what) {
     const out = [];
     for (const p of dev.config?.dhcp?.pools ?? []) {
       out.push('', `Pool ${p.name ?? p.network} :`, ` Network                        : ${p.network ?? '(non défini)'}/${p.mask ?? ''}`,
+        ` Lease                          : ${p.leaseTime === 'infinite' ? 'infinite' : formatDuration(Number(p.leaseTime) || 86400)}`,
         ` Default router                 : ${p.defaultRouter ?? '-'}`, ` DNS server                     : ${p.dns ?? '-'}`);
     }
     return [...out, ''];
   }
   const rows = [`${pad('IP address', 17)}${pad('Client-ID/', 24)}${pad('Lease expiration', 24)}Type`, `${' '.repeat(17)}Hardware address`];
-  const leases = computeLeases(doc);
-  for (const [id, l] of leases) {
+  // Tous les baux en cours, y compris ceux d'hôtes débranchés (ils occupent l'adresse jusqu'à expiration)
+  const { store } = computeLeases(doc);
+  for (const [id, l] of Object.entries(store)) {
     if (l.server !== dev.id) continue;
-    const label = doc.devices.find((d) => d.id === id)?.label ?? id;
-    rows.push(`${pad(l.ip, 17)}${pad(label, 24)}${pad('--', 24)}Automatic`);
+    const label = doc.devices.find((d) => d.id === id)?.label ?? `${id} (parti)`;
+    rows.push(`${pad(l.ip, 17)}${pad(label, 24)}${pad(l.end == null ? 'Infinite' : formatTime(l.end), 24)}Automatic`);
   }
   return [...rows, ''];
 }

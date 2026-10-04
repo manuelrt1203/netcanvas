@@ -15,6 +15,7 @@ import { buildTopology, isHost, isRouting } from './topology.js';
 import { isMikrotik } from './catalog.js';
 import { computeRouting } from './routing.js';
 import { simulatePing } from './simulate.js';
+import { DEFAULT_LEASE, runtimeOf } from './runtime.js';
 
 export const isDhcpClient = (d) => isHost(d) && d.config?.dhcp === true;
 
@@ -30,7 +31,7 @@ export function poolsOf(dev) {
   return pools.flatMap((p) => {
     const server = (c.servers ?? []).find((s) => (p.iface ? s.iface === p.iface : isValidIp(ifaceIp(s.iface)) && inPool(p, ifaceIp(s.iface))));
     if (!server && !p.iface) return [];
-    return [{ ...p, iface: p.iface ?? server.iface, range: p.range ?? c.ranges?.[server?.pool] }];
+    return [{ ...p, iface: p.iface ?? server.iface, range: p.range ?? c.ranges?.[server?.pool], leaseTime: p.leaseTime ?? server?.leaseTime }];
   });
 }
 
@@ -57,32 +58,63 @@ export function apipa(id) {
   return `169.254.${1 + (h % 254)}.${1 + ((h >> 8) % 254)}`;
 }
 
+const leaseValid = (l, now) => l && (l.end == null || l.end > now);
+
+// Baux pour l'instant runtime.time. Renvoie { leases : Map hôte -> bail | { error }, store : baux à garder }.
+// Un client connecté renouvelle à mi-bail et garde son adresse ; un bail d'hôte débranché ou supprimé
+// occupe son adresse jusqu'à expiration ; « ipconfig /release » rend l'adresse.
 export function computeLeases(doc) {
   const leases = new Map();
+  const rt = runtimeOf(doc);
+  const now = rt.time;
+  const released = new Set(rt.released ?? []);
+  const store = Object.fromEntries(Object.entries(rt.leases ?? {}).filter(([id, l]) => leaseValid(l, now) && !released.has(id)));
   const clients = doc.devices.filter(isDhcpClient);
-  if (!clients.length) return leases;
+  if (!clients.length) return { leases, store };
   const topo = buildTopology(doc);
   const routing = computeRouting(doc, topo);
-  // Adresses déjà prises : toutes les adresses statiques du schéma
-  const used = new Set();
+  // Adresses prises : adresses statiques du schéma et baux en cours (y compris d'hôtes partis)
+  const statics = new Set();
   for (const d of doc.devices) {
     if (isDhcpClient(d)) continue;
-    for (const i of [d.config, ...(d.config?.interfaces ?? [])]) if (isValidIp(i?.ip)) used.add(i.ip);
+    for (const i of [d.config, ...(d.config?.interfaces ?? [])]) if (isValidIp(i?.ip)) statics.add(i.ip);
   }
-  const allocate = (server, pool) => {
+  const owner = new Map(Object.entries(store).map(([id, l]) => [l.ip, id]));
+  const free = (ip, who) => !statics.has(ip) && (!owner.has(ip) || owner.get(ip) === who);
+  const allocate = (server, pool, who) => {
+    const prev = store[who];
+    // Même serveur, même pool, adresse toujours libre : le client la garde
+    if (prev && prev.server === server.id && prev.pool === (pool.name ?? pool.network) && inPool(pool, prev.ip) && free(prev.ip, who)) return prev.ip;
     for (const ip of candidates(pool)) {
-      if (!used.has(ip) && !excluded(server, ip) && ip !== pool.defaultRouter) {
-        used.add(ip);
-        return ip;
-      }
+      if (free(ip, who) && !excluded(server, ip) && ip !== pool.defaultRouter) return ip;
     }
     return null;
   };
+  const grant = (who, server, pool, ip, relay) => {
+    const dur = pool.leaseTime === 'infinite' ? null : Number(pool.leaseTime) || DEFAULT_LEASE;
+    const prev = store[who];
+    const same = prev && prev.ip === ip && prev.server === server.id;
+    // Renouvellement à mi-bail (T1), sinon on garde les dates
+    const renew = !same || (dur !== null && now >= prev.start + dur / 2);
+    const lease = {
+      ip, mask: Number(pool.mask), gateway: pool.defaultRouter ?? null, dns: pool.dns ?? null, server: server.id,
+      ...(relay ? { relay } : {}), pool: pool.name ?? pool.network,
+      start: renew ? now : prev.start, end: renew ? (dur === null ? null : now + dur) : prev.end,
+    };
+    if (prev && prev.ip !== ip) owner.delete(prev.ip);
+    owner.set(ip, who);
+    store[who] = lease;
+    return lease;
+  };
 
   for (const host of clients) {
-    const link = topo.linksOf.get(host.id)[0];
     const fail = (error) => leases.set(host.id, { error });
-    if (!link) { fail(`${host.label} n'est relié à rien : aucune demande DHCP ne part.`); continue; }
+    if (released.has(host.id)) {
+      fail('adresse libérée par « ipconfig /release » (tape « ipconfig /renew »)');
+      continue;
+    }
+    const link = topo.linksOf.get(host.id)[0];
+    if (!link) { fail(`${host.label} n'est relié à rien : aucune demande DHCP ne part`); continue; }
     if (!topo.isUp(link)) { fail(`câble hors service (${topo.status.get(link).reason})`); continue; }
 
     // Diffusion du DISCOVER dans le domaine de niveau 2
@@ -93,14 +125,14 @@ export function computeLeases(doc) {
       const dev = topo.devices.get(e.device);
       const isServer = dev.type === 'server' && dev.config?.dhcp?.pools?.length;
       if (!isRouting(dev) && !isServer) continue;
-      const iface = e.svi != null ? topo.l3Ifaces(dev.id).find((s) => s.svi && s.vlan === e.svi) : topo.l3IfaceOn(dev.id, e.inLink, e.tag);
+      const iface = e.svi != null ? topo.l3Ifaces(dev.id).find((x) => x.svi && x.vlan === e.svi) : topo.l3IfaceOn(dev.id, e.inLink, e.tag);
       if (!iface || !isValidIp(iface.ip)) continue;
       // Serveur sur ce réseau ?
       const local = poolsOf(dev).find((p) => inPool(p, iface.ip) && (!isMikrotik(dev) || !p.iface || p.iface === iface.name));
       if (local) {
-        const ip = allocate(dev, local);
+        const ip = allocate(dev, local, host.id);
         if (!ip) { reasons.push(`le pool ${local.name ?? local.network} de ${dev.label} est épuisé`); continue; }
-        lease = { ip, mask: Number(local.mask), gateway: local.defaultRouter ?? null, dns: local.dns ?? null, server: dev.id, pool: local.name ?? local.network };
+        lease = grant(host.id, dev, local, ip);
         break;
       }
       if (isServer) continue; // un serveur ne relaie pas
@@ -113,9 +145,9 @@ export function computeLeases(doc) {
       if (!ping.ok) { reasons.push(`${dev.label} relaie vers ${helper}, injoignable depuis ${iface.ip} (${ping.log.findLast((l) => l.level === 'error')?.text})`); continue; }
       const pool = poolsOf(server).find((p) => inPool(p, iface.ip));
       if (!pool) { reasons.push(`le serveur ${server.label} n'a pas de pool pour le réseau ${formatIp(networkOf(iface.ip, iface.mask))}/${iface.mask} (adresse du relais ${iface.ip})`); continue; }
-      const ip = allocate(server, pool);
+      const ip = allocate(server, pool, host.id);
       if (!ip) { reasons.push(`le pool ${pool.name ?? pool.network} de ${server.label} est épuisé`); continue; }
-      lease = { ip, mask: Number(pool.mask), gateway: pool.defaultRouter ?? null, dns: pool.dns ?? null, server: server.id, relay: dev.id, pool: pool.name ?? pool.network };
+      lease = grant(host.id, server, pool, ip, dev.id);
       break;
     }
     if (lease) leases.set(host.id, lease);
@@ -124,26 +156,31 @@ export function computeLeases(doc) {
       fail(reasons.length ? reasons.join(' ; ') : `aucun serveur DHCP ni relais ne répond${where}`);
     }
   }
-  return leases;
+  return { leases, store };
 }
 
-// Document « effectif » : les hôtes DHCP reçoivent leur bail (ou une adresse APIPA sans passerelle)
+// Document « effectif » : les hôtes DHCP reçoivent leur bail (ou une adresse APIPA sans passerelle),
+// et runtime.leases contient les baux à garder (le schéma les enregistre)
 const cache = new WeakMap();
 export function withLeases(doc) {
   if (cache.has(doc)) return cache.get(doc);
-  if (!doc.devices.some(isDhcpClient)) {
+  const rt = runtimeOf(doc);
+  if (!doc.devices.some(isDhcpClient) && !Object.keys(rt.leases ?? {}).length) {
     cache.set(doc, doc);
     return doc;
   }
-  const leases = computeLeases(doc);
+  const { leases, store } = computeLeases(doc);
+  const released = new Set(rt.released ?? []);
   const out = {
     ...doc,
+    runtime: { ...rt, leases: store },
     devices: doc.devices.map((d) => {
       if (!isDhcpClient(d)) return d;
       const l = leases.get(d.id);
-      const config = l?.ip
-        ? { ...d.config, ip: l.ip, mask: l.mask, gateway: l.gateway, lease: l }
-        : { ...d.config, ip: apipa(d.id), mask: 16, gateway: null, dhcpError: l?.error ?? 'pas de réponse DHCP' };
+      let config;
+      if (l?.ip) config = { ...d.config, ip: l.ip, mask: l.mask, gateway: l.gateway, lease: l };
+      else if (released.has(d.id)) config = { ...d.config, ip: null, mask: null, gateway: null, dhcpError: l.error };
+      else config = { ...d.config, ip: apipa(d.id), mask: 16, gateway: null, dhcpError: l?.error ?? 'pas de réponse DHCP' };
       return { ...d, config };
     }),
   };

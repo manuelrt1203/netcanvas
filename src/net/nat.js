@@ -35,10 +35,12 @@ export function natGlobals(dev, ifName) {
   return [...(dev.config?.nat?.statics ?? []).map((s) => s.global).filter(isValidIp), ...pools];
 }
 
-// Traduction de la destination à l'entrée (NAT statique, dst-nat, ou réponse d'une traduction du ping)
-// table : traductions déjà faites pendant ce ping [{ router, inside, outside }]
-export function destNat(dev, inIface, packet, table) {
-  const back = table.find((t) => t.router === dev.id && t.outside === packet.dst && t.dynamic);
+// Traduction de la destination à l'entrée (NAT statique, dst-nat, ou réponse d'une traduction dynamique)
+// table : traductions actives [{ router, insideLocal, insideGlobal, outsideGlobal, dynamic }]
+// isReply : seule une réponse (echo reply) suit une traduction dynamique, comme le suivi de connexion
+export function destNat(dev, inIface, packet, table, isReply) {
+  const found = isReply && table.find((t) => t.router === dev.id && t.insideGlobal === packet.dst && t.outsideGlobal === packet.src && t.dynamic);
+  const back = found && { inside: found.insideLocal, outside: found.insideGlobal };
   if (isMikrotik(dev)) {
     if (back) return { dst: back.inside, how: `retour de la traduction ${back.inside} ↔ ${back.outside}` };
     const r = (dev.config?.natRules ?? []).find((x) => x.chain === 'dstnat' && x.action === 'dst-nat' && x.dst === packet.dst && (!x.inIface || x.inIface === inIface) && inCidr(x.src, packet.src));

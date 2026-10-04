@@ -300,6 +300,25 @@ for (let k = 0; k < await helpers.count(); k++) await helpers.nth(k).fill('');
 await page.getByTestId('rf__node-pc3').click();
 assert.match(await page.locator('.routing-status').textContent(), /Pas de bail : .*n'a ni pool DHCP.*APIPA/);
 
+step('temps simulé : la traduction NAT d\'un ping expire après 60 s');
+await openDemo('NAT / PAT (box, FAI, serveur publié)');
+await page.click('role=tab[name="Simulation"]');
+await page.selectOption('#sim-src', { label: 'PC Maison' });
+await page.selectOption('#sim-dst', { label: 'Serveur Internet · 198.51.100.10' });
+await page.click('text=Lancer le ping');
+await page.waitForSelector('button:has-text("Lancer le ping"):not([disabled])', { timeout: 15000 });
+await page.getByTestId('rf__node-r1').click();
+await page.click('role=tab[name=/Propriétés/]');
+await page.click('role=radio[name="Terminal IOS"]');
+await type('en', 'show ip nat translations');
+assert.match(await screenText(), /icmp 203\.0\.113\.1:1\s+192\.168\.1\.10:1/);
+await page.click('role=button[name="+1 min"]');
+assert.match(await page.locator('.clock-time').textContent(), /00:01:00/);
+await type('show ip nat translations');
+const afterMinute = (await screenText()).split('show ip nat translations').at(-1);
+assert.doesNotMatch(afterMinute, /icmp 203/, 'entrée expirée');
+await page.click('role=radio[name="Formulaire"]');
+
 step('édition : annuler / rétablir, copier-coller, sélection multiple, recherche');
 await page.click('text=Effacer');
 await page.locator('.react-flow__pane').click({ position: { x: 40, y: 40 } });

@@ -6,7 +6,18 @@ import { cidrToWildcard, computeRouting, prefixText, wildcardToCidr } from '../n
 import { formatIp, isValidIp, networkOf, sameSubnet, splitCidr } from '../net/ip.js';
 import { firewallRuleText, parseFirewallRule } from '../net/acl.js';
 import { computeLeases } from '../net/dhcp.js';
+import { formatDuration } from '../net/runtime.js';
 import { buildTopology } from '../net/topology.js';
+
+// Durée RouterOS : « 10m », « 1h30m », « 1d », « 3600 » (secondes)
+function parseRosTime(t) {
+  if (!t) return null;
+  if (/^\d+$/.test(t)) return Number(t);
+  const m = /^(?:(\d+)w)?(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(t);
+  if (!m || !m.slice(1).some(Boolean)) return null;
+  const [w, d, h, mi, s] = m.slice(1).map((x) => Number(x ?? 0));
+  return w * 604800 + d * 86400 + h * 3600 + mi * 60 + s;
+}
 
 const natRuleText = (r) => [
   `chain=${r.chain}`, `action=${r.action}`, r.src && `src-address=${r.src}`, r.dst && `dst-address=${r.dst}`,
@@ -306,7 +317,9 @@ export function runRouting(ctx, p) {
     case 'ip dhcp-server|add': {
       if (!n.interface || !ifaceExists(n.interface)) return out.push('input does not match any value of interface', ''), true;
       if (n['address-pool'] && !dhcpCfg().ranges?.[n['address-pool']]) return out.push('input does not match any value of address-pool', ''), true;
-      (dhcpCfg().servers ??= []).push({ name: n.name ?? `dhcp${(dhcpCfg().servers ?? []).length + 1}`, iface: n.interface, pool: n['address-pool'] });
+      const lt = parseRosTime(n['lease-time']);
+      if (n['lease-time'] && lt === null) return out.push('invalid value for argument lease-time', ''), true;
+      (dhcpCfg().servers ??= []).push({ name: n.name ?? `dhcp${(dhcpCfg().servers ?? []).length + 1}`, iface: n.interface, pool: n['address-pool'], ...(lt ? { leaseTime: lt } : {}) });
       changed();
       return true;
     }
@@ -328,9 +341,10 @@ export function runRouting(ctx, p) {
     case 'ip dhcp-server lease|print': {
       out.push(` #   ${pad('ADDRESS', 17)}${pad('HOST-NAME', 20)}STATUS`);
       let i = 0;
-      for (const [id, l] of computeLeases(doc)) {
+      const now = doc.runtime?.time ?? 0;
+      for (const [id, l] of Object.entries(computeLeases(doc).store)) {
         if (l.server !== dev.id) continue;
-        out.push(` ${pad(i++, 4)}${pad(l.ip, 17)}${pad(doc.devices.find((d) => d.id === id)?.label ?? id, 20)}bound`);
+        out.push(` ${pad(i++, 4)}${pad(l.ip, 17)}${pad(doc.devices.find((d) => d.id === id)?.label ?? `${id} (parti)`, 20)}bound  expires-after=${l.end == null ? 'never' : formatDuration(l.end - now)}`);
       }
       return out.push(''), true;
     }
@@ -423,7 +437,7 @@ export function routingScript(dev) {
   if (cfg.natRules?.length) out.push('/ip firewall nat', ...cfg.natRules.map((r) => `add ${natRuleText(r)}`));
   const dh = cfg.dhcp && cfg.dhcp !== true ? cfg.dhcp : null;
   if (dh?.ranges) out.push('/ip pool', ...Object.entries(dh.ranges).map(([name, [a, b]]) => `add name=${name} ranges=${a}-${b}`));
-  if (dh?.servers?.length) out.push('/ip dhcp-server', ...dh.servers.map((x) => `add ${x.pool ? `address-pool=${x.pool} ` : ''}interface=${x.iface} name=${x.name}`));
+  if (dh?.servers?.length) out.push('/ip dhcp-server', ...dh.servers.map((x) => `add ${x.pool ? `address-pool=${x.pool} ` : ''}interface=${x.iface}${x.leaseTime ? ` lease-time=${x.leaseTime}s` : ''} name=${x.name}`));
   if (dh?.pools?.length) {
     out.push('/ip dhcp-server network', ...dh.pools.map((x) => `add address=${x.network}/${x.mask}${x.dns ? ` dns-server=${x.dns}` : ''}${x.defaultRouter ? ` gateway=${x.defaultRouter}` : ''}`));
   }

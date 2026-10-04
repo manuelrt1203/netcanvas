@@ -57,18 +57,26 @@ export const host = {
           out.push(...ipconfig(live(), flag === '/all'));
           break;
         }
+        const released = (rt, on) => ({ ...rt, released: [...new Set([...(rt.released ?? []).filter((x) => x !== dev.id), ...(on ? [dev.id] : [])])] });
         if (flag === '/renew') {
-          // Passe en DHCP : le bail est calculé sur le schéma avec ce PC en client
-          dev.config = { ip: null, mask: null, gateway: null, dhcp: true };
-          ctx.changed = true;
-          const eff = withLeases({ ...doc, devices: doc.devices.map((d) => (d.id === dev.id ? dev : d)) }).devices.find((d) => d.id === dev.id).config;
-          out.push(...ipconfig(eff));
+          // Passe en DHCP (si besoin) et redemande une adresse : le bail est calculé sur le schéma
+          if (dev.config?.dhcp !== true) {
+            dev.config = { ip: null, mask: null, gateway: null, dhcp: true };
+            ctx.changed = true;
+          }
+          ctx.effects.push({ type: 'runtime', update: (rt) => released(rt, false) });
+          const next = { ...doc, runtime: released(doc.runtime ?? {}, false), devices: doc.devices.map((d) => (d.id === dev.id ? dev : d)) };
+          out.push(...ipconfig(withLeases(next).devices.find((d) => d.id === dev.id).config));
           break;
         }
         if (flag === '/release') {
-          dev.config = { ip: null, mask: null, gateway: null };
-          ctx.changed = true;
-          out.push('', '   IP Address......................: 0.0.0.0', '   Subnet Mask.....................: 0.0.0.0', '');
+          if (dev.config?.dhcp !== true) {
+            out.push('', 'The operation failed as no adapter is in the state permissible for this operation.', '');
+            break;
+          }
+          // Le bail est rendu au serveur : plus d'adresse jusqu'au prochain /renew
+          ctx.effects.push({ type: 'runtime', update: (rt) => ({ ...released(rt, true), leases: Object.fromEntries(Object.entries(rt.leases ?? {}).filter(([id]) => id !== dev.id)) }) });
+          out.push('', '   IP Address......................: 0.0.0.0', '   Subnet Mask.....................: 0.0.0.0', '   Default Gateway.................: 0.0.0.0', '');
           break;
         }
         const [ip, mask, gw] = args;

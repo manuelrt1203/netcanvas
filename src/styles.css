@@ -392,3 +392,9 @@ textarea.rules {
 }
 textarea.rules[aria-invalid="true"] { border-color: var(--danger); }
 .iface-security { margin-top: 6px; }
+
+/* --- Horloge de simulation --------------------------------------------------------- */
+.clock { display: flex; align-items: center; gap: 4px; padding-right: 8px; margin-right: 4px; border-right: 1px solid var(--border); }
+.clock-time { font: 600 .85rem ui-monospace, monospace; font-variant-numeric: tabular-nums; color: var(--muted); min-width: 9ch; }
+button.small-btn { min-height: 32px; padding: 0 8px; font-size: .8rem; }
+@media (max-width: 900px) { .clock { border-right: 0; } }

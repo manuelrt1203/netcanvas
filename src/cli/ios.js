@@ -6,8 +6,8 @@ import { cidrToMask, formatIp, isBroadcastAddress, isNetworkAddress, isValidIp, 
 import { isSviName, modelOf } from '../net/catalog.js';
 import { hostname as iosHostname, iosAclLines, iosInterfaceExtras, iosDhcpLines, iosLongName, iosNatLines, iosRoutingLines } from '../export/cisco.js';
 import { traceroute } from '../net/traceroute.js';
-import { dhcpConfigCommand, dhcpTree, helperCommands, showDhcp } from './ios-dhcp.js';
-import { natConfigCommand, natInterfaceCommands, showNatTranslations } from './ios-nat.js';
+import { clearDhcpCommand, dhcpConfigCommand, dhcpTree, helperCommands, showDhcp } from './ios-dhcp.js';
+import { clearNatCommand, natConfigCommand, natInterfaceCommands, showNatTranslations } from './ios-nat.js';
 import { accessGroupCommands, aclConfigCommands, aclShows, aclTree, showAccessLists } from './ios-acl.js';
 import { bgpTree, interfaceRoutingCommands, ospfTree, ripTree, routeFilters, routerCommands, routingShows, showIpRoute } from './ios-routing.js';
 
@@ -317,7 +317,7 @@ function showTree(dev) {
             kw('pool', 'DHCP pools information', { run: (c) => c.out.push(...showDhcp(c.dev, c.doc, 'pool')) }),
           ],
         }),
-        ...(isSwitch ? [] : [kw('nat', 'IP NAT information', { children: [kw('translations', 'Translation entries', { run: (c) => c.out.push(...showNatTranslations(c.dev)) })] })]),
+        ...(isSwitch ? [] : [kw('nat', 'IP NAT information', { children: [kw('translations', 'Translation entries', { run: (c) => c.out.push(...showNatTranslations(c.dev, c.doc)) })] })]),
       ],
     }),
     ...aclShows(),
@@ -344,6 +344,9 @@ function execTree(dev, privileged) {
     kw('exit', 'Exit from the EXEC', { run: (c) => logout(c) }),
     kw('logout', 'Exit from the EXEC', { run: (c) => logout(c) }),
     pingCmd(),
+    ...(privileged && dev.type === 'router' ? [kw('clear', 'Reset functions', {
+      children: [kw('ip', 'IP', { children: [clearNatCommand(), clearDhcpCommand()] })],
+    })] : []),
     kw('traceroute', 'Trace route to destination', { children: [arg('ip', 'WORD', 'Trace route to destination address', isIp, { run: (c) => doTraceroute(c, c.args.ip) })] }),
     showTree(dev),
   ];

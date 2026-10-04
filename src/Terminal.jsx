@@ -13,7 +13,7 @@ function getSession(store, device, shell) {
 
 const MAX_LINES = 1000;
 
-export default function Terminal({ device, doc, sessions, onChange, onPing }) {
+export default function Terminal({ device, doc, sessions, onChange, onPing, onRuntime }) {
   const shell = shellFor(device);
   const session = getSession(sessions, device, shell);
   const [lines, setLines] = useState(session.lines);
@@ -42,7 +42,10 @@ export default function Terminal({ device, doc, sessions, onChange, onPing }) {
       setLines([]);
     } else print([echo, ...r.output]);
     if (r.device) onChange(r.device);
-    for (const e of r.effects) if (e.type === 'ping') onPing(e.source, e.target);
+    for (const e of r.effects) {
+      if (e.type === 'ping') onPing(e.source, e.target);
+      if (e.type === 'runtime') onRuntime(e.update);
+    }
     setInput('');
     setCursor(null);
   };

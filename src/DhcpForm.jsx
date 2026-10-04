@@ -2,6 +2,7 @@
 import { useId, useState } from 'react';
 import { isValidIp } from './net/ip.js';
 import { isMikrotik } from './net/catalog.js';
+import { formatTime } from './net/runtime.js';
 
 const num = (v) => (v === '' ? '' : Number(v));
 
@@ -31,7 +32,10 @@ export function DhcpClientStatus({ live, labels }) {
   return (
     <div className="routing-status">
       <p className="ok-text">Bail obtenu : {l.ip}/{l.mask}, passerelle {l.gateway ?? 'aucune'}{l.dns ? `, DNS ${l.dns}` : ''}.</p>
-      <p className="hint">Servi par {labels.get(l.server) ?? l.server}{l.relay ? ` via le relais ${labels.get(l.relay) ?? l.relay}` : ''} (pool {l.pool}).</p>
+      <p className="hint">
+        Servi par {labels.get(l.server) ?? l.server}{l.relay ? ` via le relais ${labels.get(l.relay) ?? l.relay}` : ''} (pool {l.pool}),
+        {l.end == null ? ' bail illimité.' : ` bail jusqu'à ${formatTime(l.end)} (renouvelé à mi-durée tant que le PC est connecté).`}
+      </p>
     </div>
   );
 }

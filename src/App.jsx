@@ -28,6 +28,7 @@ import { validate } from './net/validate.js';
 import { HOST_TYPES, buildTopology } from './net/topology.js';
 import { computeRouting } from './net/routing.js';
 import { withLeases } from './net/dhcp.js';
+import { EMPTY_RUNTIME, activeNat, formatTime } from './net/runtime.js';
 import { CABLES, MODELS, TYPES } from './net/catalog.js';
 import { pickPorts } from './net/cabling.js';
 import { EMPTY_SIM, LinkContext, SimContext } from './SimContext.js';
@@ -79,6 +80,8 @@ function Editor() {
   const [nodes, setNodes, onNodesChange] = useNodesState(draft?.nodes ?? []);
   const [edges, setEdges, onEdgesChange] = useEdgesState(draft?.edges ?? []);
   const [name, setName] = useState(draft?.name ?? 'Mon réseau');
+  // État d'exécution : temps simulé, baux DHCP, table NAT (enregistré avec le schéma)
+  const [runtime, setRuntime] = useState(() => ({ ...EMPTY_RUNTIME, ...draft?.runtime }));
   const [tab, setTab] = useState('props');
   const [cableTool, setCableTool] = useState('auto');
   const [configMode, setConfigModeState] = useState(() => {
@@ -97,9 +100,14 @@ function Editor() {
   const importInput = useRef(null);
   const timer = useRef(null);
 
-  const doc = useMemo(() => toJSON(nodes, edges, name), [nodes, edges, name]);
+  const doc = useMemo(() => toJSON(nodes, edges, name, runtime), [nodes, edges, name, runtime]);
   // Document effectif (clients DHCP avec leur bail), topologie et routage : calculés une fois par modification
   const live = useMemo(() => withLeases(doc), [doc]);
+  // Les baux calculés (renouvelés, expirés, d'hôtes partis) sont enregistrés dans l'état d'exécution
+  useEffect(() => {
+    const next = live.runtime?.leases ?? {};
+    if (JSON.stringify(next) !== JSON.stringify(runtime.leases ?? {})) setRuntime((rt) => ({ ...rt, leases: next }));
+  }, [live, runtime.leases]);
   const topo = useMemo(() => buildTopology(live), [live]);
   const routing = useMemo(() => computeRouting(live, topo), [live, topo]);
   const issues = useMemo(() => validate(live, { topo, routing }), [live, topo, routing]);
@@ -153,6 +161,7 @@ function Editor() {
     setNodes(loaded.nodes.map((n) => ({ ...n, selected: keep.has(n.id) })));
     setEdges(loaded.edges);
     setName(loaded.name ?? 'Mon réseau');
+    setRuntime({ ...EMPTY_RUNTIME, ...loaded.runtime });
   };
 
   const undo = () => {
@@ -376,9 +385,16 @@ function Editor() {
     }
   };
 
+  // Les traductions NAT d'un ping entrent dans la table persistante (elles expirent avec le temps)
+  const keepNat = (result) => {
+    if (!result.natAdded?.length) return;
+    setRuntime((rt) => ({ ...rt, nat: [...activeNat(rt), ...result.natAdded] }));
+  };
+
   // Un ping tapé dans un terminal s'anime aussi sur le plan
   const pingFromTerminal = (src, dst) => {
     const result = simulatePing(live, src, dst, { topo, routing });
+    keepNat(result);
     setSim({ result, sig: configSig(doc), playing: false, view: EMPTY_SIM });
     play(result);
   };
@@ -386,6 +402,7 @@ function Editor() {
   // Ping ou traceroute (la trace réutilise l'animation du ping)
   const runSim = (src, dst, mode = 'ping') => {
     const result = simulatePing(live, src, dst, { topo, routing });
+    keepNat(result);
     if (mode === 'trace') result.trace = traceroute(live, src, dst);
     setSim({ result, sig: configSig(doc), playing: false, view: EMPTY_SIM });
     play(result);
@@ -402,6 +419,7 @@ function Editor() {
     setNodes(loaded.nodes);
     setEdges(loaded.edges);
     setName(loaded.name ?? 'Mon réseau');
+    setRuntime({ ...EMPTY_RUNTIME, ...loaded.runtime });
     setError('');
     requestAnimationFrame(() => fitView({ maxZoom: 1, duration: reducedMotion() ? 0 : 300 }));
   };
@@ -452,6 +470,15 @@ function Editor() {
             <label className="visually-hidden" htmlFor="name">Nom du schéma</label>
             <input id="name" className="doc-name" value={name} onChange={(e) => setName(e.target.value)} />
             <div className="actions">
+              <div className="clock" role="group" aria-label="Temps simulé">
+                <span className="clock-time" title="Temps simulé (baux DHCP, table NAT)">⏱ {formatTime(runtime.time)}</span>
+                {[[60, '+1 min'], [3600, '+1 h'], [86400, '+1 j']].map(([dt, label]) => (
+                  <button key={dt} type="button" className="ghost small-btn" onClick={() => setRuntime((rt) => ({ ...rt, time: rt.time + dt }))}>{label}</button>
+                ))}
+                <button type="button" className="ghost small-btn" disabled={!runtime.time && !runtime.nat.length && !Object.keys(runtime.leases).length}
+                  aria-label="Remettre le temps à zéro (vide les baux et la table NAT)" title="Remettre à zéro : temps, baux DHCP, table NAT"
+                  onClick={() => setRuntime({ ...EMPTY_RUNTIME })}>↺</button>
+              </div>
               <details className="demo-menu" ref={demoMenu}>
                 <summary className="button ghost">Démos</summary>
                 <div className="demo-list" role="menu">
@@ -593,7 +620,7 @@ function Editor() {
                   terminal={hasTerminal(selectedDevice) && (
                     <Suspense fallback={<p className="hint">Chargement du terminal…</p>}>
                       <Terminal key={selected.id} device={selectedDevice} doc={doc} sessions={sessions.current}
-                        onChange={(dev) => updateNode(selected.id)(() => deviceToData(dev, doc.links))} onPing={pingFromTerminal} />
+                        onChange={(dev) => updateNode(selected.id)(() => deviceToData(dev, doc.links))} onPing={pingFromTerminal} onRuntime={(update) => setRuntime(update)} />
                     </Suspense>
                   )} />
               ) : selectedNodes.length > 1 ? (

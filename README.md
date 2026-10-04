@@ -94,6 +94,10 @@ La particularité de NetCanvas reste là : un `ping` tapé dans un terminal s'an
 - **Échec** : le PC prend une adresse 169.254.x.x (APIPA), et NetCanvas explique pourquoi (pas de serveur ni de relais dans le VLAN, relais vers une adresse injoignable, pas de pool pour le réseau du relais, pool épuisé).
 - **Affichage** : `show ip dhcp binding`, `/ip dhcp-server lease print`, `ipconfig` avec le serveur DNS. Containerlab installe les baux calculés.
 
+**Temps simulé** (horloge de la barre du haut : +1 min, +1 h, +1 j, ↺) : l'état d'exécution (temps, baux DHCP, table NAT) est enregistré avec le schéma.
+- **Baux DHCP datés** : `lease` (1 jour par défaut, `lease infinite`), `lease-time` MikroTik. Un PC connecté renouvelle à mi-bail et garde son adresse. Un PC débranché ou supprimé garde son bail jusqu'à expiration, ce qui reproduit un vrai pool épuisé par des baux fantômes. `clear ip dhcp binding *|A` libère, `ipconfig /release` rend l'adresse jusqu'au prochain `/renew`. `show ip dhcp binding` et `/ip dhcp-server lease print` affichent l'expiration.
+- **Table NAT persistante** : chaque ping ou traceroute ajoute ses entrées ICMP (identifiant comme « port » du PAT), visibles dans `show ip nat translations` et effacées par `clear ip nat translation *`. Elles expirent après 60 s comme sur IOS. Seule une réponse suit une traduction dynamique : un ping non sollicité venu d'Internet ne traverse pas le PAT, seul le NAT statique le permet.
+
 Pas encore simulé (le terminal le dit) : EIGRP, table ARP / MAC.
 
 ## Matériel et câblage (`src/net/catalog.js`, `src/net/cabling.js`)
@@ -180,7 +184,7 @@ Les fichiers v1 et v2 s'importent toujours : le modèle est déduit des ports ut
 ## Tests
 
 ```bash
-npm test           # 134 tests : calculs IP, ping, validation, JSON, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
+npm test           # 138 tests : calculs IP, ping, validation, JSON, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
 npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : édition, contrôles, ping, persistance, exports, câblage, terminaux (IOS, RouterOS, PC), démos OSPF et BGP (show ip ospf neighbor, next-hop-self retiré)
 ```
 

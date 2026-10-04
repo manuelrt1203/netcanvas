@@ -4,7 +4,7 @@ import { pad } from './device.js';
 import { isValidIp } from '../net/ip.js';
 import { maskToCidr } from './device.js';
 import { parseInterfaces } from './ios.js';
-import { iosLongName } from '../export/cisco.js';
+import { activeNat, runtimeOf } from '../net/runtime.js';
 
 const isIp = (t) => isValidIp(t);
 const isName = (t) => /^[A-Za-z0-9_-]+$/.test(t);
@@ -93,10 +93,22 @@ export function natConfigCommand(remove = false) {
   });
 }
 
-export function showNatTranslations(dev) {
-  const rows = [`${pad('Pro', 5)}${pad('Inside global', 19)}${pad('Inside local', 19)}${pad('Outside local', 19)}Outside global`];
-  for (const s of dev.config?.nat?.statics ?? []) rows.push(`${pad('---', 5)}${pad(s.global, 19)}${pad(s.local, 19)}${pad('---', 19)}---`);
-  const dyn = dev.config?.nat?.dynamic ?? [];
-  if (dyn.length) rows.push('', `% NetCanvas : ${dyn.length} règle(s) dynamique(s) (${dyn.map((d) => `ACL ${d.acl} → ${d.iface ? iosLongName(d.iface) : `pool ${d.pool}`}`).join(', ')}) : les traductions apparaissent dans le journal d'un ping.`);
+export function showNatTranslations(dev, doc) {
+  const rows = [`${pad('Pro', 5)}${pad('Inside global', 21)}${pad('Inside local', 21)}${pad('Outside local', 21)}Outside global`];
+  // Entrées dynamiques encore valides (créées par les pings, 60 s pour l'ICMP)
+  for (const e of activeNat(runtimeOf(doc)).filter((x) => x.router === dev.id)) {
+    const p = (ip) => `${ip}:${e.id}`;
+    rows.push(`${pad(e.proto, 5)}${pad(p(e.insideGlobal), 21)}${pad(p(e.insideLocal), 21)}${pad(p(e.outsideLocal), 21)}${p(e.outsideGlobal)}`);
+  }
+  for (const s of dev.config?.nat?.statics ?? []) rows.push(`${pad('---', 5)}${pad(s.global, 21)}${pad(s.local, 21)}${pad('---', 21)}---`);
   return [...rows, ''];
 }
+
+// « clear ip nat translation * » : vide les entrées dynamiques de ce routeur
+export const clearNatCommand = () => kw('nat', 'Clear NAT', {
+  children: [kw('translation', 'Clear dynamic translation', {
+    children: [kw('*', 'Delete all dynamic translations', {
+      run: (c) => c.effects.push({ type: 'runtime', update: (rt) => ({ ...rt, nat: (rt.nat ?? []).filter((e) => e.router !== c.dev.id) }) }),
+    })],
+  })],
+});

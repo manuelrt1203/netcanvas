@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { BGP_DEMO, DEMO, DHCP_DEMO, L3_DEMO, NAT_DEMO, OSPF_DEMO, ROAS_DEMO } from '../examples.js';
-import { computeLeases } from '../net/dhcp.js';
+import { computeLeases, withLeases } from '../net/dhcp.js';
+import { runtimeOf } from '../net/runtime.js';
 import { runLine, shellFor } from './index.js';
 import { validate } from '../net/validate.js';
 import { simulatePing } from '../net/simulate.js';
@@ -19,6 +20,8 @@ function session(doc, id) {
       const r = runLine(shell, s, line, dev, state.doc);
       if (r.device) state.doc = { ...state.doc, devices: state.doc.devices.map((d) => (d.id === id ? r.device : d)) };
       state.effects.push(...r.effects);
+      // Effets sur l'état d'exécution (baux, table NAT), comme le fait l'éditeur
+      for (const e of r.effects) if (e.type === 'runtime') state.doc = { ...state.doc, runtime: e.update(runtimeOf(state.doc)) };
       out.push(...r.output);
     }
     return out.join('\n');
@@ -475,16 +478,16 @@ test('ios : serveur DHCP et relais tapés à la main', () => {
   const doc = structuredClone(DHCP_DEMO);
   delete dev(doc, 'r1').config.dhcp;
   delete iface(doc, 'r1', 'G0/0.20').helperAddress;
-  assert.ok(computeLeases(doc).get('pc1').error);
+  assert.ok(computeLeases(doc).leases.get('pc1').error);
   const t = session(doc, 'r1');
   t.run('en', 'conf t', 'ip dhcp excluded-address 192.168.10.1 192.168.10.9', 'ip dhcp pool PROFS');
   assert.equal(t.prompt(), 'R1(dhcp-config)#');
   t.run('network 192.168.10.0 255.255.255.0', 'default-router 192.168.10.1', 'dns-server 8.8.8.8', 'exit',
     'int g0/0.20', 'ip helper-address 192.168.30.10', 'end');
-  const leases = computeLeases(t.doc);
+  const { leases } = computeLeases(t.doc);
   assert.equal(leases.get('pc1').ip, '192.168.10.10');
   assert.equal(leases.get('pc3').ip, '192.168.20.2');
-  assert.match(t.run('show ip dhcp binding'), /^192\.168\.10\.10\s+PC Profs 1\s+--\s+Automatic$/m);
+  assert.match(t.run('show ip dhcp binding'), /^192\.168\.10\.10\s+PC Profs 1\s+J\+1 00:00:00\s+Automatic$/m);
   assert.doesNotMatch(t.run('show ip dhcp binding'), /192\.168\.20\.2/); // servi par le serveur, pas par R1
   const run = t.run('show running-config');
   assert.match(run, /interface GigabitEthernet0\/0\.20\n encapsulation dot1Q 20\n ip address 192\.168\.20\.1 255\.255\.255\.0\n ip helper-address 192\.168\.30\.10/);
@@ -494,9 +497,12 @@ test('ios : serveur DHCP et relais tapés à la main', () => {
 test('pc : ipconfig avec bail, APIPA, /release et /renew', () => {
   const t = session(structuredClone(DHCP_DEMO), 'pc1');
   assert.match(t.run('ipconfig'), /IPv4 Address\.+: 192\.168\.10\.10\n.*\n {3}Default Gateway\.+: 192\.168\.10\.1\n {3}DHCP Enabled\.+: Yes\n {3}DNS Servers\.+: 8\.8\.8\.8/);
-  t.run('ipconfig /release');
-  assert.deepEqual(dev(t.doc, 'pc1').config, { ip: null, mask: null, gateway: null });
+  assert.match(t.run('ipconfig /release'), /IP Address\.+: 0\.0\.0\.0/);
+  assert.deepEqual(t.doc.runtime.released, ['pc1']);
+  assert.equal(dev(withLeases(t.doc), 'pc1').config.ip, null);
+  assert.match(t.run('ipconfig'), /pas de bail DHCP, adresse libérée par « ipconfig \/release »/);
   assert.match(t.run('ipconfig /renew'), /IPv4 Address\.+: 192\.168\.10\.10/);
+  assert.deepEqual(t.doc.runtime.released, []);
   t.run('ipconfig 192.168.10.50 255.255.255.0 192.168.10.1');
   assert.deepEqual(dev(t.doc, 'pc1').config, { ip: '192.168.10.50', mask: 24, gateway: '192.168.10.1' });
 
@@ -514,8 +520,38 @@ test('mikrotik : serveur DHCP en RouterOS', () => {
   assert.match(t.run('/ip dhcp-server add interface=ether9x address-pool=serveurs'), /input does not match any value of interface/);
   t.run('/ip dhcp-server add interface=ether2 address-pool=serveurs name=dhcp1',
     '/ip dhcp-server network add address=172.16.3.0/24 gateway=172.16.3.1 dns-server=1.1.1.1');
-  assert.equal(computeLeases(t.doc).get('srv').ip, '172.16.3.100');
-  assert.match(t.run('/ip dhcp-server lease print'), / 0 {3}172\.16\.3\.100\s+Serveur\s+bound/);
+  assert.equal(computeLeases(t.doc).leases.get('srv').ip, '172.16.3.100');
+  assert.match(t.run('/ip dhcp-server lease print'), / 0 {3}172\.16\.3\.100\s+Serveur\s+bound  expires-after=1 j/);
   assert.ok(simulatePing(t.doc, 'pc1', '172.16.3.100').ok);
   assert.match(t.run('/export'), /\/ip pool\nadd name=serveurs ranges=172\.16\.3\.100-172\.16\.3\.200\n\/ip dhcp-server\nadd address-pool=serveurs interface=ether2 name=dhcp1\n\/ip dhcp-server network\nadd address=172\.16\.3\.0\/24 dns-server=1\.1\.1\.1 gateway=172\.16\.3\.1/);
+});
+
+test('ios : table NAT persistante, expiration, clear ; bail et clear ip dhcp binding', () => {
+  // Les traductions d'un ping restent 60 s dans la table
+  const ping = simulatePing(NAT_DEMO, 'pc1', '198.51.100.10');
+  assert.equal(ping.natAdded.length, 1);
+  let doc = { ...structuredClone(NAT_DEMO), runtime: { time: 10, leases: {}, released: [], nat: ping.natAdded } };
+  const t = session(doc, 'r1');
+  t.run('en');
+  assert.match(t.run('show ip nat translations'), /^icmp 203\.0\.113\.1:1\s+192\.168\.1\.10:1\s+198\.51\.100\.10:1\s+198\.51\.100\.10:1$/m);
+  t.doc = { ...t.doc, runtime: { ...t.doc.runtime, time: 61 } };
+  assert.doesNotMatch(t.run('show ip nat translations'), /icmp/); // expirée
+  t.doc = { ...t.doc, runtime: { ...t.doc.runtime, time: 10 } };
+  t.run('clear ip nat translation *');
+  assert.deepEqual(t.doc.runtime.nat, []);
+
+  // Un ping non sollicité depuis Internet ne traverse pas le PAT, même avec une entrée active
+  doc = { ...structuredClone(NAT_DEMO), runtime: { time: 10, leases: {}, released: [], nat: ping.natAdded } };
+  assert.ok(!simulatePing(doc, 'srv', '203.0.113.1').log.some((l) => /traduite en 192\.168\.1\.10/.test(l.text)));
+
+  const d = session(structuredClone(DHCP_DEMO), 'r1');
+  d.run('en', 'conf t', 'ip dhcp pool PROFS', 'lease 0 2 30', 'end');
+  assert.equal(dev(d.doc, 'r1').config.dhcp.pools[0].leaseTime, 9000);
+  assert.match(d.run('show ip dhcp pool'), /Lease\s+: 2 h 30 min/);
+  d.doc = { ...d.doc, runtime: withLeases(d.doc).runtime };
+  assert.equal(Object.keys(d.doc.runtime.leases).length, 3);
+  d.run('clear ip dhcp binding 192.168.10.10');
+  assert.deepEqual(Object.keys(d.doc.runtime.leases).sort(), ['pc2', 'pc3']);
+  d.run('clear ip dhcp binding *');
+  assert.deepEqual(Object.keys(d.doc.runtime.leases), ['pc3']); // servi par le serveur du VLAN 30, pas par R1
 });

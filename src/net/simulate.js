@@ -13,6 +13,7 @@ import { isMikrotik, modelOf } from './catalog.js';
 import { evaluateAcl, evaluateFirewall } from './acl.js';
 import { destNat, isPrivate, natGlobals, sourceNat } from './nat.js';
 import { withLeases } from './dhcp.js';
+import { NAT_ICMP_TIMEOUT, activeNat, runtimeOf } from './runtime.js';
 import { flood } from './l2.js';
 import { computeRouting, lookup } from './routing.js';
 
@@ -32,9 +33,12 @@ export function simulatePing(rawDoc, sourceId, dstIp, options = {}) {
   const doc = options.topo ? rawDoc : withLeases(rawDoc);
   const topo = options.topo ?? buildTopology(doc);
   const routing = options.routing ?? computeRouting(doc, topo);
-  const ctx = { topo, routing, natTable: [] }; // natTable : traductions faites pendant ce ping
+  // natTable : traductions actives (table persistante du schéma) + celles faites pendant ce ping
+  const runtime = runtimeOf(doc);
+  const ctx = { topo, routing, natTable: [...activeNat(runtime)], now: runtime.time, natAdded: [] };
   // path : équipements atteints et adresse d'entrée (sert à traceroute)
   const result = { ok: false, hops: [], path: [], log: [], failedAt: null, srcIp: null };
+  result.natAdded = ctx.natAdded; // traductions créées, à enregistrer dans la table persistante
   const log = (phase, text, level = 'info', device = null) => result.log.push({ phase, text, level, device });
   const name = (id) => topo.devices.get(id)?.label ?? id;
 
@@ -80,7 +84,7 @@ function forward(ctx, startId, target, phase, result, log, name, fixedSrc = null
     if (current !== startId && isRouting(dev) && arrived) filterIn(dev, arrived, { src: srcIp, dst: dstIp }, Boolean(ownIp(dstIp)), log, phase, name);
     // NAT de destination à l'entrée (statique, dst-nat, ou retour d'une traduction)
     if (current !== startId && isRouting(dev) && arrived) {
-      const t = destNat(dev, arrived, { src: srcIp, dst: dstIp }, ctx.natTable);
+      const t = destNat(dev, arrived, { src: srcIp, dst: dstIp }, ctx.natTable, phase === 'reply');
       if (t) {
         log(phase, `${name(current)} : NAT, destination ${dstIp} traduite en ${t.dst} (${t.how}).`, 'info', current);
         dstIp = t.dst;
@@ -110,7 +114,14 @@ function forward(ctx, startId, target, phase, result, log, name, fixedSrc = null
     if (current !== startId && isRouting(dev)) {
       const t = sourceNat(dev, arrived, step.iface.name, step.iface.ip, { src: srcIp, dst: dstIp });
       if (t) {
-        ctx.natTable.push({ router: current, inside: srcIp, outside: t.src, dynamic: t.dynamic });
+        // Identifiant ICMP (le « port » du PAT) : suivant libre pour ce routeur
+        const id = 1 + Math.max(0, ...ctx.natTable.filter((e) => e.router === current).map((e) => e.id ?? 0));
+        const entry = {
+          router: current, proto: 'icmp', insideLocal: srcIp, insideGlobal: t.src, outsideLocal: dstIp, outsideGlobal: dstIp,
+          dynamic: t.dynamic, id, created: ctx.now, expires: ctx.now + NAT_ICMP_TIMEOUT,
+        };
+        ctx.natTable.push(entry);
+        if (t.dynamic) ctx.natAdded.push(entry);
         log(phase, `${name(current)} : NAT, source ${srcIp} traduite en ${t.src} (${t.how}).`, 'info', current);
         srcIp = t.src;
       }

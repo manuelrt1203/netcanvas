@@ -10,6 +10,7 @@
 //   edge.data = { cable, sourceIface, targetIface, dce: 'source' | 'target' }
 import { HOST_TYPES, buildTopology } from './net/topology.js';
 import { DEFAULT_MODEL, MODELS, devicePorts, modelId } from './net/catalog.js';
+import { isEmptyRuntime } from './net/runtime.js';
 
 export const FORMAT_VERSION = 3;
 
@@ -50,7 +51,8 @@ export function freePorts(node, edges, exceptEdge = null) {
   return devicePorts(modelId({ type: node.type, model: node.data.model }), node.data.modules).filter((p) => !taken.has(p.name));
 }
 
-export function toJSON(nodes, edges, name = 'Sans titre') {
+// runtime : état d'exécution (temps, baux DHCP, table NAT), omis tant qu'il est vide
+export function toJSON(nodes, edges, name = 'Sans titre', runtime = null) {
   const ids = new Set(nodes.map((n) => n.id));
   const liveEdges = edges.filter((e) => ids.has(e.source) && ids.has(e.target));
 
@@ -78,6 +80,7 @@ export function toJSON(nodes, edges, name = 'Sans titre') {
       targetIface: e.data?.targetIface ?? null,
       ...(e.data?.cable === 'serial' ? { dce: e.data.dce === 'target' ? 'target' : 'source' } : {}),
     })),
+    ...(isEmptyRuntime(runtime) ? {} : { runtime }),
   };
 }
 
@@ -219,6 +222,7 @@ export function fromJSON(raw) {
 
   return {
     name: doc.name,
+    runtime: doc.runtime ?? null,
     nodes: doc.devices.map((d) => ({ id: d.id, type: d.type, position: d.position, data: deviceToData(d, doc.links) })),
     edges: doc.links.map((l) => ({
       id: l.id,
