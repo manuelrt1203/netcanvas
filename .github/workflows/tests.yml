@@ -1,0 +1,51 @@
+# Tests à chaque push et pull request : unitaires (dont les vrais réseaux Linux), build, navigateur.
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Les tests Containerlab montent de vrais réseaux dans des namespaces utilisateur (unshare -rnm),
+      # bloqués par défaut par AppArmor sur Ubuntu 24.04
+      - name: Autoriser les namespaces utilisateur
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Tests unitaires et réseaux réels
+        env:
+          NETCANVAS_REQUIRE_NETNS: 1
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Test navigateur
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: |
+          npx vite --port 5173 --strictPort > vite.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://localhost:5173 > /dev/null && break; sleep 1; done
+          npm run test:e2e
+
+      - name: Captures d'écran (en cas d'échec)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: captures-e2e
+          path: |
+            e2e/*.png
+            vite.log
+          if-no-files-found: ignore

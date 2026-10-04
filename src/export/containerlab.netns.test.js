@@ -14,6 +14,8 @@ const sh = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 const probe = spawnSync('unshare', ['-rnm', 'sh', '-c', 'mount -t tmpfs none /run && mkdir -p /run/netns && ip netns add t && bridge -V'], { encoding: 'utf8' });
 const skip = probe.status !== 0 && 'namespaces utilisateur indisponibles (unshare -rnm) ou iproute2 absent';
+// En CI, ces tests doivent tourner : un « ignoré » silencieux masquerait une régression
+if (skip && process.env.NETCANVAS_REQUIRE_NETNS) throw new Error(`Tests réseau réels impossibles : ${skip}\n${probe.stderr}`);
 
 // Monte le réseau puis lance les pings ; renvoie { "src>ip": true|false }
 function runLab(doc, pings) {
