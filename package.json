@@ -15,7 +15,8 @@
     "dist": "vite build && electron-builder --publish never",
     "release": "vite build && electron-builder --publish always",
     "test:desktop": "node e2e/desktop.e2e.mjs",
-    "test:account": "node e2e/account.e2e.mjs"
+    "test:account": "node e2e/account.e2e.mjs",
+    "test:exam": "node e2e/exam.e2e.mjs"
   },
   "dependencies": {
     "@xyflow/react": "^12.12.0",

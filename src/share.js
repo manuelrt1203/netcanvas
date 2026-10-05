@@ -91,3 +91,55 @@ export function rememberShare(entry) {
     /* stockage indisponible : le lien reste dans la barre d'adresse */
   }
 }
+
+// --- Mode examen ------------------------------------------------------------------------------
+// Prof : create_exam -> lien étudiant (?exam=<id>) et lien de suivi (#admin=<jeton>).
+// Étudiant : start_exam (heure de départ et heure du serveur), submit_exam (une seule remise).
+export async function createExam(title, template, settings) {
+  const [row] = await rpc('create_exam', { p_title: title, p_template: template, p_settings: settings });
+  return { id: row.exam_id, token: row.admin_token };
+}
+export async function loadExam(id) {
+  const [row] = await rpc('get_exam', { p_id: id });
+  return row ?? null;
+}
+export async function startExam(id, client, student) {
+  const [row] = await rpc('start_exam', { p_id: id, p_client: client, p_student: student });
+  return { startedAt: row.started_at, submittedAt: row.submitted_at, serverNow: row.server_now };
+}
+export const submitExam = (id, client, doc) => rpc('submit_exam', { p_id: id, p_client: client, p_doc: doc });
+export async function examAdmin(id, token) {
+  const [row] = await rpc('exam_admin', { p_id: id, p_token: token });
+  return row ?? null;
+}
+export const listSubmissions = (id, token) => rpc('list_submissions', { p_id: id, p_token: token });
+export const setExamClosed = (id, token, closed) => rpc('set_exam_closed', { p_id: id, p_token: token, p_closed: closed });
+export const myExams = () => rpc('my_exams', {});
+
+export function examLinks(id, token, origin = siteOrigin()) {
+  const student = `${origin}/?exam=${id}`;
+  return { student, admin: token ? `${student}#admin=${token}` : null };
+}
+// ?exam=<id>[#admin=<jeton>]
+export function parseExamLocation(loc = window.location) {
+  const id = new URLSearchParams(loc.search).get('exam');
+  if (!id || !/^[a-z0-9]{6,20}$/.test(id)) return null;
+  return { id, token: new URLSearchParams(loc.hash.slice(1)).get('admin') || null };
+}
+
+// Examens créés depuis ce navigateur (le lien de suivi n'est pas récupérable ailleurs, sauf compte)
+const EXAMS_KEY = 'netcanvas:exams';
+export function localExams() {
+  try {
+    return JSON.parse(localStorage.getItem(EXAMS_KEY) ?? '[]');
+  } catch {
+    return [];
+  }
+}
+export function rememberExam(entry) {
+  try {
+    localStorage.setItem(EXAMS_KEY, JSON.stringify([entry, ...localExams().filter((e) => e.id !== entry.id)].slice(0, 50)));
+  } catch {
+    /* stockage indisponible */
+  }
+}

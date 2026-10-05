@@ -2,7 +2,7 @@
 // supprimer), rattachement des schémas partagés depuis ce navigateur, déconnexion.
 import { useEffect, useId, useState } from 'react';
 import { changePassword, resetPassword, signIn, signOut, signUp } from './account.js';
-import { claimShared, deleteShared, myDiagrams, myShares, renameShared } from './share.js';
+import { claimShared, deleteShared, localExams, myDiagrams, myExams, myShares, renameShared } from './share.js';
 
 function Field({ label, ...props }) {
   const id = useId();
@@ -139,19 +139,49 @@ function MyDiagrams({ onOpen, current, onRenameCurrent }) {
   );
 }
 
-export default function AccountDialog({ user, mode, onOpen, current, onRenameCurrent, onClose }) {
+// Examens créés : dans ce navigateur (lien de suivi gardé) et, connecté, ceux du compte
+function MyExams({ user, onOpenExam }) {
+  const [owned, setOwned] = useState([]);
+  useEffect(() => { if (user) myExams().then(setOwned).catch(() => setOwned([])); }, [user]);
+  const local = localExams();
+  const list = [...owned.map((e) => ({ id: e.exam_id, title: e.title, at: e.created_at, closed: e.closed, submissions: e.submissions, token: local.find((l) => l.id === e.exam_id)?.token ?? null })),
+    ...local.filter((l) => !owned.some((e) => e.exam_id === l.id)).map((l) => ({ ...l, closed: null, submissions: null }))];
+  if (!list.length) return null;
+  return (
+    <section>
+      <h3>Mes examens</h3>
+      <ul className="my-diagrams">
+        {list.map((e) => (
+          <li key={e.id}>
+            <div>
+              <strong>{e.title}</strong>
+              <span className="muted"> · créé le {new Date(e.at).toLocaleDateString('fr-FR')}{e.submissions !== null ? ` · ${e.submissions} copie${e.submissions > 1 ? 's' : ''} rendue${e.submissions > 1 ? 's' : ''}` : ''}{e.closed ? ' · clos' : ''}</span>
+            </div>
+            <button type="button" className="small-btn" onClick={() => onOpenExam(e.id, e.token)}>Suivi</button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+export default function AccountDialog({ user, mode, onOpen, current, onRenameCurrent, onOpenExam, onClose }) {
   return (
     <div className="account">
       {user && mode !== 'new-password' ? (
         <>
           <p>Connecté en tant que <strong>{user.email}</strong>.</p>
           <MyDiagrams onOpen={(id) => { onOpen(id); onClose(); }} current={current} onRenameCurrent={onRenameCurrent} />
+          <MyExams user={user} onOpenExam={(id, token) => { onOpenExam(id, token); onClose(); }} />
           <div className="row">
             <button type="button" className="ghost" onClick={() => signOut()}>Se déconnecter</button>
           </div>
         </>
       ) : (
-        <SignIn key={mode} initialMode={mode ?? 'login'} onDone={mode === 'new-password' ? null : undefined} />
+        <>
+          <SignIn key={mode} initialMode={mode ?? 'login'} onDone={mode === 'new-password' ? null : undefined} />
+          <MyExams user={null} onOpenExam={(id, token) => { onOpenExam(id, token); onClose(); }} />
+        </>
       )}
     </div>
   );

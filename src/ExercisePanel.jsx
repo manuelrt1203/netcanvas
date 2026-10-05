@@ -2,6 +2,7 @@
 // création et modification des objectifs (enseignant).
 import { useId, useState } from 'react';
 import { OBJECTIVES, hintFor } from './net/exercise.js';
+import { ExamCreateForm } from './ExamViews.jsx';
 import { isValidIp } from './net/ip.js';
 
 const newObjectiveId = () => `o${crypto.randomUUID().slice(0, 6)}`;
@@ -71,7 +72,10 @@ function ObjectiveEditor({ objective, devices, onChange, onRemove }) {
   );
 }
 
-export default function ExercisePanel({ exercise, results, devices, readOnly, doc, onChange, onLocate }) {
+// examRules (épreuve en cours) : { hints, progress } ; le TP n'est alors pas modifiable.
+// onCreateExam (prof, partage disponible) : crée un examen à partir de ce TP.
+export default function ExercisePanel({ exercise, results, devices, readOnly, doc, onChange, onLocate, examRules = null, onCreateExam = null }) {
+  const [examForm, setExamForm] = useState(false);
   const [editing, setEditing] = useState(false);
   const [hints, setHints] = useState({}); // id de l'objectif -> niveau d'indice affiché
 
@@ -124,32 +128,37 @@ export default function ExercisePanel({ exercise, results, devices, readOnly, do
     <>
       <div className="table-title">
         <h2>{exercise.title || 'TP'}</h2>
-        {!readOnly && <button type="button" className="ghost small-btn" onClick={() => setEditing(true)}>Modifier</button>}
+        {!readOnly && !examRules && <button type="button" className="ghost small-btn" onClick={() => setEditing(true)}>Modifier</button>}
       </div>
       {exercise.instructions && <div className="tp-instructions">{exercise.instructions.split('\n').map((l, i) => <p key={i}>{l}</p>)}</div>}
-      {total > 0 && (
+      {examRules && !examRules.progress ? (
+        <p className="hint">Examen : la vérification des objectifs est masquée. Ta copie est notée quand tu la rends.</p>
+      ) : total > 0 && (
         <div className="tp-progress" role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={done} aria-label="Objectifs atteints">
           <span style={{ width: `${(100 * done) / total}%` }} />
         </div>
       )}
-      <p className={done === total && total ? 'ok-text' : 'hint'}>
+      {(!examRules || examRules.progress) && <p className={done === total && total ? 'ok-text' : 'hint'}>
         {total === 0 ? 'Aucun objectif pour l\'instant.' : done === total ? `Bravo, les ${total} objectifs sont atteints !` : `${done} objectif${done > 1 ? 's' : ''} atteint${done > 1 ? 's' : ''} sur ${total}, vérifiés en direct.`}
-      </p>
+      </p>}
       <ol className="tp-objectives">
         {results.map((r) => {
           const level = hints[r.objective.id] ?? 0;
+          const hidden = examRules && !examRules.progress;
+          // Indices seulement si la progression est visible (sinon un bouton « Indice » trahirait l'objectif manqué)
+          const hintsOn = !examRules || (examRules.hints && examRules.progress);
           return (
-            <li key={r.objective.id} className={r.ok ? 'ok' : 'todo'}>
-              <span className="tp-mark" aria-label={r.ok ? 'atteint' : 'pas encore atteint'}>{r.ok ? '✓' : '○'}</span>
+            <li key={r.objective.id} className={hidden ? 'todo' : r.ok ? 'ok' : 'todo'}>
+              <span className="tp-mark" aria-label={hidden ? 'objectif' : r.ok ? 'atteint' : 'pas encore atteint'}>{hidden ? '•' : r.ok ? '✓' : '○'}</span>
               <div>
                 <span>{r.text}</span>
-                {!r.ok && level > 0 && (
+                {hintsOn && !r.ok && level > 0 && (
                   <p className="tp-hint">
                     {hintFor(r, level, doc)}
                     {level >= 2 && r.where && <> <button type="button" className="linklike" onClick={() => onLocate(r.where)}>Voir</button></>}
                   </p>
                 )}
-                {!r.ok && level < 3 && (
+                {hintsOn && !r.ok && level < 3 && (
                   <button type="button" className="ghost small-btn" onClick={() => setHints((h) => ({ ...h, [r.objective.id]: level + 1 }))}>
                     {level === 0 ? 'Indice' : 'Indice suivant'}
                   </button>
@@ -159,6 +168,10 @@ export default function ExercisePanel({ exercise, results, devices, readOnly, do
           );
         })}
       </ol>
+      {onCreateExam && !readOnly && !examRules && total > 0 && (
+        examForm ? <ExamCreateForm defaultTitle={exercise.title} onCreate={onCreateExam} />
+          : <button type="button" className="ghost" onClick={() => setExamForm(true)}>Créer un examen chronométré…</button>
+      )}
     </>
   );
 }

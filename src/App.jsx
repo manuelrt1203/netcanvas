@@ -36,6 +36,9 @@ import TablesPanel from './TablesPanel.jsx';
 import ConfigImport from './ConfigImport.jsx';
 import ExercisePanel from './ExercisePanel.jsx';
 import { evaluateExercise } from './net/exercise.js';
+import { createExam, loadExam, parseExamLocation, rememberExam, startExam, submitExam } from './share.js';
+import { ExamBanner, ExamDashboard, ExamStart } from './ExamViews.jsx';
+import { examSession, newClientId, remainingSeconds, saveExamSession } from './exam.js';
 import { claimShared, createShared, loadShared, setShareExpiry, myShares, parseShareLocation, rememberShare, saveShared, shareEnabled, shareLinks, sharedAccess } from './share.js';
 import { accountsEnabled, currentUser, handleAuthRedirect, onUserChange } from './account.js';
 import AccountDialog from './AccountDialog.jsx';
@@ -180,7 +183,7 @@ function Editor() {
   const [savedSig, setSavedSig] = useState(null);
   const [cleanTick, setCleanTick] = useState(0);
   // Accueil au lancement, sauf lien de partage
-  const [welcome, setWelcome] = useState(() => !parseShareLocation());
+  const [welcome, setWelcome] = useState(() => !parseShareLocation() && !parseExamLocation());
   const [recents, setRecents] = useState([]);
   // Mise à jour de l'application de bureau : { state: downloading | ready | manual | error, version, percent, url }
   const [update, setUpdate] = useState(null);
@@ -231,10 +234,87 @@ function Editor() {
   });
   // Modifiable : lien d'édition, ou schéma de mon compte
   const editable = Boolean(shared?.token || shared?.owner);
-  const readOnly = Boolean(shared && !editable);
+  // --- Mode examen ------------------------------------------------------------------
+  // exam : { id, role: student | admin, token (admin), status: loading | start | running | submitted | error | dashboard | copy,
+  //          title, settings, template, closed, student, client, startedAt, offset, submittedAt, copy: { student, note } }
+  const [exam, setExam] = useState(() => {
+    const loc = parseExamLocation();
+    return loc ? { ...loc, role: loc.token ? 'admin' : 'student', status: loc.token ? 'dashboard' : 'loading' } : null;
+  });
+  const [examNow, setExamNow] = useState(Date.now());
+  const examLocked = exam?.status === 'submitted' || exam?.status === 'copy' || exam?.status === 'start';
+
+  const readOnly = Boolean(shared && !editable) || examLocked;
   const setLocation = (query) => {
     // Application de bureau (file://) : l'adresse ne sert pas, on n'y touche pas
     if (!desktop) window.history.replaceState(null, '', `${window.location.pathname}${query}`);
+  };
+
+  // Étudiant : sujet, reprise de l'épreuve sur ce poste (même départ, copie gardée localement)
+  const beginExam = async (base, student, session) => {
+    const client = session?.client ?? newClientId();
+    const r = await startExam(base.id, client, student);
+    const offset = new Date(r.serverNow).getTime() - Date.now();
+    const next = { ...session, client, student, startedAt: r.startedAt, submittedAt: r.submittedAt };
+    saveExamSession(base.id, next);
+    replaceDoc(loadDoc(next.doc ?? base.template));
+    lastExamSave.current = null;
+    setExam({ ...base, student, client, startedAt: r.startedAt, offset, submittedAt: r.submittedAt, status: r.submittedAt ? 'submitted' : 'running' });
+  };
+  const lastExamSave = useRef(null);
+  useEffect(() => {
+    if (exam?.role !== 'student' || exam.status !== 'loading') return;
+    loadExam(exam.id)
+      .then(async (row) => {
+        if (!row) throw new Error('Cet examen n\'existe pas (ou plus).');
+        const base = { ...exam, title: row.title, settings: row.settings, template: row.template, closed: row.closed };
+        const session = examSession(exam.id);
+        if (session?.student) await beginExam(base, session.student, session);
+        else {
+          replaceDoc(loadDoc(row.template));
+          setExam({ ...base, status: 'start' });
+        }
+      })
+      .catch((err) => setExam((x) => ({ ...x, status: 'error', message: err.message })));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exam?.status]);
+  // Chrono, copie gardée sur le poste à chaque modification, remise automatique à la fin du temps
+  useEffect(() => {
+    if (exam?.status !== 'running') return undefined;
+    const t = setInterval(() => setExamNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [exam?.status]);
+  useEffect(() => {
+    if (exam?.status !== 'running') return;
+    saveExamSession(exam.id, { ...examSession(exam.id), doc });
+  }, [doc, exam?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+  const examRemaining = exam?.status === 'running' ? remainingSeconds(exam.startedAt, exam.settings.duration, exam.offset, examNow) : null;
+  const handInExam = async () => {
+    setExam((x) => ({ ...x, submitting: true, error: null }));
+    try {
+      const at = await submitExam(exam.id, exam.client, doc);
+      saveExamSession(exam.id, { ...examSession(exam.id), doc, submittedAt: at });
+      setExam((x) => ({ ...x, status: 'submitted', submittedAt: at, submitting: false }));
+    } catch (err) {
+      setExam((x) => ({ ...x, submitting: false, error: err.message }));
+    }
+  };
+  useEffect(() => {
+    if (examRemaining === 0 && exam?.status === 'running' && !exam.submitting && !exam.autoSent) {
+      setExam((x) => ({ ...x, autoSent: true }));
+      handInExam();
+    }
+  }, [examRemaining]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Prof : sujet = schéma actuel (avec son TP), liens gardés dans ce navigateur
+  const createExamFromTp = async (settings) => {
+    const created = await createExam(settings.title, doc, settings);
+    rememberExam({ id: created.id, token: created.token, title: settings.title, at: new Date().toISOString() });
+    return created;
+  };
+  const openExamAdmin = (id, token) => {
+    setWelcome(false);
+    setLocation(`?exam=${id}#admin=${token ?? 'compte'}`);
+    setExam({ id, token: token ?? 'compte', role: 'admin', status: 'dashboard' });
   };
 
   // --- Compte ----------------------------------------------------------------------
@@ -262,13 +342,13 @@ function Editor() {
 
   // Sauvegarde automatique : brouillon local, sauf pendant qu'un schéma partagé est ouvert
   useEffect(() => {
-    if (shared) return;
+    if (shared || exam) return; // schéma partagé ou épreuve : le brouillon local n'est pas touché
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(doc));
     } catch {
       /* stockage indisponible : on ignore */
     }
-  }, [doc, shared]);
+  }, [doc, shared, exam]);
 
   // Ouverture d'un lien ?d=…
   useEffect(() => {
@@ -812,7 +892,7 @@ function Editor() {
                   aria-label="Remettre le temps à zéro (vide les baux et la table NAT)" title="Remettre à zéro : temps, baux DHCP, table NAT"
                   onClick={() => setRuntime({ ...EMPTY_RUNTIME })}>↺</button>
               </div>
-              {!readOnly && (<>
+              {!readOnly && !exam && (<>
               <details className="demo-menu" ref={fileMenu}>
                 <summary className="button ghost">Fichier</summary>
                 <div className="demo-list" role="menu">
@@ -829,12 +909,12 @@ function Editor() {
               </div>
               </>)}
               <button type="button" className="ghost icon" onClick={() => helpDialog.current?.showModal()} aria-label="Raccourcis clavier" title="Raccourcis clavier (?)">?</button>
-              {accountsEnabled && !shared?.embed && (
+              {accountsEnabled && !shared?.embed && !exam && (
                 <button type="button" className="ghost" onClick={() => openAccount()} title={user ? user.email : 'Compte NetCanvas'}>
                   {user ? 'Mon compte' : 'Se connecter'}
                 </button>
               )}
-              {shareEnabled && !readOnly && (
+              {shareEnabled && !readOnly && !exam && (
                 <button type="button" className="ghost" onClick={share} disabled={shared?.status === 'saving' && !shared.id}>
                   {editable ? 'Partagé' : 'Partager'}
                 </button>
@@ -844,6 +924,17 @@ function Editor() {
           </header>
           <div className="notices">
           {error && <p className="error" role="alert">{error}</p>}
+          {exam?.role === 'student' && (exam.status === 'running' || exam.status === 'submitted') && (
+            <ExamBanner exam={exam} remaining={examRemaining} submitted={exam.submittedAt} submitting={exam.submitting} error={exam.error} onSubmit={handInExam} />
+          )}
+          {exam?.status === 'error' && <p className="error" role="alert">Examen : {exam.message}</p>}
+          {exam?.status === 'copy' && (
+            <div className="exam-banner" role="status">
+              <strong>Copie de {exam.copy.student}</strong>
+              <span>{exam.copy.note === null ? 'non rendue' : `${String(exam.copy.note).replace('.', ',')}/20 (${exam.copy.score}/${exam.copy.total} objectifs)`}</span>
+              <button type="button" className="small-btn" onClick={() => setExam((x) => ({ ...x, status: 'dashboard' }))}>Retour au suivi</button>
+            </div>
+          )}
           {update && <UpdateBanner update={update} onClose={() => setUpdate(null)} />}
           {shared && !shared.embed && (
             <div className={`share-banner${readOnly ? ' ro' : ''}`} role="status">
@@ -1011,7 +1102,9 @@ function Editor() {
               )}
               {tab === 'tp' && (
                 <ExercisePanel exercise={exercise} results={tpResults} devices={live.devices} doc={live} readOnly={readOnly}
-                  onChange={setExercise} onLocate={selectNode} />
+                  onChange={setExercise} onLocate={selectNode}
+                  examRules={exam?.role === 'student' ? exam.settings : null}
+                  onCreateExam={shareEnabled && !exam ? createExamFromTp : null} />
               )}
               {tab === 'tables' && (
                 <TablesPanel device={selected ? live.devices.find((d) => d.id === selected.id) : null} doc={live} routing={routing}
@@ -1099,11 +1192,23 @@ function Editor() {
           {accountsEnabled && (
             <dialog ref={accountDialog} className="help-dialog account-dialog" aria-label="Compte NetCanvas" onClose={() => setAccountMode(null)}>
               <h2>Compte NetCanvas</h2>
-              <AccountDialog key={accountOpen} user={user} mode={accountMode} current={shared?.id} onOpen={openOnline} onRenameCurrent={setName} onClose={() => accountDialog.current?.close()} />
+              <AccountDialog key={accountOpen} user={user} mode={accountMode} current={shared?.id} onOpen={openOnline} onRenameCurrent={setName} onOpenExam={openExamAdmin} onClose={() => accountDialog.current?.close()} />
               <form method="dialog"><button type="submit" className="ghost">Fermer</button></form>
             </dialog>
           )}
-          {welcome && (
+          {exam?.role === 'student' && exam.status === 'start' && (
+            <ExamStart exam={exam} error={exam.error} onStart={(name) => beginExam(exam, name, examSession(exam.id)).catch((err) => setExam((x) => ({ ...x, error: err.message })))} />
+          )}
+          {exam?.role === 'admin' && exam.status === 'dashboard' && (
+            <ExamDashboard id={exam.id} token={exam.token}
+              onClose={() => { setLocation(''); setExam(null); replaceDoc(loadDoc(EMPTY_DOC)); setWelcome(true); }}
+              onOpenCopy={(g, template) => {
+                replaceDoc(loadDoc({ ...g.doc, exercise: template.exercise }));
+                setExam((x) => ({ ...x, status: 'copy', copy: { student: g.student, note: g.note, score: g.score, total: g.total } }));
+                setTab('tp');
+              }} />
+          )}
+          {welcome && !exam && (
             <Welcome version={VERSION} recents={recents}
               draft={draft?.nodes.length && !file && !(desktop && nodes.length) ? { name: draft.name ?? 'Mon réseau', count: draft.nodes.length, recover: Boolean(desktop) } : null}
               onNew={newProject} onOpen={openProject} onRecent={(r) => openPath(r.path)}

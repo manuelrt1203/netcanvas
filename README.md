@@ -190,6 +190,14 @@ Indices progressifs pour l'élève : 1. l'objectif n'est pas atteint ; 2. l'équ
 
 Parcours : l'enseignant règle le réseau qui marche, ajoute les objectifs (tous verts), introduit les pannes et partage le lien de lecture. L'élève clique « Dupliquer pour modifier » et répare dans son brouillon. Deux TP sont fournis dans le menu Démos (inter-VLAN, OSPF), avec trois pannes chacun.
 
+
+### Mode examen
+
+- **Prof** : dans l'onglet TP, « Créer un examen chronométré » : titre, durée (1 à 600 min), indices autorisés ou non, progression visible ou non. Le schéma actuel (avec ses pannes) devient le sujet, figé. Deux liens : étudiants (`?exam=…`) et suivi (`#admin=…`, gardé dans le navigateur et dans le compte).
+- **Étudiant** : nom, puis l'épreuve démarre ; le chrono part de l'heure du **serveur** (recharger la page ou avoir l'horloge du poste fausse ne change rien). Pas de menu Fichier ni de partage pendant l'épreuve ; la copie est gardée sur le poste. « Rendre ma copie », ou remise automatique à la fin du temps ; la copie est ensuite verrouillée.
+- **Suivi** : tableau des copies (note /20, objectifs atteints, durée, heure de remise, retard au-delà d'1 min de tolérance), moyenne, ouverture d'une copie, export CSV (tableur, séparateur `;`), clôture (plus aucune remise ni nouveau départ). Actualisé toutes les 15 s.
+- **Notes infalsifiables** : recalculées chez le prof à partir des schémas rendus et des objectifs **du sujet** (une copie qui modifierait ses objectifs n'y gagne rien). Base : tables `exams` et `exam_submissions`, accessibles seulement par des fonctions (départ et remise horodatés par le serveur, une seule remise par poste).
+- Test : `npm run test:exam` (navigateur, vrai Supabase, environ 2 minutes).
 ## Spanning Tree (`src/net/stp.js`)
 
 PVST+, comme les switches Cisco par défaut : un arbre par VLAN. Le calcul échange des BPDU jusqu'à convergence :
