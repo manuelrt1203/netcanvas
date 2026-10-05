@@ -9,6 +9,8 @@
 //             lance dnsmasq (installé par apk au démarrage s'il manque : il faut Internet au déploiement) avec ses
 //             enregistrements A/AAAA ; un nom inconnu donne NXDOMAIN, sauf relais vers le serveur DNS du routeur.
 //             Les clients reçoivent leur serveur DNS dans /etc/resolv.conf.
+//   web     : un serveur avec le service web lance busybox httpd (port 80) avec sa page (titre, contenu) ;
+//             httpd vient de busybox-extras (apk) s'il manque.
 //   IPv6    : adresses globales et link-local de NetCanvas (nodad : utilisables tout de suite), routes IPv6
 //             calculées ; un hôte SLAAC reçoit en statique l'adresse et la passerelle que NetCanvas a calculées.
 // Containerlab réserve eth0 au management : le 1er câble d'un équipement est eth1, le 2e eth2…
@@ -118,9 +120,25 @@ export function clabCommands(rawDoc) {
         cmds.push(`ip route replace default via ${rows[0].gateway}`);
       }
     }
-    commands.set(d.id, [...cmds, ...v6Cmds(d, rows), ...dnsCmds(d)]);
+    commands.set(d.id, [...cmds, ...v6Cmds(d, rows), ...dnsCmds(d), ...webCmds(d)]);
   }
   return commands;
+
+  // Web : page de NetCanvas servie par busybox httpd (page encodée en base64 : aucun souci de guillemets)
+  function webCmds(d) {
+    const http = d.config?.services?.http;
+    if (!http?.enabled) return [];
+    const esc = (t) => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const page = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(http.title || 'Page sans titre')}</title></head><body>${esc(http.body)}</body></html>\n`;
+    const b64 = typeof Buffer !== 'undefined' ? Buffer.from(page, 'utf8').toString('base64') : btoa(unescape(encodeURIComponent(page)));
+    const dir = `/tmp/netcanvas-www-${d.id.replace(/[^\w-]/g, '_')}`;
+    return [
+      `sh -c "mkdir -p ${dir} && echo ${b64} | base64 -d > ${dir}/index.html"`,
+      // httpd absent (Alpine : busybox sans httpd) : on installe busybox-extras
+      'sh -c "if ! command -v httpd >/dev/null && ! busybox --list 2>/dev/null | grep -qx httpd; then apk add --no-cache -q busybox-extras; fi"',
+      `sh -c "if command -v httpd >/dev/null; then httpd -p 80 -h ${dir}; else busybox httpd -p 80 -h ${dir}; fi"`,
+    ];
+  }
 
   // DNS : serveur dnsmasq et/ou /etc/resolv.conf du client
   function dnsCmds(d) {

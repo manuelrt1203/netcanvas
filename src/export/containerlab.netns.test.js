@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveName } from '../net/services.js';
+import { httpGet, resolveName } from '../net/services.js';
 import { BGP_DEMO, DEMO, DHCP_DEMO, IPV6_DEMO, OSPF6_DEMO, SERVICES_DEMO, L3_DEMO, NAT_DEMO, OSPF_DEMO, ROAS_DEMO, STP_DEMO } from '../examples.js';
 import { buildTopology } from '../net/topology.js';
 import { isRouting, v6Forwarding } from '../net/topology.js';
@@ -318,4 +318,28 @@ test('containerlab : DNS réel (dnsmasq) : noms connus, nom inconnu, relais du r
   const blocked = structuredClone(SERVICES_DEMO);
   blocked.devices.find((d) => d.id === 'r2').config.acls[110].rules.splice(0, 1);
   assertDnsMatches(blocked, [['pc3', 'www.entreprise.lan', null], ['pc1', 'www.entreprise.lan', '172.16.0.10']]);
+});
+
+// Page web réelle (curl) comparée à la simulation (httpGet) : même verdict, même titre
+function assertWebMatches(doc, queries) {
+  const probes = queries.map(([src, ip], k) => [`w${k}`, src, `sh -c "curl -s -m 2 http://${ip}/ | sed -n 's:.*<title>\\(.*\\)</title>.*:\\1:p' || true"`]);
+  const real = runLab(doc, [], { probes });
+  queries.forEach(([src, ip, expected], k) => {
+    const sim = httpGet(doc, src, ip);
+    assert.equal(sim.ok ? sim.page.title : null, expected, `simulateur ${src} → http://${ip}`);
+    assert.equal(String(real[`w${k}`] ?? '').trim() || null, expected, `réseau Linux ${src} → http://${ip}`);
+  });
+}
+
+test('containerlab : serveur web réel (busybox httpd) : page, ACL par port, service arrêté', { skip: skipDns }, () => {
+  assertWebMatches(structuredClone(SERVICES_DEMO), [
+    ['pc1', '172.16.0.10', "Intranet de l'entreprise"],
+    ['pc3', '172.16.0.10', "Intranet de l'entreprise"], // VLAN 20 : l'ACL laisse passer TCP 80
+  ]);
+  const noWeb = structuredClone(SERVICES_DEMO);
+  noWeb.devices.find((d) => d.id === 'r2').config.acls[110].rules.splice(1, 1); // plus de « permit tcp … eq www »
+  assertWebMatches(noWeb, [['pc3', '172.16.0.10', null], ['pc1', '172.16.0.10', "Intranet de l'entreprise"]]);
+  const off = structuredClone(SERVICES_DEMO);
+  off.devices.find((d) => d.id === 'srv').config.services.http.enabled = false;
+  assertWebMatches(off, [['pc1', '172.16.0.10', null]]);
 });
