@@ -1,7 +1,7 @@
 {
   "name": "netcanvas",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,7 +14,8 @@
     "desktop": "vite build && electron .",
     "dist": "vite build && electron-builder --publish never",
     "release": "vite build && electron-builder --publish always",
-    "test:desktop": "node e2e/desktop.e2e.mjs"
+    "test:desktop": "node e2e/desktop.e2e.mjs",
+    "test:account": "node e2e/account.e2e.mjs"
   },
   "dependencies": {
     "@xyflow/react": "^12.12.0",

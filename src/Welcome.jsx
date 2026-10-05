@@ -1,7 +1,7 @@
 // Écran d'accueil : nouveau projet, ouvrir un fichier, reprendre le brouillon ou un fichier récent, exemples.
 import { DEMOS } from './examples.js';
 
-export default function Welcome({ version, draft, recents = [], onNew, onOpen, onResume, onRecent, onExample, onClose, notice = null }) {
+export default function Welcome({ version, draft, recents = [], onNew, onOpen, onResume, onRecent, onExample, onClose, notice = null, user, onAccount }) {
   const groups = [['Exemples', DEMOS.filter((d) => d.kind !== 'tp')], ['TP (exercices corrigés en direct)', DEMOS.filter((d) => d.kind === 'tp')]];
   return (
     <div className="welcome" role="dialog" aria-modal="true" aria-labelledby="welcome-title">
@@ -22,6 +22,9 @@ export default function Welcome({ version, draft, recents = [], onNew, onOpen, o
         <div className="welcome-actions">
           <button type="button" onClick={onNew}>Nouveau projet</button>
           <button type="button" className="ghost" onClick={onOpen}>Ouvrir un fichier…</button>
+          {user !== undefined && (
+            <button type="button" className="ghost" onClick={onAccount}>{user ? 'Mes schémas en ligne' : 'Se connecter'}</button>
+          )}
           {draft && (
             <button type="button" className="ghost" onClick={onResume}>
               {draft.recover ? 'Récupérer le brouillon non enregistré' : 'Reprendre'} « {draft.name} » ({draft.count} équipement{draft.count > 1 ? 's' : ''})

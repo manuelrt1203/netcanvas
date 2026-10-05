@@ -288,6 +288,13 @@ Un schéma partagé ouvert n'écrase jamais le brouillon local (« Retour à mon
 npm run test:share   # contre la vraie base (npm run dev lancé) : création, enregistrement, lecture seule verrouillée, édition, lien inconnu
 ```
 
+
+### Comptes et historique
+
+- **Compte** (facultatif, e-mail + mot de passe, Supabase Auth) : « Se connecter » dans la barre ou l'accueil. Un schéma partagé par quelqu'un de connecté lui appartient : il le retrouve dans **Mes schémas** sur n'importe quel appareil (ouvrir, renommer, supprimer) et le modifie sans lien d'édition. Les schémas partagés avant, depuis ce navigateur, peuvent être rattachés au compte.
+- **Historique des versions** (fenêtre « Liens et historique », éditeurs seulement) : avant une modification enregistrée en ligne, l'ancienne version est archivée (au plus une toutes les 10 minutes) ; on peut aussi créer une version nommée (« avant le TP 2 ») et restaurer n'importe laquelle (l'état actuel est archivé avant). 50 versions gardées par schéma.
+- Base : `diagrams.owner`, table `diagram_versions` ; tout passe par des fonctions (RLS sans accès direct) qui vérifient le jeton d'édition ou le propriétaire connecté (`auth.uid()`).
+- Test : `npm run test:account` (nécessite `npm run dev` et un compte confirmé dans `NETCANVAS_TEST_EMAIL` / `NETCANVAS_TEST_PASSWORD`).
 ## Exports (onglet « Export »)
 
 | Format | Contenu |

@@ -517,3 +517,13 @@ button.linklike { background: none; border: 0; padding: 0; min-height: 0; color:
 button.link { background: none; border: 0; padding: 0; color: var(--primary); font: inherit; cursor: pointer; text-decoration: underline; }
 
 .update-banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 16px; background: color-mix(in srgb, var(--primary) 12%, var(--surface)); border-bottom: 1px solid var(--border); }
+
+/* Compte et historique */
+.account-dialog { width: min(640px, calc(100vw - 32px)); }
+.account-form { display: grid; gap: 8px; }
+.account-form h3, .account h3, .versions h3 { margin: 8px 0 4px; font-size: .95rem; }
+.account-switch { margin: 0; font-size: .9rem; }
+.my-diagrams, .version-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.my-diagrams li, .version-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
+.danger-text { color: var(--danger); }
+.versions { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 8px; }

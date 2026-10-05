@@ -1,3 +1,4 @@
+import { accessToken } from './account.js';
 // Partage par lien, sans compte (Supabase) :
 //   lecture : https://…/?d=<id>          édition : https://…/?d=<id>#edit=<jeton>
 // Le jeton d'édition reste dans le fragment (#) : il n'est jamais envoyé au serveur web ni journalisé.
@@ -8,10 +9,12 @@ const MINE_KEY = 'netcanvas:shares';
 
 export const shareEnabled = Boolean(API && KEY);
 
+// Connecté : les fonctions savent qui appelle (propriétaire des schémas, « Mes schémas »)
 async function rpc(fn, body) {
+  const token = await accessToken();
   const res = await fetch(`${API}/rest/v1/rpc/${fn}`, {
     method: 'POST',
-    headers: { apikey: KEY, 'Content-Type': 'application/json' },
+    headers: { apikey: KEY, 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => null);
@@ -30,6 +33,23 @@ export async function loadShared(id) {
 }
 
 export const saveShared = (id, token, doc) => rpc('update_diagram', { p_id: id, p_token: token, p_doc: doc, p_name: doc.name });
+
+// Rôle sur un schéma ouvert par son lien : owner | editor | viewer
+export const sharedAccess = (id, token) => rpc('diagram_access', { p_id: id, p_token: token });
+
+// Historique des versions (éditeurs) : archivées automatiquement (au plus une toutes les 10 min) ou à la main
+export const listVersions = (id, token) => rpc('list_versions', { p_id: id, p_token: token });
+export async function loadVersion(id, token, version) {
+  const [row] = await rpc('get_version', { p_id: id, p_token: token, p_version: version });
+  return row ?? null;
+}
+export const snapshotShared = (id, token, label) => rpc('snapshot_diagram', { p_id: id, p_token: token, p_label: label });
+
+// « Mes schémas » (compte)
+export const myDiagrams = () => rpc('my_diagrams', {});
+export const claimShared = (id, token) => rpc('claim_diagram', { p_id: id, p_token: token });
+export const deleteShared = (id) => rpc('delete_diagram', { p_id: id });
+export const renameShared = (id, token, name) => rpc('rename_diagram', { p_id: id, p_token: token, p_name: name });
 
 // Lien de lecture et lien d'édition
 // Application de bureau (file://) : les liens pointent vers le site public

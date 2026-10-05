@@ -36,7 +36,10 @@ import TablesPanel from './TablesPanel.jsx';
 import ConfigImport from './ConfigImport.jsx';
 import ExercisePanel from './ExercisePanel.jsx';
 import { evaluateExercise } from './net/exercise.js';
-import { createShared, loadShared, myShares, parseShareLocation, rememberShare, saveShared, shareEnabled, shareLinks } from './share.js';
+import { claimShared, createShared, loadShared, myShares, parseShareLocation, rememberShare, saveShared, shareEnabled, shareLinks, sharedAccess } from './share.js';
+import { accountsEnabled, currentUser, handleAuthRedirect, onUserChange } from './account.js';
+import AccountDialog from './AccountDialog.jsx';
+import VersionsPanel from './VersionsPanel.jsx';
 import { CABLES, MODELS, TYPES } from './net/catalog.js';
 import { pickPorts } from './net/cabling.js';
 import { EMPTY_SIM, LinkContext, SimContext } from './SimContext.js';
@@ -178,12 +181,39 @@ function Editor() {
   const errorCount = issues.filter((i) => i.level === 'error').length;
 
   // --- Partage par lien ----------------------------------------------------------
-  // shared : { id, token (édition) | null (lecture seule), embed, status: loading|saved|saving|error, savedAt, message }
+  // shared : { id, token (lien d'édition) | null, owner (propriétaire connecté), embed, status: loading|saved|saving|error, savedAt, message }
   const [shared, setShared] = useState(() => {
     const loc = parseShareLocation();
     return loc ? { ...loc, status: 'loading' } : null;
   });
-  const readOnly = Boolean(shared && !shared.token);
+  // Modifiable : lien d'édition, ou schéma de mon compte
+  const editable = Boolean(shared?.token || shared?.owner);
+  const readOnly = Boolean(shared && !editable);
+  const setLocation = (query) => {
+    // Application de bureau (file://) : l'adresse ne sert pas, on n'y touche pas
+    if (!desktop) window.history.replaceState(null, '', `${window.location.pathname}${query}`);
+  };
+
+  // --- Compte ----------------------------------------------------------------------
+  const [user, setUser] = useState(currentUser);
+  const [accountMode, setAccountMode] = useState(null); // null | login | new-password
+  const [accountOpen, setAccountOpen] = useState(0); // à chaque ouverture : « Mes schémas » rechargé
+  const accountDialog = useRef(null);
+  useEffect(() => onUserChange(setUser), []);
+  // Retour d'un e-mail (confirmation du compte, mot de passe oublié)
+  useEffect(() => {
+    handleAuthRedirect().then((type) => {
+      if (!type) return;
+      setAccountMode(type === 'recovery' ? 'new-password' : null);
+      setWelcome(false);
+      accountDialog.current?.showModal();
+    });
+  }, []);
+  const openAccount = (mode = null) => {
+    setAccountMode(mode);
+    setAccountOpen((n) => n + 1);
+    accountDialog.current?.showModal();
+  };
   const lastSaved = useRef(null); // dernier document enregistré en ligne
   const shareDialog = useRef(null);
 
@@ -207,18 +237,24 @@ function Editor() {
         lastSaved.current = null; // fixé au premier rendu du document chargé
         setShared((s) => ({ ...s, status: 'saved', savedAt: row.updatedAt }));
         if (shared.token) rememberShare({ id: shared.id, token: shared.token, name: row.name, at: row.updatedAt });
+        // Connecté : est-ce un de mes schémas ? (modifiable sans lien d'édition)
+        if (currentUser()) {
+          sharedAccess(shared.id, shared.token).then((role) => {
+            if (role === 'owner') setShared((s) => (s?.id === shared.id ? { ...s, owner: true } : s));
+          }).catch(() => {});
+        }
       })
       .catch((err) => {
         setError(`Partage : ${err.message}`);
         setShared(null);
-        window.history.replaceState(null, '', '/');
+        setLocation('');
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shared?.status]);
 
   // Lien d'édition : enregistrement en ligne une seconde après la dernière modification
   useEffect(() => {
-    if (!shared?.token || shared.status === 'loading') return undefined;
+    if (!editable || shared.status === 'loading') return undefined;
     const snap = JSON.stringify(doc);
     if (lastSaved.current === null) {
       lastSaved.current = snap;
@@ -231,25 +267,25 @@ function Editor() {
         .then((at) => {
           lastSaved.current = snap;
           setShared((s) => ({ ...s, status: 'saved', savedAt: at, message: null }));
-          rememberShare({ id: shared.id, token: shared.token, name: doc.name, at });
+          if (shared.token) rememberShare({ id: shared.id, token: shared.token, name: doc.name, at });
         })
         .catch((err) => setShared((s) => ({ ...s, status: 'error', message: err.message })));
     }, 1000);
     return () => clearTimeout(t);
-  }, [doc, shared?.token, shared?.status === 'loading']);
+  }, [doc, editable, shared?.status === 'loading']);
 
   const share = async () => {
-    if (shared?.token) {
+    if (editable) {
       shareDialog.current?.showModal();
       return;
     }
     try {
       setShared({ id: null, token: null, status: 'saving' });
       const { id, token } = await createShared(doc);
-      window.history.replaceState(null, '', `/?d=${id}#edit=${token}`);
+      setLocation(`?d=${id}#edit=${token}`);
       lastSaved.current = JSON.stringify(doc);
       const at = new Date().toISOString();
-      setShared({ id, token, embed: false, status: 'saved', savedAt: at });
+      setShared({ id, token, owner: Boolean(currentUser()), embed: false, status: 'saved', savedAt: at });
       rememberShare({ id, token, name: doc.name, at });
       shareDialog.current?.showModal();
     } catch (err) {
@@ -262,7 +298,7 @@ function Editor() {
   // restore : recharger le brouillon (sinon l'appelant charge autre chose)
   const leaveShared = (keep, restore = true) => {
     if (keep && draft?.nodes.length && !confirm('Remplacer ton brouillon local par ce schéma ?')) return;
-    window.history.replaceState(null, '', window.location.pathname);
+    setLocation('');
     setShared(null);
     if (!keep && restore) {
       const local = loadDraft();
@@ -654,6 +690,14 @@ function Editor() {
       return false;
     }
   };
+  // Schéma de mon compte (« Mes schémas ») : chargé en ligne, modifiable, enregistré automatiquement
+  const openOnline = (id) => {
+    if (!discardOk()) return;
+    setWelcome(false);
+    setFile(null);
+    setLocation(`?d=${id}`);
+    setShared({ id, token: null, owner: false, embed: false, status: 'loading' });
+  };
   const openExample = (demo) => {
     closeMenu();
     if (!discardOk()) return;
@@ -742,9 +786,14 @@ function Editor() {
               </div>
               </>)}
               <button type="button" className="ghost icon" onClick={() => helpDialog.current?.showModal()} aria-label="Raccourcis clavier" title="Raccourcis clavier (?)">?</button>
+              {accountsEnabled && !shared?.embed && (
+                <button type="button" className="ghost" onClick={() => openAccount()} title={user ? user.email : 'Compte NetCanvas'}>
+                  {user ? 'Mon compte' : 'Se connecter'}
+                </button>
+              )}
               {shareEnabled && !readOnly && (
                 <button type="button" className="ghost" onClick={share} disabled={shared?.status === 'saving' && !shared.id}>
-                  {shared?.token ? 'Partagé' : 'Partager'}
+                  {editable ? 'Partagé' : 'Partager'}
                 </button>
               )}
               <button type="button" onClick={() => setTab('export')}>Exporter</button>
@@ -759,12 +808,12 @@ function Editor() {
                 : readOnly ? <>Schéma partagé en <strong>lecture seule</strong> : tu peux le parcourir et simuler des pings.</>
                   : shared.status === 'error' ? <span className="field-error">Enregistrement en ligne impossible : {shared.message}</span>
                     : shared.status === 'saving' ? 'Enregistrement en ligne…'
-                      : <>Schéma partagé, enregistré en ligne{shared.savedAt ? ` à ${new Date(shared.savedAt).toLocaleTimeString('fr-FR')}` : ''}.</>}
+                      : <>{shared.owner ? 'Schéma de ton compte' : 'Schéma partagé'}, enregistré en ligne{shared.savedAt ? ` à ${new Date(shared.savedAt).toLocaleTimeString('fr-FR')}` : ''}.</>}
               <span className="share-actions">
                 {readOnly ? (
                   <button type="button" className="ghost small-btn" onClick={() => leaveShared(true)}>Dupliquer pour modifier</button>
-                ) : shared.token && (
-                  <button type="button" className="ghost small-btn" onClick={() => shareDialog.current?.showModal()}>Liens</button>
+                ) : (
+                  <button type="button" className="ghost small-btn" onClick={() => shareDialog.current?.showModal()}>Liens et historique</button>
                 )}
                 {shared.status !== 'loading' && (
                   <button type="button" className="ghost small-btn" onClick={() => leaveShared(false)}>Retour à mon brouillon</button>
@@ -944,11 +993,13 @@ function Editor() {
           </aside>
           <dialog ref={shareDialog} className="help-dialog share-dialog" aria-labelledby="share-title">
             <h2 id="share-title">Partager ce schéma</h2>
-            {shared?.id && shared.token && (() => {
+            {shared?.id && editable && (() => {
               const links = shareLinks(shared.id, shared.token);
+              const rows = [['Lecture seule (élèves, collègues)', links.view], ...(links.edit ? [['Édition (garde-le pour toi)', links.edit]] : []),
+                ['Intégration (iframe, Moodle, Notion)', `<iframe src="${links.embed}" width="100%" height="600"></iframe>`]];
               return (
                 <>
-                  {[['Lecture seule (élèves, collègues)', links.view], ['Édition (garde-le pour toi)', links.edit], ['Intégration (iframe, Moodle, Notion)', `<iframe src="${links.embed}" width="100%" height="600"></iframe>`]].map(([label, url]) => (
+                  {rows.map(([label, url]) => (
                     <div className="field" key={label}>
                       <label>{label}</label>
                       <div className="copy-row">
@@ -957,7 +1008,18 @@ function Editor() {
                       </div>
                     </div>
                   ))}
-                  <p className="hint">Le lien d'édition contient une clé secrète : toute personne qui l'a peut modifier le schéma. Il est aussi gardé dans ce navigateur, dans « Mes partages ».</p>
+                  {links.edit && <p className="hint">Le lien d'édition contient une clé secrète : toute personne qui l'a peut modifier le schéma. Il est aussi gardé dans ce navigateur, dans « Mes partages ».</p>}
+                  {shared.owner ? <p className="hint">Ce schéma est dans ton compte : tu le modifies depuis « Mon compte », sur n'importe quel appareil.</p>
+                    : user ? (
+                      <p className="hint">
+                        <button type="button" className="link" onClick={() => claimShared(shared.id, shared.token).then(() => setShared((x) => ({ ...x, owner: true }))).catch((e) => setError(e.message))}>
+                          Ajouter à « Mes schémas »
+                        </button> pour le retrouver depuis ton compte.
+                      </p>
+                    ) : accountsEnabled && (
+                      <p className="hint"><button type="button" className="link" onClick={() => openAccount('login')}>Connecte-toi</button> pour garder tes schémas dans ton compte.</p>
+                    )}
+                  <VersionsPanel id={shared.id} token={shared.token} onRestore={(restored) => replaceDoc(loadDoc(restored))} />
                 </>
               );
             })()}
@@ -989,6 +1051,13 @@ function Editor() {
             <p className="hint">Dans le terminal, Ctrl+Z sort du mode configuration (IOS).</p>
             <form method="dialog"><button type="submit">Fermer</button></form>
           </dialog>
+          {accountsEnabled && (
+            <dialog ref={accountDialog} className="help-dialog account-dialog" aria-label="Compte NetCanvas" onClose={() => setAccountMode(null)}>
+              <h2>Compte NetCanvas</h2>
+              <AccountDialog key={accountOpen} user={user} mode={accountMode} current={shared?.id} onOpen={openOnline} onRenameCurrent={setName} onClose={() => accountDialog.current?.close()} />
+              <form method="dialog"><button type="submit" className="ghost">Fermer</button></form>
+            </dialog>
+          )}
           {welcome && (
             <Welcome version={VERSION} recents={recents}
               draft={draft?.nodes.length && !file && !(desktop && nodes.length) ? { name: draft.name ?? 'Mon réseau', count: draft.nodes.length, recover: Boolean(desktop) } : null}
@@ -999,6 +1068,7 @@ function Editor() {
                 setWelcome(false);
               }}
               onExample={openExample} onClose={() => setWelcome(false)}
+              user={accountsEnabled ? user : undefined} onAccount={() => openAccount(user ? null : 'login')}
               notice={update && <UpdateBanner update={update} onClose={() => setUpdate(null)} />} />
           )}
         </div>
