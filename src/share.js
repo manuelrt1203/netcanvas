@@ -27,10 +27,14 @@ export async function createShared(doc) {
   return { id: row.diagram_id, token: row.edit_token };
 }
 
-export async function loadShared(id) {
-  const [row] = await rpc('get_diagram', { p_id: id });
-  return row ? { name: row.name, doc: row.doc, updatedAt: row.updated_at } : null;
+// Avec le lien d'édition : accessible même si le lien de lecture a expiré (expiresAt renvoyé)
+export async function loadShared(id, token = null) {
+  const [row] = token ? await rpc('get_diagram_as_editor', { p_id: id, p_token: token }) : await rpc('get_diagram', { p_id: id });
+  return row ? { name: row.name, doc: row.doc, updatedAt: row.updated_at, expiresAt: row.expires_at ?? null } : null;
 }
+
+// Expiration du lien de lecture (date ISO, ou null : jamais)
+export const setShareExpiry = (id, token, expires) => rpc('set_diagram_expiry', { p_id: id, p_token: token, p_expires: expires });
 
 export const saveShared = (id, token, doc) => rpc('update_diagram', { p_id: id, p_token: token, p_doc: doc, p_name: doc.name });
 

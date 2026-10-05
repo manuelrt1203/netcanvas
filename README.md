@@ -292,6 +292,7 @@ npm run test:share   # contre la vraie base (npm run dev lancé) : création, en
 ### Comptes et historique
 
 - **Compte** (facultatif, e-mail + mot de passe, Supabase Auth) : « Se connecter » dans la barre ou l'accueil. Un schéma partagé par quelqu'un de connecté lui appartient : il le retrouve dans **Mes schémas** sur n'importe quel appareil (ouvrir, renommer, supprimer) et le modifie sans lien d'édition. Les schémas partagés avant, depuis ce navigateur, peuvent être rattachés au compte.
+- **Expiration du lien de lecture** (fenêtre « Liens et historique ») : jamais, dans 1, 7 ou 30 jours, ou à une date. Après, les lecteurs ne voient plus le schéma ; le propriétaire et le lien d'édition gardent l'accès et peuvent prolonger.
 - **Historique des versions** (fenêtre « Liens et historique », éditeurs seulement) : avant une modification enregistrée en ligne, l'ancienne version est archivée (au plus une toutes les 10 minutes) ; on peut aussi créer une version nommée (« avant le TP 2 ») et restaurer n'importe laquelle (l'état actuel est archivé avant). 50 versions gardées par schéma.
 - Base : `diagrams.owner`, table `diagram_versions` ; tout passe par des fonctions (RLS sans accès direct) qui vérifient le jeton d'édition ou le propriétaire connecté (`auth.uid()`).
 - Test : `npm run test:account` (nécessite `npm run dev` et un compte confirmé dans `NETCANVAS_TEST_EMAIL` / `NETCANVAS_TEST_PASSWORD`).
@@ -351,4 +352,3 @@ npm run test:desktop   # application de bureau (Electron, après npm run build ;
 ## Prochaines étapes
 
 1. Simulation : DHCPv6 sur MikroTik et relais DHCPv6 ; DNS dans l'export Containerlab.
-2. Partage : historique des versions, expiration des liens, comptes utilisateurs (« Mes schémas »).

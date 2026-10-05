@@ -104,6 +104,9 @@ function MyDiagrams({ onOpen, current, onRenameCurrent }) {
             <div>
               <strong>{d.name}</strong>{d.diagram_id === current ? <span className="badge-on">ouvert</span> : null}
               <span className="muted"> · {d.devices} équipement{d.devices > 1 ? 's' : ''} · modifié le {new Date(d.updated_at).toLocaleString('fr-FR')}</span>
+              {d.expires_at && (new Date(d.expires_at) <= new Date()
+                ? <span className="field-error"> · lien de lecture expiré</span>
+                : <span className="muted"> · lien de lecture jusqu'au {new Date(d.expires_at).toLocaleDateString('fr-FR')}</span>)}
             </div>
             <div className="row">
               <button type="button" className="small-btn" onClick={() => onOpen(d.diagram_id)}>Ouvrir</button>

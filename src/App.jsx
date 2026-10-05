@@ -36,7 +36,7 @@ import TablesPanel from './TablesPanel.jsx';
 import ConfigImport from './ConfigImport.jsx';
 import ExercisePanel from './ExercisePanel.jsx';
 import { evaluateExercise } from './net/exercise.js';
-import { claimShared, createShared, loadShared, myShares, parseShareLocation, rememberShare, saveShared, shareEnabled, shareLinks, sharedAccess } from './share.js';
+import { claimShared, createShared, loadShared, setShareExpiry, myShares, parseShareLocation, rememberShare, saveShared, shareEnabled, shareLinks, sharedAccess } from './share.js';
 import { accountsEnabled, currentUser, handleAuthRedirect, onUserChange } from './account.js';
 import AccountDialog from './AccountDialog.jsx';
 import VersionsPanel from './VersionsPanel.jsx';
@@ -89,6 +89,49 @@ const configSig = (doc) => JSON.stringify([doc.devices.map(({ position, ...d }) 
 const fileSig = (doc) => JSON.stringify([doc.name, doc.devices, doc.links, doc.exercise ?? null]);
 const VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '';
 const EMPTY_DOC = { format: 'netcanvas', version: 3, name: 'Nouveau réseau', devices: [], links: [] };
+
+// Expiration du lien de lecture : jamais, dans 1 / 7 / 30 jours, ou à une date ; les éditeurs gardent l'accès
+const EXPIRY_CHOICES = [['', 'Jamais'], ['1', 'Dans 1 jour'], ['7', 'Dans 7 jours'], ['30', 'Dans 30 jours'], ['date', 'À une date…']];
+function ExpiryField({ id, token, value, onChange }) {
+  const [mode, setMode] = useState(value ? 'date' : '');
+  const [err, setErr] = useState(null);
+  const apply = async (date) => {
+    setErr(null);
+    try {
+      await setShareExpiry(id, token, date ? date.toISOString() : null);
+      onChange(date ? date.toISOString() : null);
+    } catch (e) {
+      setErr(e.message);
+    }
+  };
+  const expired = value && new Date(value) <= new Date();
+  return (
+    <div className="field expiry">
+      <label htmlFor="share-expiry">Expiration du lien de lecture</label>
+      <div className="copy-row">
+        <select id="share-expiry" value={mode} onChange={(e) => {
+          const v = e.target.value;
+          setMode(v);
+          if (v === '') apply(null);
+          else if (v !== 'date') apply(new Date(Date.now() + Number(v) * 86400000));
+        }}>
+          {EXPIRY_CHOICES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+        </select>
+        {mode === 'date' && (
+          <input type="date" aria-label="Date d'expiration" min={new Date(Date.now() + 86400000).toISOString().slice(0, 10)}
+            defaultValue={value ? value.slice(0, 10) : ''}
+            onChange={(e) => e.target.value && apply(new Date(`${e.target.value}T23:59:59`))} />
+        )}
+      </div>
+      <p className={expired ? 'field-error' : 'hint'}>
+        {!value ? 'Le lien de lecture marche sans limite de durée.'
+          : expired ? `Lien de lecture expiré depuis le ${new Date(value).toLocaleString('fr-FR')} : les lecteurs ne voient plus le schéma.`
+            : `Le lien de lecture marche jusqu'au ${new Date(value).toLocaleString('fr-FR')}. Toi (et le lien d'édition), vous gardez l'accès.`}
+      </p>
+      {err && <p className="field-error">{err}</p>}
+    </div>
+  );
+}
 
 // Bannière de mise à jour (application de bureau) : en tête de l'éditeur et dans l'écran d'accueil
 function UpdateBanner({ update, onClose }) {
@@ -230,12 +273,12 @@ function Editor() {
   // Ouverture d'un lien ?d=…
   useEffect(() => {
     if (shared?.status !== 'loading') return;
-    loadShared(shared.id)
+    loadShared(shared.id, shared.token)
       .then((row) => {
-        if (!row) throw new Error('Ce lien de partage n\'existe pas (ou plus).');
+        if (!row) throw new Error('Ce lien n\'existe pas : le schéma a été supprimé, ou son lien de lecture a expiré.');
         replaceDoc(loadDoc(row.doc));
         lastSaved.current = null; // fixé au premier rendu du document chargé
-        setShared((s) => ({ ...s, status: 'saved', savedAt: row.updatedAt }));
+        setShared((s) => ({ ...s, status: 'saved', savedAt: row.updatedAt, expiresAt: row.expiresAt }));
         if (shared.token) rememberShare({ id: shared.id, token: shared.token, name: row.name, at: row.updatedAt });
         // Connecté : est-ce un de mes schémas ? (modifiable sans lien d'édition)
         if (currentUser()) {
@@ -1019,6 +1062,8 @@ function Editor() {
                     ) : accountsEnabled && (
                       <p className="hint"><button type="button" className="link" onClick={() => openAccount('login')}>Connecte-toi</button> pour garder tes schémas dans ton compte.</p>
                     )}
+                  <ExpiryField id={shared.id} token={shared.token} value={shared.expiresAt}
+                    onChange={(expiresAt) => setShared((x) => ({ ...x, expiresAt }))} />
                   <VersionsPanel id={shared.id} token={shared.token} onRestore={(restored) => replaceDoc(loadDoc(restored))} />
                 </>
               );

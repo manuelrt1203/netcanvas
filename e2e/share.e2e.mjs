@@ -26,7 +26,12 @@ assert.ok(edit.startsWith(`${view}#edit=`));
 const id = new URL(view).searchParams.get('d');
 console.log(`  identifiant : ${id}`);
 assert.match(page.url(), /\?d=[a-z0-9]{10}#edit=/, 'l\'adresse devient le lien d\'édition');
-await page.click('.share-dialog >> text=Fermer');
+step('expiration du lien de lecture : 7 jours, puis jamais');
+await page.selectOption('#share-expiry', '7');
+await page.locator('.share-dialog .expiry').getByText(/marche jusqu'au/).waitFor();
+await page.selectOption('#share-expiry', '');
+await page.locator('.share-dialog .expiry').getByText('sans limite de durée').waitFor();
+await page.click('.share-dialog >> role=button[name="Fermer"]');
 
 step('modification enregistrée en ligne');
 const before = await page.locator('.share-banner').textContent();
