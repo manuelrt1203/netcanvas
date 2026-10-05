@@ -8,6 +8,7 @@ import { LoopbacksForm, RoutingForm, SubInterfaces } from './RoutingForm.jsx';
 import { InterfaceSecurity, SecurityForm } from './SecurityForm.jsx';
 import { DhcpClientStatus, DhcpServerForm } from './DhcpForm.jsx';
 import { RouterDnsForm, ServicesForm } from './ServicesForm.jsx';
+import { HostIpv6Form, Ipv6IfaceFields, Ipv6RoutingForm } from './Ipv6Form.jsx';
 
 const otherEnd = (e, id) => (e.source === id ? e.target : e.source);
 // Côté DCE d'une liaison série : l'équipement source, sauf indication contraire
@@ -61,7 +62,7 @@ function IpCidrFields({ ip, mask, onChange, ipLabel = 'Adresse IP' }) {
   );
 }
 
-function HostForm({ node, update, live, labels }) {
+function HostForm({ node, update, live, labels, live6 }) {
   const d = node.data;
   const isClient = d.dhcp === true;
   return (
@@ -106,6 +107,7 @@ function HostForm({ node, update, live, labels }) {
           />
         </>
       )}
+      <HostIpv6Form node={node} update={update} v6={[...live6.values()][0]} />
       {node.type === 'server' && !isClient && <DhcpServerForm node={node} update={update} />}
       {node.type === 'server' && <ServicesForm node={node} update={update} />}
     </>
@@ -139,7 +141,7 @@ function StaticRoutes({ routes, update }) {
   );
 }
 
-function RouterForm({ node, edges, labels, update, routing, issues }) {
+function RouterForm({ node, edges, labels, update, routing, issues, live6 }) {
   const ports = portsOf(node, edges);
   const routes = node.data.routes ?? [];
 
@@ -159,6 +161,7 @@ function RouterForm({ node, edges, labels, update, routing, issues }) {
               {p.name} <span className="muted">vers {labels.get(otherEnd(p.edge, node.id))}{serial ? ` · série ${dce ? 'DCE' : 'DTE'}` : ''}</span>
             </legend>
             <IpCidrFields ip={p.ip} mask={p.mask} onChange={(patch) => patchIface(p, patch)} />
+            <Ipv6IfaceFields entry={node.data.ifaces?.[p.name]} patch={(patch) => patchIface(p, patch)} v6={live6?.get(p.name)} />
             <InterfaceSecurity node={node} name={p.name} patch={(patch) => patchIface(p, patch)} />
             {!serial && !MODELS[modelId({ type: node.type, model: node.data.model })].vendor && (
               <Field label="Relais DHCP (ip helper-address)" placeholder="adresse du serveur DHCP" value={p.helperAddress ?? ''} error={ipError(p.helperAddress)}
@@ -176,6 +179,7 @@ function RouterForm({ node, edges, labels, update, routing, issues }) {
 
       <StaticRoutes routes={routes} update={update} />
       <LoopbacksForm node={node} update={update} />
+      <Ipv6RoutingForm node={node} update={update} />
       <RoutingForm node={node} update={update} ports={ports} state={routing} />
       <SecurityForm node={node} update={update} issues={issues} ifaceNames={ports.map((p) => p.name)} />
       <DhcpServerForm node={node} update={update} />
@@ -216,6 +220,7 @@ function SviForm({ node, update }) {
               onChange={(e) => { const v = Math.max(1, Math.min(4094, Number(e.target.value) || 1)); if (!svis.some(([n]) => n === `Vlan${v}`)) rename(name, v); }} />
           </div>
           <IpCidrFields ip={i.ip} mask={i.mask} onChange={(patch) => set(name, patch)} />
+          <Ipv6IfaceFields entry={i} patch={(patch) => set(name, patch)} />
           <button type="button" className="ghost small" onClick={() => remove(name)}>Retirer {name}</button>
         </fieldset>
       ))}
@@ -326,6 +331,7 @@ function SwitchForm({ node, edges, labels, update, routing }) {
           <StaticRoutes routes={node.data.routes ?? []} update={update} />
           <DhcpServerForm node={node} update={update} />
           <RouterDnsForm node={node} update={update} />
+          <Ipv6RoutingForm node={node} update={update} />
           <RoutingForm node={node} update={update} state={routing}
             ports={Object.keys(node.data.ifaces ?? {}).filter((n) => /^Vlan\d+$/.test(n)).map((name) => ({ name }))} />
         </>
@@ -442,7 +448,7 @@ function ModeSwitch({ mode, onMode, vendor }) {
   );
 }
 
-export function DeviceInspector({ node, edges, labels, update, onDelete, mode, onMode, terminal, importer, routing, issues, live }) {
+export function DeviceInspector({ node, edges, labels, update, onDelete, mode, onMode, terminal, importer, routing, issues, live, live6 = new Map() }) {
   const Form = HOST_TYPES.has(node.type) ? HostForm : node.type === 'router' ? RouterForm : node.type === 'switch' ? SwitchForm : null;
   const vendor = HOST_TYPES.has(node.type) ? node.type : MODELS[modelId({ type: node.type, model: node.data.model })].vendor;
   if (terminal && mode === 'terminal') {
@@ -463,7 +469,7 @@ export function DeviceInspector({ node, edges, labels, update, onDelete, mode, o
       {importer}
       <Field label="Nom" value={node.data.label} onChange={(e) => update((d) => ({ ...d, label: e.target.value }))} />
       <Hardware node={node} edges={edges} update={update} />
-      {Form ? <Form node={node} edges={edges} labels={labels} update={update} routing={routing} issues={issues} live={live} /> : <p className="hint">Un hub répète chaque trame sur tous ses ports : rien à configurer.</p>}
+      {Form ? <Form node={node} edges={edges} labels={labels} update={update} routing={routing} issues={issues} live={live} live6={live6} /> : <p className="hint">Un hub répète chaque trame sur tous ses ports : rien à configurer.</p>}
       <button type="button" className="danger" onClick={onDelete}>Supprimer l'équipement</button>
     </>
   );

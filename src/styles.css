@@ -347,6 +347,9 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 
 /* --- Routage dynamique ------------------------------------------------------------ */
 .proto { border: 1px solid var(--border); border-radius: 8px; padding: 0 12px; margin: 0 0 10px; }
+.v6 { margin: 4px 0 8px; }
+.v6 > summary { cursor: pointer; font-size: .85rem; font-weight: 600; color: var(--muted); padding: 4px 0; }
+.v6[open] > summary { color: var(--text); }
 .proto > summary { cursor: pointer; font-weight: 600; padding: 10px 0; display: flex; align-items: center; gap: 8px; }
 .proto[open] > summary { border-bottom: 1px solid var(--border); margin-bottom: 8px; }
 .proto[open] { padding-bottom: 12px; }

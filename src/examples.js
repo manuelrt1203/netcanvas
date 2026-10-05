@@ -353,6 +353,29 @@ export const SERVICES_DEMO = (() => {
   return doc;
 })();
 
+// Double pile : les mêmes réseaux en IPv6. PC Compta et PC Atelier en SLAAC (annonces RA de R1),
+// les autres en statique, passerelle = link-local fe80::1 des routeurs
+export const IPV6_DEMO = (() => {
+  const doc = structuredClone(DEMO);
+  doc.name = 'Démo : double pile IPv4 / IPv6';
+  const dev = (id) => doc.devices.find((d) => d.id === id);
+  const v6 = (id, name, ipv6, extra = {}) => Object.assign(dev(id).config.interfaces.find((i) => i.name === name), { ipv6, prefix6: 64, ...extra });
+  Object.assign(dev('r1').config, { ipv6Routing: true, routes6: [{ network: '::', prefix: 0, nextHop: '2001:db8:acad:12::2' }] });
+  v6('r1', 'G0/0', '2001:db8:acad:10::1', { linkLocal: 'fe80::1' });
+  v6('r1', 'G0/1', '2001:db8:acad:20::1', { linkLocal: 'fe80::1' });
+  v6('r1', 'Se0/0/0', '2001:db8:acad:12::1');
+  Object.assign(dev('r2').config, { ipv6Routing: true, routes6: [{ network: '2001:db8:acad::', prefix: 48, nextHop: '2001:db8:acad:12::1' }] });
+  v6('r2', 'Se0/0/0', '2001:db8:acad:12::2');
+  v6('r2', 'G0/0', '2001:db8:acad:30::1', { linkLocal: 'fe80::1' });
+  v6('r2', 'G0/1', '2001:db8:ffff::1');
+  Object.assign(dev('pc1').config, { slaac: true });
+  Object.assign(dev('pc2').config, { ipv6: '2001:db8:acad:10::11', prefix6: 64, gateway6: 'fe80::1' });
+  Object.assign(dev('pc3').config, { slaac: true });
+  Object.assign(dev('srv').config, { ipv6: '2001:db8:acad:30::10', prefix6: 64, gateway6: 'fe80::1' });
+  Object.assign(dev('net').config, { ipv6: '2001:db8:ffff::2', prefix6: 64, gateway6: '2001:db8:ffff::1' });
+  return doc;
+})();
+
 // Triangle de switches : STP bloque un port pour casser la boucle (SW Cœur est root bridge)
 const trunk = (name) => ({ name, mode: 'trunk' });
 export const STP_DEMO = {
@@ -432,6 +455,7 @@ export const DEMOS = [
   { id: 'dhcp', label: 'DHCP (serveur et relais)', doc: DHCP_DEMO },
   { id: 'stp', label: 'STP (triangle de switches)', doc: STP_DEMO },
   { id: 'services', label: 'DNS et web (ACL par port)', doc: SERVICES_DEMO },
+  { id: 'ipv6', label: 'Double pile IPv4 / IPv6', doc: IPV6_DEMO },
   { id: 'tp-vlan', label: 'TP : inter-VLAN en panne (3 pannes)', doc: TP_INTERVLAN },
   { id: 'tp-ospf', label: 'TP : OSPF ne monte pas (3 pannes)', doc: TP_OSPF },
   { id: 'ospf', label: 'OSPF 2 zones (Cisco + MikroTik)', doc: OSPF_DEMO },

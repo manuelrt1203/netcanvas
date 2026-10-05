@@ -2,6 +2,8 @@
 // quel câble, l'état de chaque câble et la config de chaque interface.
 import { computeStp } from './stp.js';
 import { isValidCidr, isValidIp } from './ip.js';
+import { eui64Address, linkLocalOf, normIp6 } from './ip6.js';
+import { macCisco, macOf } from './mac.js';
 import { devicePorts, isDataMedia, isSviName, modelId, modelOf } from './catalog.js';
 import { autoCable, checkLink } from './cabling.js';
 
@@ -151,21 +153,51 @@ export function buildTopology(doc) {
     });
   }
 
-  // Interfaces IP configurées et valides ; par défaut seulement celles dont le câble fonctionne
-  function l3Ifaces(id, { includeDown = false } = {}) {
+  // Toutes les interfaces de niveau 3 possibles, et leur état
+  function allIfaces(id) {
     const d = devices.get(id);
-    const all = isHost(d) ? [hostIface(id)]
+    return isHost(d) ? [hostIface(id)]
       : d.type === 'router' ? [...linksOf.get(id).map((l) => routerIface(id, l)), ...subIfaces(id), ...loopbacks(id)]
         : d.type === 'switch' ? svis(id) : [];
-    const up = (i) => (i.loopback ? !i.shutdown
-      : i.svi ? !i.shutdown && sviUp(id, i.vlan)
-        : i.link && isUp(i.link) && !i.shutdown);
-    return all.filter((i) => isValidIp(i.ip) && isValidCidr(i.mask) && (includeDown || up(i)));
+  }
+  const ifaceUp = (id, i) => (i.loopback ? !i.shutdown
+    : i.svi ? !i.shutdown && sviUp(id, i.vlan)
+      : i.link && isUp(i.link) && !i.shutdown);
+
+  // Interfaces IP configurées et valides ; par défaut seulement celles dont le câble fonctionne
+  function l3Ifaces(id, { includeDown = false } = {}) {
+    return allIfaces(id).filter((i) => isValidIp(i.ip) && isValidCidr(i.mask) && (includeDown || ifaceUp(id, i)));
+  }
+
+  // IPv6 : interfaces où IPv6 est actif, avec leur adresse link-local (manuelle ou EUI-64) et leur
+  // adresse globale ({ ...interface, ip, prefix, linkLocal, gateway (hôte) }). Un hôte a toujours sa link-local.
+  function v6View(id, i) {
+    const d = devices.get(id);
+    const c = d.config ?? {};
+    const mac = i.loopback ? null : macCisco(macOf(d, i.name));
+    if (isHost(d)) {
+      const auto = c.slaac === true;
+      return {
+        ...i, ip: auto ? c.slaac6?.ip ?? null : normIp6(c.ipv6), prefix: auto ? c.slaac6?.prefix ?? null : c.prefix6 ?? null,
+        gateway: auto ? c.slaac6?.gateway ?? null : normIp6(c.gateway6), slaac: auto, slaacError: c.slaacError ?? null, linkLocal: linkLocalOf(mac),
+      };
+    }
+    if (!i.ipv6 && !i.ipv6Enable && !i.linkLocal) return null;
+    const ip = i.ipv6 && (i.eui64 ? eui64Address(i.ipv6, mac) : normIp6(i.ipv6));
+    return { ...i, ip: ip ?? null, prefix: i.prefix6 ?? null, linkLocal: normIp6(i.linkLocal) ?? (mac ? linkLocalOf(mac) : null) };
+  }
+  function l3Ifaces6(id, { includeDown = false } = {}) {
+    return allIfaces(id).map((i) => v6View(id, i)).filter((i) => i && (includeDown || ifaceUp(id, i)));
+  }
+  // Interface IPv6 de l'équipement sur ce câble (même règle que l3IfaceOn)
+  function l3IfaceOn6(id, linkId, tag = null) {
+    const i = l3IfaceOn(id, linkId, tag);
+    return i ? v6View(id, i) : null;
   }
 
   const topo = {
     devices, ports, links, linksOf, consoleLinks, status, other, portName, isUp,
-    hostIface, routerIface, switchPort, l3IfaceOn, l3Ifaces, subIfaces, svis, sviUp,
+    hostIface, routerIface, switchPort, l3IfaceOn, l3Ifaces, subIfaces, svis, sviUp, l3Ifaces6, l3IfaceOn6,
   };
   // Spanning Tree : ports bloqués par VLAN, tempêtes de diffusion ; noté aussi sur l'état des câbles (voyants)
   topo.stp = computeStp(topo);

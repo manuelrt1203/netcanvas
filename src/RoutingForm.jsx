@@ -1,6 +1,7 @@
 // Formulaires du routage dynamique d'un routeur (OSPF, RIP, BGP) et de ses loopbacks.
 // Ils écrivent la même configuration que les terminaux IOS et RouterOS.
-import { useId } from 'react';
+import { Fragment, useId } from 'react';
+import { Ipv6IfaceFields } from './Ipv6Form.jsx';
 import { cidrToWildcard, wildcardToCidr } from './net/routing.js';
 import { isValidIp } from './net/ip.js';
 import { isMikrotik } from './net/catalog.js';
@@ -78,7 +79,8 @@ export function SubInterfaces({ node, parent, update }) {
   return (
     <div className="subifs">
       {subs.map(([name, i]) => (
-        <div className="rows-item" key={name}>
+        <Fragment key={name}>
+        <div className="rows-item">
           <code className="iface-name">{name}</code>
           <Input label="VLAN" type="number" min="1" max="4094" className="cidr" value={i.vlan}
             onChange={(e) => { const v = Math.max(1, Math.min(4094, Number(e.target.value) || 1)); if (!subs.some(([n, x]) => n !== name && Number(x.vlan) === v)) setSub(name, { vlan: v }); }} />
@@ -90,6 +92,8 @@ export function SubInterfaces({ node, parent, update }) {
           )}
           <button type="button" className="ghost small" aria-label={`Retirer ${name}`} onClick={() => remove(name)}>✕</button>
         </div>
+        <Ipv6IfaceFields entry={i} patch={(p) => setSub(name, p)} />
+        </Fragment>
       ))}
       <button type="button" className="ghost small" onClick={add}>Ajouter une sous-interface 802.1Q</button>
     </div>
@@ -110,12 +114,15 @@ export function LoopbacksForm({ node, update }) {
     <>
       <h3>Loopbacks</h3>
       {names.map((name) => (
-        <div className="rows-item" key={name}>
+        <Fragment key={name}>
+        <div className="rows-item">
           <code className="iface-name">{name}</code>
           <Input label="Adresse" placeholder="1.1.1.1" data-ip value={node.data.ifaces[name].ip ?? ''} onChange={(e) => patch(name, { ip: e.target.value.trim() })} />
           <Input label="Masque" type="number" min="0" max="32" className="cidr" value={node.data.ifaces[name].mask ?? 32} onChange={(e) => patch(name, { mask: num(e.target.value) })} />
           <button type="button" className="ghost small" aria-label={`Retirer ${name}`} onClick={() => remove(name)}>✕</button>
         </div>
+        <Ipv6IfaceFields entry={node.data.ifaces[name]} patch={(p) => patch(name, p)} loopback />
+        </Fragment>
       ))}
       {!(mk && names.length) && (
         <button type="button" className="ghost small" onClick={() => patch(next, { ip: '', mask: 32 })}>Ajouter {next}</button>

@@ -4,6 +4,7 @@ import { buildTopology, isHost } from './topology.js';
 import { computeRouting } from './routing.js';
 import { withLeases } from './dhcp.js';
 import { dnsServerOf, isHostname, serviceEnabled } from './services.js';
+import { isLinkLocal6, isUnicast6, isValidIp6, isValidPrefix6, kindOf6, networkLabel6, normIp6, sameSubnet6 } from './ip6.js';
 
 // ctx : topologie et routage déjà calculés par l'éditeur (évite de tout refaire)
 export function validate(rawDoc, ctx = {}) {
@@ -136,6 +137,70 @@ export function validate(rawDoc, ctx = {}) {
       if (seen.has(key)) add(d.id, 'warning', `${d.label} : ${r.name} est enregistré deux fois, seule la première adresse est donnée.`);
       seen.add(key);
     }
+  }
+
+  // IPv6 : adresses, préfixes, passerelles, routage
+  const v6Owners = new Map();
+  const checkV6 = (d, where, raw, prefix, { eui64 = false } = {}) => {
+    if (!raw) return false;
+    if (!isValidIp6(raw)) return add(d.id, 'error', `${where} : « ${raw} » n'est pas une adresse IPv6 valide.`), false;
+    if (!isValidPrefix6(prefix)) return add(d.id, 'error', `${where} : longueur de préfixe IPv6 manquante (ex. /64).`), false;
+    if (eui64 && prefix !== 64) add(d.id, 'error', `${where} : EUI-64 demande un préfixe /64 (ici /${prefix}).`);
+    const kind = kindOf6(raw);
+    if (kind === 'link-local') return add(d.id, 'error', `${where} : ${normIp6(raw)} est une link-local (fe80::/10) : mets-la dans le champ link-local, pas comme adresse globale.`), false;
+    if (!isUnicast6(raw)) return add(d.id, 'error', `${where} : ${normIp6(raw)} est une adresse ${kind === 'multicast' ? 'multicast' : 'réservée'}, pas une adresse d'interface.`), false;
+    return true;
+  };
+  for (const d of topo.devices.values()) {
+    const views = topo.l3Ifaces6(d.id, { includeDown: true });
+    const c = d.config ?? {};
+    if (isHost(d)) {
+      if (c.slaac) {
+        if (c.slaacError) add(d.id, 'error', `${d.label} n'obtient pas d'adresse IPv6 automatique : ${c.slaacError}.`);
+      } else if (c.ipv6 && checkV6(d, `${d.label} (IPv6)`, c.ipv6, c.prefix6) && c.gateway6) {
+        if (!isValidIp6(c.gateway6)) add(d.id, 'error', `${d.label} : passerelle IPv6 « ${c.gateway6} » invalide.`);
+        else if (!isLinkLocal6(c.gateway6) && !sameSubnet6(c.ipv6, c.gateway6, c.prefix6)) {
+          add(d.id, 'error', `${d.label} : la passerelle IPv6 ${normIp6(c.gateway6)} n'est ni une link-local ni dans le réseau ${networkLabel6(c.ipv6, c.prefix6)}.`);
+        }
+      }
+    } else {
+      const ok = [];
+      for (const raw of [...(c.interfaces ?? [])]) {
+        if (!raw.ipv6) continue;
+        if (raw.linkLocal && (!isValidIp6(raw.linkLocal) || !isLinkLocal6(raw.linkLocal))) add(d.id, 'error', `${d.label} ${raw.name} : link-local « ${raw.linkLocal} » invalide (fe80::/10 attendu).`);
+        if (checkV6(d, `${d.label} ${raw.name}`, raw.ipv6, raw.prefix6, { eui64: raw.eui64 })) {
+          const v = views.find((x) => x.name === raw.name);
+          if (v?.ip) ok.push(v);
+        }
+      }
+      for (let a = 0; a < ok.length; a++) {
+        for (let b = a + 1; b < ok.length; b++) {
+          const p = Math.min(ok[a].prefix, ok[b].prefix);
+          if (!ok[a].loopback && !ok[b].loopback && sameSubnet6(ok[a].ip, ok[b].ip, p)) {
+            add(d.id, 'error', `${d.label} : ${ok[a].name} et ${ok[b].name} sont dans le même réseau IPv6 ${networkLabel6(ok[a].ip, p)}.`);
+          }
+        }
+      }
+      const active = ok.filter((v) => !v.loopback);
+      if (active.length > 1 && !c.ipv6Routing) {
+        add(d.id, 'warning', `${d.label} a des adresses IPv6 sur ${active.length} interfaces mais le routage IPv6 n'est pas activé (« ipv6 unicast-routing ») : il ne route pas IPv6 et n'envoie pas d'annonces RA.`);
+      }
+      for (const r of c.routes6 ?? []) {
+        const what = `${d.label} : route IPv6 ${r.network || '?'}/${r.prefix ?? '?'}`;
+        if (!isValidIp6(r.network) || !isValidPrefix6(r.prefix)) add(d.id, 'error', `${what} : réseau ou préfixe invalide.`);
+        else if (!isValidIp6(r.nextHop) && !r.iface) add(d.id, 'error', `${what} : saut suivant manquant ou invalide.`);
+        else if (r.nextHop && isLinkLocal6(r.nextHop) && !r.iface) add(d.id, 'error', `${what} : le saut suivant ${normIp6(r.nextHop)} est une link-local, il faut préciser l'interface de sortie.`);
+      }
+    }
+    for (const v of views) {
+      if (!v.ip || isLinkLocal6(v.ip) || !isUnicast6(v.ip)) continue;
+      const owners = v6Owners.get(v.ip) ?? [];
+      owners.push({ id: d.id, where: isHost(d) ? d.label : `${d.label} ${v.name}` });
+      v6Owners.set(v.ip, owners);
+    }
+  }
+  for (const [ip, owners] of v6Owners) {
+    if (owners.length > 1) add(owners[0].id, 'error', `Adresse IPv6 ${ip} en double : ${owners.map((o) => o.where).join(', ')}.`);
   }
 
   // Interfaces VLAN des switches : adresse, et état (une SVI sans port actif dans son VLAN est down)
