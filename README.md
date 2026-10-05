@@ -209,6 +209,7 @@ Chaque interface peut avoir, en plus de son IPv4, une adresse IPv6 globale (ou u
 - **Terminaux** : IOS (`ipv6 address … [eui-64|link-local]`, `ipv6 enable`, `ipv6 unicast-routing`, `ipv6 route`, `ipv6 router ospf`, `ipv6 ospf 1 area 0`, `show ipv6 interface brief|route|neighbors|ospf neighbor`, `ping`/`traceroute ipv6`), PC (`ipconfig`, `ipv6config`, `ping`, `tracert`), RouterOS (`/ipv6 address|route|settings|neighbor`, `/routing ospf instance … version=3`). Repris par les exports et l'import.
 - **DNS** : enregistrements AAAA à côté des A ; un PC qui a une IPv6 globale préfère l'adresse IPv6.
 - **Containerlab** : adresses et link-local de NetCanvas (nodad), routes IPv6 calculées (OSPFv3 compris) ; vérifié par des ping6 réels dans des namespaces Linux.
+- **OSPFv3 vérifié contre FRRouting** (`npm run test:frr`, Docker requis) : chaque routeur devient un conteneur FRR (ospf6d) configuré d'après NetCanvas ; les routes de FRR et de NetCanvas sont comparées (préfixe, métrique, voisin, interface) dans 4 scénarios : la démo, zones différentes, interface passive, coût modifié avec route par défaut « always ». Seule différence de valeur par défaut : FRR annonce la route par défaut en métrique 10, IOS en métrique 1 (le script impose 1).
 
 ## Matériel et câblage (`src/net/catalog.js`, `src/net/cabling.js`)
 
