@@ -14,6 +14,7 @@ import { isHost, isL3Switch, isLoopbackName, isRouting, v6Forwarding } from '../
 import { isLinkLocal6 } from '../net/ip6.js';
 import { routeText6 } from '../net/routing6.js';
 import { isMikrotik } from '../net/catalog.js';
+import { PORT_NAMES } from '../net/acl.js';
 import { wildcardToCidr } from '../net/routing.js';
 import { withLeases } from '../net/dhcp.js';
 import { ascii, interfaceTable, switchVlans, uniqueNames } from './common.js';
@@ -127,6 +128,7 @@ export function clabCommands(rawDoc) {
       if (v.ip && v.prefix != null) out.push(`ip -6 addr add ${v.ip}/${v.loopback ? 128 : v.prefix} dev ${dev} nodad`);
     }
     if (!views.some((v) => v.ip)) return out;
+    if (!isHost(d)) out.push(...filter6Cmds(d, rows));
     if (isHost(d)) {
       const v = views[0];
       if (v.gateway && rows[0]) out.push(`ip -6 route replace default via ${v.gateway} dev ${ifname(rows[0].index)}`);
@@ -156,6 +158,28 @@ function linuxDev(d, rows, name) {
   return sub && !sub.native ? `${ifname(row.index)}.${sub.vlan}` : ifname(row.index);
 }
 
+// Ports IOS (« eq www », « range 20 21 », « gt 1023 »…) -> options iptables (null : pas d'équivalent)
+const portNo = (t) => (/^\d+$/.test(t) ? Number(t) : PORT_NAMES[t?.toLowerCase()] ?? null);
+function iptPort(spec, flag) {
+  if (!spec) return '';
+  const [op, a, b] = spec.split(/\s+/);
+  const x = portNo(a);
+  if (x === null) return null;
+  if (op === 'eq') return ` ${flag} ${x}`;
+  if (op === 'neq') return ` ! ${flag} ${x}`;
+  if (op === 'gt') return ` ${flag} ${x + 1}:65535`;
+  if (op === 'lt') return x > 0 ? ` ${flag} 0:${x - 1}` : null;
+  if (op === 'range' && portNo(b) !== null) return ` ${flag} ${x}:${portNo(b)}`;
+  return null;
+}
+// MikroTik dst-port=80,443 ou 1000-2000
+const mtPorts = (r) => (r.dstPort && ['tcp', 'udp'].includes(r.protocol)
+  ? (r.dstPort.includes(',') ? ` -m multiport --dports ${r.dstPort.replace(/-/g, ':')}` : ` --dport ${r.dstPort.replace('-', ':')}`) : '');
+
+// Règle IPv6 Cisco -> options ip6tables
+const ip6Spec = (s, flag) => (s.any ? '' : ` ${flag} ${s.prefix}/${s.len}`);
+const ICMP6_LINUX = { 'echo-request': 'echo-request', 'echo-reply': 'echo-reply', 'nd-ns': 'neighbour-solicitation', 'nd-na': 'neighbour-advertisement', 'router-solicitation': 'router-solicitation', 'router-advertisement': 'router-advertisement' };
+
 const ipt = (spec, flag) => {
   if (!spec || spec.any) return '';
   const cidr = wildcardToCidr(spec.wildcard);
@@ -167,7 +191,7 @@ function filterCmds(d, rows) {
   if (isMikrotik(d)) {
     for (const r of d.config?.firewall ?? []) {
       const parts = [`iptables -A ${r.chain === 'input' ? 'INPUT' : 'FORWARD'}`];
-      if (r.protocol) parts.push(`-p ${r.protocol}`);
+      if (r.protocol) parts.push(`-p ${r.protocol}${mtPorts(r)}`);
       if (r.src) parts.push(`-s ${r.src}`);
       if (r.dst) parts.push(`-d ${r.dst}`);
       for (const [key, flag] of [['inIface', '-i'], ['outIface', '-o']]) {
@@ -197,12 +221,59 @@ function filterCmds(d, rows) {
           const dst = acl.type === 'extended' ? ipt(r.dst, '-d') : '';
           if (src === null || dst === null) continue; // wildcard non contigu : pas d'équivalent iptables
           const proto = acl.type === 'extended' && r.protocol !== 'ip' ? ` -p ${r.protocol}` : '';
+          const ports = [iptPort(r.srcPort, '--sport'), iptPort(r.dstPort, '--dport')];
+          if (ports.includes(null)) continue;
           // permit -> RETURN : le paquet continue vers les autres contrôles (ACL de sortie), comme sur IOS
-          out.push(`iptables -A ${chain}${proto}${src}${dst} -j ${r.action === 'permit' ? 'RETURN' : 'DROP'}`);
+          out.push(`iptables -A ${chain}${proto}${src}${ports.join('')}${dst} -j ${r.action === 'permit' ? 'RETURN' : 'DROP'}`);
         }
         out.push(`iptables -A ${chain} -j DROP`); // refus implicite
       }
       for (const h of hooks(dev)) out.push(`iptables -A ${h} -j ${chain}`);
+    }
+  }
+  return out;
+}
+
+// IPv6 : ACL IPv6 Cisco (ipv6 traffic-filter) et pare-feu /ipv6 firewall MikroTik -> ip6tables
+function filter6Cmds(d, rows) {
+  const out = [];
+  if (isMikrotik(d)) {
+    for (const r of d.config?.firewall6 ?? []) {
+      const proto = r.protocol === 'icmpv6' || r.protocol === 'icmp' ? 'ipv6-icmp' : r.protocol;
+      const parts = [`ip6tables -A ${r.chain === 'input' ? 'INPUT' : 'FORWARD'}`];
+      if (proto) parts.push(`-p ${proto}${mtPorts(r)}`);
+      if (r.src) parts.push(`-s ${r.src}`);
+      if (r.dst) parts.push(`-d ${r.dst}`);
+      for (const [key, flag] of [['inIface', '-i'], ['outIface', '-o']]) if (r[key] && linuxDev(d, rows, r[key])) parts.push(`${flag} ${linuxDev(d, rows, r[key])}`);
+      parts.push(`-j ${r.action === 'accept' ? 'ACCEPT' : 'DROP'}`);
+      out.push(parts.join(' '));
+    }
+    return out;
+  }
+  const acls = d.config?.acls6 ?? {};
+  const used = new Set();
+  for (const i of d.config?.interfaces ?? []) {
+    for (const [key, hooks] of [['aclIn6', (dev) => [`INPUT -i ${dev}`, `FORWARD -i ${dev}`]], ['aclOut6', (dev) => [`FORWARD -o ${dev}`]]]) {
+      const acl = acls[i[key]];
+      const dev = acl && linuxDev(d, rows, i.name);
+      if (!dev) continue;
+      const chain = `acl6-${i[key]}`.replace(/[^\w-]/g, '_').slice(0, 28);
+      if (!used.has(chain)) {
+        used.add(chain);
+        out.push(`ip6tables -N ${chain}`);
+        for (const r of acl.rules ?? []) {
+          if (r.remark !== undefined) continue;
+          const proto = r.protocol === 'ipv6' ? '' : ` -p ${r.protocol === 'icmp' ? 'ipv6-icmp' : r.protocol}`;
+          const type = r.icmpType ? ` --icmpv6-type ${ICMP6_LINUX[r.icmpType]}` : '';
+          const ports = [iptPort(r.srcPort, '--sport'), iptPort(r.dstPort, '--dport')];
+          if (ports.includes(null)) continue;
+          out.push(`ip6tables -A ${chain}${proto}${type}${ip6Spec(r.src, '-s')}${ports.join('')}${ip6Spec(r.dst, '-d')} -j ${r.action === 'permit' ? 'RETURN' : 'DROP'}`);
+        }
+        // Fin implicite IOS : NDP autorisé, puis refus
+        out.push(`ip6tables -A ${chain} -p ipv6-icmp --icmpv6-type neighbour-solicitation -j RETURN`,
+          `ip6tables -A ${chain} -p ipv6-icmp --icmpv6-type neighbour-advertisement -j RETURN`, `ip6tables -A ${chain} -j DROP`);
+      }
+      for (const h of hooks(dev)) out.push(`ip6tables -A ${h} -j ${chain}`);
     }
   }
   return out;

@@ -6,6 +6,7 @@
 //         Une ACL appliquée mais inexistante laisse tout passer (comme IOS).
 // MikroTik : config.firewall = [{ chain, action, protocol, src, dst, inIface, outIface }], tout passe par défaut.
 import { isValidIp, maskBits, parseIp, splitCidr } from './ip.js';
+import { inPrefix6, isValidIp6, splitPrefix6 } from './ip6.js';
 
 // 1-99 et 1300-1999 : standard ; 100-199 et 2000-2699 : étendue
 export function aclTypeOf(name) {
@@ -126,8 +127,13 @@ export function evaluateAcl(acl, packet) {
 }
 
 // --- MikroTik -----------------------------------------------------------------------
+// IPv4 « 10.0.0.0/8 » ou IPv6 « 2001:db8::/32 » (pare-feu /ipv6 firewall)
 const inCidr = (cidr, ip) => {
   if (!cidr) return true;
+  if (isValidIp6(ip) || cidr.includes(':')) {
+    const p = splitPrefix6(cidr) ?? (isValidIp6(cidr) ? { ip: cidr, prefix: 128 } : null);
+    return Boolean(p && isValidIp6(ip) && inPrefix6(ip, p.ip, p.prefix));
+  }
   const s = splitCidr(cidr) ?? (isValidIp(cidr) ? { ip: cidr, cidr: 32 } : null);
   if (!s) return false;
   return ((parseIp(ip) & maskBits(s.cidr)) >>> 0) === ((parseIp(s.ip) & maskBits(s.cidr)) >>> 0);
@@ -153,7 +159,7 @@ export function parseFirewallRule(text) {
   if (!['forward', 'input'].includes(rule.chain)) return { error: 'chain=forward ou chain=input attendu' };
   if (!['accept', 'drop', 'reject'].includes(rule.action)) return { error: 'action=accept, drop ou reject attendu' };
   for (const k of ['src', 'dst']) {
-    if (rule[k] && !splitCidr(rule[k]) && !isValidIp(rule[k])) return { error: `${k}-address invalide` };
+    if (rule[k] && !splitCidr(rule[k]) && !isValidIp(rule[k]) && !splitPrefix6(rule[k]) && !isValidIp6(rule[k])) return { error: `${k}-address invalide` };
   }
   return { rule: Object.fromEntries(Object.entries(rule).filter(([, v]) => v !== undefined)) };
 }
@@ -164,7 +170,8 @@ export function evaluateFirewall(rules, chain, packet, inIface, outIface) {
   for (const r of rules ?? []) {
     n++;
     if (r.chain !== chain) continue;
-    if (r.protocol && r.protocol !== (packet.proto ?? 'icmp')) continue;
+    // /ipv6 firewall : protocol=icmpv6
+    if (r.protocol && (r.protocol === 'icmpv6' ? 'icmp' : r.protocol) !== (packet.proto ?? 'icmp')) continue;
     if (r.dstPort && !r.dstPort.split(',').some((part) => {
       const [a, b = a] = part.split('-').map(Number);
       return packet.dport >= a && packet.dport <= b;

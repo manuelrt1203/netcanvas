@@ -4,6 +4,7 @@ import { buildTopology, isHost, v6Forwarding } from './topology.js';
 import { computeRouting } from './routing.js';
 import { withLeases } from './dhcp.js';
 import { dnsServerOf, isHostname, serviceEnabled } from './services.js';
+import { blocksNdp } from './acl6.js';
 import { isLinkLocal6, isUnicast6, isValidIp6, isValidPrefix6, kindOf6, networkLabel6, normIp6, sameSubnet6 } from './ip6.js';
 
 // ctx : topologie et routage déjà calculés par l'éditeur (évite de tout refaire)
@@ -186,6 +187,16 @@ export function validate(rawDoc, ctx = {}) {
       const active = ok.filter((v) => !v.loopback);
       if (active.length > 1 && !v6Forwarding(d)) {
         add(d.id, 'warning', `${d.label} a des adresses IPv6 sur ${active.length} interfaces mais le routage IPv6 n'est pas activé (« ipv6 unicast-routing ») : il ne route pas IPv6 et n'envoie pas d'annonces RA.`);
+      }
+      // ACL IPv6 appliquées : existence, et « deny ipv6 any any » explicite en entrée qui bloque NDP
+      for (const e of c.interfaces ?? []) {
+        for (const [k, dir] of [['aclIn6', 'en entrée'], ['aclOut6', 'en sortie']]) {
+          if (!e[k]) continue;
+          const acl = c.acls6?.[e[k]];
+          if (!acl) { add(d.id, 'warning', `${d.label} ${e.name} : l'ACL IPv6 ${e[k]} appliquée ${dir} n'existe pas : tout passe.`); continue; }
+          const line = k === 'aclIn6' && blocksNdp(acl);
+          if (line) add(d.id, 'warning', `${d.label} ${e.name} : la ligne ${line} de l'ACL IPv6 ${e[k]} (${dir}) bloque aussi la découverte des voisins (NDP) : ajoute « permit icmp any any nd-ns » et « nd-na » avant.`);
+        }
       }
       for (const r of c.routes6 ?? []) {
         const what = `${d.label} : route IPv6 ${r.network || '?'}/${r.prefix ?? '?'}`;

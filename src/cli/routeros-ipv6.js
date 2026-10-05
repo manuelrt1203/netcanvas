@@ -10,7 +10,9 @@ import { ndRows } from '../net/tables.js';
 import { macColon } from '../net/mac.js';
 
 export const IPV6_MENUS = {
-  ipv6: { menus: ['address', 'route', 'settings', 'neighbor'], commands: ['export'] },
+  ipv6: { menus: ['address', 'route', 'settings', 'neighbor', 'firewall'], commands: ['export'] },
+  'ipv6 firewall': { menus: ['filter'], commands: [] },
+  'ipv6 firewall filter': { menus: [], commands: ['add', 'print', 'remove'] },
   'ipv6 address': { menus: [], commands: ['add', 'print', 'remove', 'export'] },
   'ipv6 route': { menus: [], commands: ['add', 'print', 'remove', 'export'] },
   'ipv6 settings': { menus: [], commands: ['set', 'print', 'export'] },

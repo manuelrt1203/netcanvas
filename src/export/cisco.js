@@ -2,6 +2,9 @@
 //   target 'packet-tracer' : scripts à coller dans le CLI (routeur 2911, switch 2960, PC configurés à la main)
 //   target 'gns3'          : startup-config de routeurs c7200 (Dynamips), ports du switch intégré, scripts VPCS
 import { isValidIp6, normIp6 } from '../net/ip6.js';
+import { rule6Text } from '../net/acl6.js';
+
+const upperV6 = (text) => text.replace(/[0-9a-f]*:[0-9a-f:]*/gi, (m) => m.toUpperCase());
 import { cidrToMask } from '../net/ip.js';
 import { MODELS, MODULES, isMikrotik, modelId, modelOf } from '../net/catalog.js';
 import { routerosScript } from '../cli/routeros.js';
@@ -384,6 +387,8 @@ export function iosIpv6IfaceLines(e, cfg = {}) {
     ...(e.ipv6 ? [` ipv6 address ${UP6(normIp6(e.ipv6) ?? e.ipv6)}/${e.prefix6 ?? 64}${e.eui64 ? ' eui-64' : ''}`] : []),
     ...(e.ipv6Enable ? [' ipv6 enable'] : []),
     ...(o6 ? [` ipv6 ospf ${cfg.ospf6.processId ?? 1} area ${o6.area}`] : []),
+    ...(e.aclIn6 ? [` ipv6 traffic-filter ${e.aclIn6} in`] : []),
+    ...(e.aclOut6 ? [` ipv6 traffic-filter ${e.aclOut6} out`] : []),
   ];
 }
 
@@ -394,7 +399,8 @@ export function iosIpv6GlobalLines(cfg, ifName = iosLongName) {
     ...(o.passive ?? []).map((n) => ` passive-interface ${ifName(n)}`),
     ...(o.defaultOriginate ? [` default-information originate${o.defaultOriginate === 'always' ? ' always' : ''}`] : []), '!',
   ] : [];
-  return [...ospf, ...(cfg.routes6 ?? []).filter((r) => isValidIp6(r.network) && r.prefix != null).map((r) => [
+  const acls = Object.entries(cfg.acls6 ?? {}).flatMap(([name, acl]) => [`ipv6 access-list ${name}`, ...(acl.rules ?? []).map((r) => ` ${upperV6(rule6Text(r))}`)]);
+  return [...ospf, ...acls, ...(cfg.routes6 ?? []).filter((r) => isValidIp6(r.network) && r.prefix != null).map((r) => [
     'ipv6 route', `${UP6(normIp6(r.network))}/${r.prefix}`, r.iface && ifName(r.iface), r.nextHop && UP6(r.nextHop),
   ].filter(Boolean).join(' '))];
 }

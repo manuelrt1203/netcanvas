@@ -12,7 +12,7 @@ import { clearDhcpCommand, dhcpConfigCommand, dhcpTree, helperCommands, showDhcp
 import { clearNatCommand, natConfigCommand, natInterfaceCommands, showNatTranslations } from './ios-nat.js';
 import { ipv6GlobalCommands, ipv6InterfaceCommands, ipv6ShowCommand } from './ios-ipv6.js';
 import { dnsConfigCommands, isTarget, resolveTarget, showHostsCommand } from './ios-dns.js';
-import { accessGroupCommands, aclConfigCommands, aclShows, aclTree, showAccessLists } from './ios-acl.js';
+import { acl6Tree, accessGroupCommands, aclConfigCommands, aclShows, aclTree, showAccessLists } from './ios-acl.js';
 import { bgpTree, interfaceRoutingCommands, ospf6Tree, ospfTree, ripTree, routeFilters, routerCommands, routingShows, showIpRoute } from './ios-routing.js';
 
 const NOT_SIMULATED = (what) => [`% NetCanvas : ${what} n'est pas encore simulé.`, ''];
@@ -734,6 +734,7 @@ const TREES = {
   line: lineTree,
   'router-ospf': (d) => ospfTree([endCmd(), doCmd(d)]),
   'router-ospf6': (d) => ospf6Tree([endCmd(), doCmd(d)]),
+  acl6: (d) => acl6Tree([endCmd(), doCmd(d)]),
   'router-rip': (d) => ripTree([endCmd(), doCmd(d)]),
   'router-bgp': (d) => bgpTree([endCmd(), doCmd(d)]),
   'acl-std': (d) => aclTree([endCmd(), doCmd(d)]),
@@ -742,7 +743,7 @@ const TREES = {
 };
 
 const SUFFIX = { user: '>', priv: '#', config: '(config)#', if: '(config-if)#', 'if-range': '(config-if-range)#', vlan: '(config-vlan)#', line: '(config-line)#',
-  'router-ospf': '(config-router)#', 'router-ospf6': '(config-rtr)#', 'router-rip': '(config-router)#', 'router-bgp': '(config-router)#',
+  'router-ospf': '(config-router)#', 'router-ospf6': '(config-rtr)#', acl6: '(config-ipv6-acl)#', 'router-rip': '(config-router)#', 'router-bgp': '(config-router)#',
   'acl-std': '(config-std-nacl)#', 'acl-ext': '(config-ext-nacl)#', dhcp: '(dhcp-config)#' };
 
 export const ios = {

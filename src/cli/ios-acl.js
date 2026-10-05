@@ -1,6 +1,7 @@
-// Terminal IOS : listes de contrôle d'accès (numérotées et nommées), application aux interfaces.
+// Terminal IOS : listes de contrôle d'accès (numérotées et nommées, IPv4 et IPv6), application aux interfaces.
 import { arg, kw, rest } from './engine.js';
 import { aclTypeOf, parseAclLine, ruleText } from '../net/acl.js';
+import { parseAcl6Line, rule6Text } from '../net/acl6.js';
 
 const isAclNumber = (t) => /^\d+$/.test(t) && aclTypeOf(t) !== null;
 const isName = (t) => /^[A-Za-z0-9_-]+$/.test(t);
@@ -121,3 +122,99 @@ export const aclShows = () => [
   }),
 ];
 
+
+// === ACL IPv6 : « ipv6 access-list NOM », « ipv6 traffic-filter NOM in|out » ======================
+function addRule6(c, name, text) {
+  const r = parseAcl6Line(text);
+  if (r.error) return c.out.push(`% Invalid input detected : ${r.error}.`, '');
+  ((c.dev.config.acls6 ??= {})[name] ??= { rules: [] }).rules.push(r.rule);
+  touch(c);
+  return undefined;
+}
+
+// IOS affiche les adresses IPv6 en majuscules
+export const upper6 = (text) => text.replace(/[0-9a-f]*:[0-9a-f:]*/gi, (m) => m.toUpperCase());
+
+export function showIpv6AccessLists(dev, only = null) {
+  const out = [];
+  for (const [name, acl] of Object.entries(dev.config?.acls6 ?? {})) {
+    if (only && name !== only) continue;
+    out.push(`IPv6 access list ${name}`);
+    let seq = 0;
+    for (const r of acl.rules ?? []) {
+      if (r.remark !== undefined) continue;
+      seq += 10;
+      out.push(`    ${upper6(rule6Text(r))} sequence ${seq}`);
+    }
+  }
+  return [...out, ''];
+}
+
+// Configuration globale : « ipv6 access-list NOM » (entre dans le mode), « no ipv6 access-list NOM »
+export function acl6ConfigCommands() {
+  return {
+    add: kw('access-list', 'Configure access lists', {
+      children: [arg('name', 'WORD', 'User selected string identifying this access list', isName, {
+        run: (c) => {
+          (c.dev.config.acls6 ??= {})[c.args.name] ??= { rules: [] };
+          c.s.mode = 'acl6';
+          c.s.acl = c.args.name;
+          touch(c);
+        },
+      })],
+    }),
+    remove: kw('access-list', 'Configure access lists', {
+      children: [arg('name', 'WORD', '', isName, {
+        run: (c) => {
+          delete c.dev.config.acls6?.[c.args.name];
+          if (c.dev.config.acls6 && !Object.keys(c.dev.config.acls6).length) delete c.dev.config.acls6;
+          touch(c);
+        },
+      })],
+    }),
+  };
+}
+
+// Mode « ipv6 access-list NOM »
+export function acl6Tree(common) {
+  const line = (action) => kw(action, `Specify packets to ${action === 'permit' ? 'forward' : 'reject'}`, {
+    children: [rest('line', 'LINE', 'protocol source destination', (c) => addRule6(c, c.s.acl, `${action} ${c.args.line}`))],
+  });
+  return {
+    children: [
+      line('permit'),
+      line('deny'),
+      kw('remark', 'Access list entry comment', { children: [rest('text', 'LINE', 'Comment', (c) => { c.dev.config.acls6[c.s.acl].rules.push({ remark: c.args.text }); touch(c); })] }),
+      kw('no', 'Negate a command or set its defaults', {
+        children: [kw('sequence', 'Sequence number for this entry', {
+          children: [arg('seq', '<1-4294967295>', 'Sequence number', (t) => /^\d+$/.test(t), {
+            run: (c) => {
+              const acl = c.dev.config.acls6[c.s.acl];
+              let seq = 0;
+              const keep = acl.rules.filter((r) => (r.remark !== undefined ? true : (seq += 10) !== Number(c.args.seq)));
+              if (keep.length === acl.rules.length) return c.out.push('% Sequence number not found', '');
+              acl.rules = keep;
+              touch(c);
+              return undefined;
+            },
+          })],
+        })],
+      }),
+      kw('exit', 'Exit from access-list configuration mode', { run: (c) => { c.s.mode = 'config'; } }),
+      ...common,
+    ],
+  };
+}
+
+export function trafficFilterCommands(forIfaces) {
+  const dir = (set) => ['in', 'out'].map((d) => kw(d, `${d === 'in' ? 'inbound' : 'outbound'} packets`, { run: (c) => set(c, d) }));
+  const key = (d) => (d === 'in' ? 'aclIn6' : 'aclOut6');
+  return {
+    add: kw('traffic-filter', 'Access control list for packets', {
+      children: [arg('name', 'WORD', 'Access-list name', isName, { children: dir((c, d) => forIfaces(c, (e) => { e[key(d)] = c.args.name; })) })],
+    }),
+    remove: kw('traffic-filter', 'Access control list for packets', {
+      children: [arg('name', 'WORD', '', isName, { children: dir((c, d) => forIfaces(c, (e) => { delete e[key(d)]; })) })],
+    }),
+  };
+}

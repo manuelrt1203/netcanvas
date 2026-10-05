@@ -3,6 +3,7 @@ import { useId, useState } from 'react';
 import { aclTypeOf, firewallRuleText, parseAclLine, parseFirewallRule, ruleText } from './net/acl.js';
 import { isValidIp } from './net/ip.js';
 import { isMikrotik } from './net/catalog.js';
+import { parseAcl6Line, rule6Text } from './net/acl6.js';
 
 // Zone de texte « une règle par ligne » : on garde le texte tapé, la config n'est mise à jour
 // que quand toutes les lignes sont valides ; sinon les erreurs s'affichent ligne par ligne.
@@ -70,6 +71,46 @@ function CiscoAcls({ data, update }) {
   );
 }
 
+// ACL IPv6 : toujours nommées, une seule syntaxe (protocole, préfixe source, préfixe destination)
+function CiscoAcls6({ data, update }) {
+  const [name, setName] = useState('');
+  const acls = data.acls6 ?? {};
+  const add = () => {
+    const n = name.trim();
+    if (!n || acls[n]) return;
+    update((d) => ({ ...d, acls6: { ...d.acls6, [n]: { rules: [] } } }));
+    setName('');
+  };
+  return (
+    <>
+      <p className="label">ACL IPv6 (ipv6 access-list)</p>
+      {Object.entries(acls).map(([n, acl]) => (
+        <fieldset key={n} className="iface">
+          <legend>ACL IPv6 {n}</legend>
+          <RulesEditor label="Règles (syntaxe IOS, une par ligne)" lines={(acl.rules ?? []).map(rule6Text)}
+            placeholder={'deny icmp 2001:db8:1::/64 any echo-request\npermit tcp any host 2001:db8:3::10 eq www\npermit ipv6 any any'}
+            parse={parseAcl6Line} onValid={(rules) => update((d) => ({ ...d, acls6: { ...d.acls6, [n]: { rules } } }))} />
+          <button type="button" className="ghost small" onClick={() => update((d) => {
+            const copy = { ...d.acls6 };
+            delete copy[n];
+            const { acls6, ...rest } = d;
+            return Object.keys(copy).length ? { ...rest, acls6: copy } : rest;
+          })}>Supprimer l'ACL IPv6 {n}</button>
+        </fieldset>
+      ))}
+      <div className="rows-item">
+        <div className="field">
+          <label htmlFor="new-acl6">Nouvelle ACL IPv6 (nom)</label>
+          <input id="new-acl6" placeholder="FILTRE_V6" value={name} onChange={(e) => setName(e.target.value.replace(/[^A-Za-z0-9_-]/g, ''))}
+            onKeyDown={(e) => e.key === 'Enter' && add()} />
+        </div>
+        <button type="button" className="ghost small" onClick={add}>Créer</button>
+      </div>
+      <p className="hint">Fin implicite : permit icmp any any nd-na / nd-ns, puis deny ipv6 any any. Un « deny ipv6 any any » écrit à la main passe avant et bloque aussi NDP.</p>
+    </>
+  );
+}
+
 function CiscoNat({ data, update, ifaceNames }) {
   const nat = data.nat ?? { statics: [], dynamic: [] };
   const set = (fn) => update((d) => ({ ...d, nat: fn(d.nat ?? { statics: [], dynamic: [] }) }));
@@ -132,7 +173,7 @@ export function SecurityForm({ node, update, ifaceNames, issues = [] }) {
   const d = node.data;
   const problems = issues.filter((i) => /ACL|NAT/.test(i.text)).map((i) => i.text);
   const mk = isMikrotik({ type: node.type, model: d.model });
-  const active = Boolean(d.acls || d.nat || d.firewall?.length || d.natRules?.length);
+  const active = Boolean(d.acls || d.acls6 || d.nat || d.firewall?.length || d.firewall6?.length || d.natRules?.length);
   return (
     <details className="proto" open={active}>
       <summary>{mk ? 'Pare-feu et NAT' : 'ACL et NAT'} {active && <span className="badge-on">actif</span>}</summary>
@@ -142,6 +183,9 @@ export function SecurityForm({ node, update, ifaceNames, issues = [] }) {
           <RulesEditor label="Pare-feu (/ip firewall filter, une règle par ligne)" lines={(d.firewall ?? []).map(firewallRuleText)}
             placeholder="chain=forward action=drop protocol=icmp src-address=192.168.1.0/24"
             parse={parseFirewallRule} onValid={(rules) => update((x) => ({ ...x, firewall: rules }))} />
+          <RulesEditor label="Pare-feu IPv6 (/ipv6 firewall filter)" lines={(d.firewall6 ?? []).map(firewallRuleText)}
+            placeholder="chain=forward action=drop protocol=icmpv6 src-address=2001:db8:1::/64"
+            parse={parseFirewallRule} onValid={(rules) => update((x) => (rules.length ? { ...x, firewall6: rules } : (({ firewall6, ...r }) => r)(x)))} />
           <RulesEditor label="NAT (/ip firewall nat)" lines={(d.natRules ?? []).map(natText)}
             placeholder="chain=srcnat action=masquerade out-interface=ether1"
             parse={parseNatRule} onValid={(rules) => update((x) => ({ ...x, natRules: rules }))} />
@@ -149,6 +193,7 @@ export function SecurityForm({ node, update, ifaceNames, issues = [] }) {
       ) : (
         <>
           <CiscoAcls data={d} update={update} />
+          <CiscoAcls6 data={d} update={update} />
           <CiscoNat data={d} update={update} ifaceNames={ifaceNames} />
         </>
       )}
@@ -162,6 +207,7 @@ export function InterfaceSecurity({ node, name, patch }) {
   if (isMikrotik({ type: node.type, model: d.model })) return null;
   const e = d.ifaces?.[name] ?? {};
   const acls = Object.keys(d.acls ?? {});
+  const acls6 = Object.keys(d.acls6 ?? {});
   return (
     <div className="iface-security">
       <div className="checks">
@@ -179,6 +225,19 @@ export function InterfaceSecurity({ node, name, patch }) {
               <select id={`${k}-${name}`} value={e[k] ?? ''} onChange={(ev) => patch({ [k]: ev.target.value || undefined })}>
                 <option value="">Aucune</option>
                 {acls.map((a) => <option key={a} value={a}>{a}</option>)}
+              </select>
+            </div>
+          ))}
+        </div>
+      )}
+      {acls6.length > 0 && (
+        <div className="field-row">
+          {[['aclIn6', 'ACL IPv6 en entrée'], ['aclOut6', 'ACL IPv6 en sortie']].map(([k, label]) => (
+            <div className="field" key={k}>
+              <label htmlFor={`${k}-${name}`}>{label}</label>
+              <select id={`${k}-${name}`} value={e[k] ?? ''} onChange={(ev) => patch({ [k]: ev.target.value || undefined })}>
+                <option value="">Aucune</option>
+                {acls6.map((a) => <option key={a} value={a}>{a}</option>)}
               </select>
             </div>
           ))}

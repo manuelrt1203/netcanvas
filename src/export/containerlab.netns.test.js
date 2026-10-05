@@ -235,3 +235,25 @@ test('containerlab : OSPFv3 (routes calculées, sauts suivants link-local) sur u
     ['pc1', '192.168.1.1', true], // IPv4 toujours là
   ]);
 });
+
+test('containerlab : ACL IPv6 (ip6tables) et piège NDP du « deny ipv6 any any » explicite', { skip }, () => {
+  const any = { any: true };
+  const doc = structuredClone(IPV6_DEMO);
+  const r2 = doc.devices.find((d) => d.id === 'r2').config;
+  r2.acls6 = { SERVEUR: { rules: [{ action: 'deny', protocol: 'icmp', src: { prefix: '2001:db8:acad:20::', len: 64 }, dst: any, icmpType: 'echo-request' }, { action: 'permit', protocol: 'ipv6', src: any, dst: any }] } };
+  r2.interfaces.find((i) => i.name === 'G0/0').aclOut6 = 'SERVEUR';
+  assertMatchesSimulator(doc, [
+    ['pc3', '2001:db8:acad:30::10', false], // VLAN 20 refusé par l'ACL IPv6
+    ['pc2', '2001:db8:acad:30::10', true], // VLAN 10 autorisé
+    ['pc3', '172.16.0.10', true], // l'IPv4 passe toujours
+  ]);
+  // deny explicite en entrée de R1 G0/0 : plus de NDP, même vers la passerelle
+  const trap = structuredClone(IPV6_DEMO);
+  const r1 = trap.devices.find((d) => d.id === 'r1').config;
+  r1.acls6 = { IN: { rules: [{ action: 'permit', protocol: 'icmp', src: any, dst: any, icmpType: 'echo-request' }, { action: 'deny', protocol: 'ipv6', src: any, dst: any }] } };
+  r1.interfaces.find((i) => i.name === 'G0/0').aclIn6 = 'IN';
+  assertMatchesSimulator(trap, [
+    ['pc2', '2001:db8:acad:30::10', false],
+    ['pc3', '2001:db8:acad:30::10', true], // VLAN 20 : autre interface, pas d'ACL
+  ]);
+});

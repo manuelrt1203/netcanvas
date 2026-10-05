@@ -362,3 +362,77 @@ test('DNS : enregistrements AAAA, IPv6 préférée par un PC qui a une adresse I
   assert.equal(resolveName(v4only, 'pc3', 'www.lan').ip, '172.16.0.10');
   assert.deepEqual(validate(doc).filter((i) => /DNS/.test(i.text)), []);
 });
+
+test('ACL IPv6 : syntaxe, évaluation, fin implicite (NDP autorisé)', async () => {
+  const { parseAcl6Line, rule6Text, evaluateAcl6, blocksNdp } = await import('./acl6.js');
+  const r = parseAcl6Line('deny icmp 2001:DB8:ACAD:20::/64 host 2001:db8:acad:30::10 echo-request');
+  assert.deepEqual(r.rule, { action: 'deny', protocol: 'icmp', src: { prefix: '2001:db8:acad:20::', len: 64 }, dst: { prefix: '2001:db8:acad:30::10', len: 128 }, icmpType: 'echo-request' });
+  assert.equal(rule6Text(r.rule), 'deny icmp 2001:db8:acad:20::/64 host 2001:db8:acad:30::10 echo-request');
+  assert.match(parseAcl6Line('permit ip any any').error, /ipv6, icmp, tcp ou udp/);
+  assert.match(parseAcl6Line('permit icmp any any eq 80').error, /tcp ou udp/);
+  assert.match(parseAcl6Line('permit ipv6 2001:db8::1 any').error, /préfixe/);
+  const acl = { rules: [r.rule, parseAcl6Line('permit tcp any any eq www').rule] };
+  const pkt = { src: '2001:db8:acad:20::5', dst: '2001:db8:acad:30::10', proto: 'icmp', icmpType: 'echo-request' };
+  assert.deepEqual(evaluateAcl6(acl, pkt).line, 10);
+  assert.equal(evaluateAcl6(acl, { ...pkt, src: '2001:db8:acad:10::5' }).text, 'deny ipv6 any any (refus implicite)');
+  assert.equal(evaluateAcl6(acl, { ...pkt, proto: 'tcp', dport: 80 }).permit, true);
+  assert.equal(evaluateAcl6(acl, { ...pkt, icmpType: 'nd-ns' }).permit, true);
+  assert.equal(blocksNdp({ rules: [parseAcl6Line('deny ipv6 any any').rule] }), 10);
+  assert.equal(blocksNdp({ rules: [parseAcl6Line('permit icmp any any nd-na').rule, parseAcl6Line('deny ipv6 any any').rule] }), null);
+});
+
+test('ACL IPv6 dans la simulation : refus, NDP bloqué par un deny explicite, IPv4 non touché', async () => {
+  const { simulatePing } = await import('./simulate.js');
+  const why = (doc, s, d) => simulatePing(doc, s, d).log.findLast((l) => l.level === 'error')?.text;
+  const doc = structuredClone(IPV6_DEMO);
+  const r2 = dev(doc, 'r2').config;
+  r2.acls6 = { SERVEUR: { rules: [{ action: 'deny', protocol: 'icmp', src: { prefix: '2001:db8:acad:20::', len: 64 }, dst: { any: true }, icmpType: 'echo-request' }, { action: 'permit', protocol: 'ipv6', src: { any: true }, dst: { any: true } }] } };
+  r2.interfaces.find((i) => i.name === 'G0/0').aclOut6 = 'SERVEUR';
+  assert.match(why(doc, 'pc3', '2001:db8:acad:30::10'), /R2 : paquet 2001:db8:acad:20:[0-9a-f:]+ → 2001:db8:acad:30::10 \(ICMPv6\) refusé en sortie de G0\/0 par l'ACL IPv6 SERVEUR, ligne 10 « deny icmp 2001:db8:acad:20::\/64 any echo-request »/);
+  assert.equal(simulatePing(doc, 'pc1', '2001:db8:acad:30::10').ok, true);
+  assert.equal(simulatePing(doc, 'pc3', '172.16.0.10').ok, true); // l'ACL IPv6 ne filtre pas l'IPv4
+  // Piège : « deny ipv6 any any » écrit en entrée de R1 G0/0 bloque aussi NDP
+  const trap = structuredClone(IPV6_DEMO);
+  const r1 = dev(trap, 'r1').config;
+  r1.acls6 = { IN: { rules: [{ action: 'permit', protocol: 'icmp', src: { any: true }, dst: { any: true }, icmpType: 'echo-request' }, { action: 'deny', protocol: 'ipv6', src: { any: true }, dst: { any: true } }] } };
+  r1.interfaces.find((i) => i.name === 'G0/0').aclIn6 = 'IN';
+  assert.match(why(trap, 'pc2', '2001:db8:acad:30::10'), /R1 : la ligne 20 de l'ACL IPv6 IN \(en entrée de G0\/0\) refuse tout, y compris la découverte des voisins \(Neighbor Solicitation\)/);
+  assert.ok(validate(trap).some((i) => /ACL IPv6 IN.*bloque aussi la découverte des voisins/.test(i.text)));
+});
+
+test('ACL IPv6 au terminal IOS, pare-feu IPv6 MikroTik, exports', async () => {
+  const t = await terminal(structuredClone(IPV6_DEMO), 'r2');
+  t.run('enable', 'configure terminal', 'ipv6 access-list SERVEUR', 'deny icmp 2001:db8:acad:20::/64 any echo-request', 'permit ipv6 any any', 'exit',
+    'interface g0/0', 'ipv6 traffic-filter SERVEUR out', 'end');
+  const c = dev(t.doc, 'r2').config;
+  assert.equal(c.acls6.SERVEUR.rules.length, 2);
+  assert.equal(c.interfaces.find((i) => i.name === 'G0/0').aclOut6, 'SERVEUR');
+  assert.match(t.run('show ipv6 access-list'), /IPv6 access list SERVEUR\n    deny icmp 2001:DB8:ACAD:20::\/64 any echo-request sequence 10\n    permit ipv6 any any sequence 20/);
+  const run = t.run('show running-config');
+  assert.match(run, /ipv6 traffic-filter SERVEUR out/);
+  assert.match(run, /ipv6 access-list SERVEUR\n deny icmp 2001:DB8:ACAD:20::\/64 any echo-request\n permit ipv6 any any/);
+  const { importConfig } = await import('../cli/import.js');
+  const fresh = structuredClone(IPV6_DEMO);
+  const back = importConfig(dev(fresh, 'r2'), fresh, run).device.config;
+  assert.deepEqual(back.acls6, c.acls6);
+  assert.equal(back.interfaces.find((i) => i.name === 'G0/0').aclOut6, 'SERVEUR');
+  t.run('configure terminal', 'ipv6 access-list SERVEUR', 'no sequence 10', 'end');
+  assert.equal(dev(t.doc, 'r2').config.acls6.SERVEUR.rules.length, 1);
+  // MikroTik : /ipv6 firewall filter
+  const { OSPF6_DEMO } = await import('../examples.js');
+  const m = await terminal(structuredClone(OSPF6_DEMO), 'r3');
+  m.run('/ipv6 firewall filter add chain=forward action=drop protocol=icmpv6 src-address=2001:db8:1:1::/64');
+  assert.match(m.run('/ipv6 firewall filter add chain=forward action=drop src-address=10.0.0.0/8'), /adresse IPv6 attendue/);
+  assert.deepEqual(dev(m.doc, 'r3').config.firewall6, [{ chain: 'forward', action: 'drop', protocol: 'icmpv6', src: '2001:db8:1:1::/64' }]);
+  const { simulatePing } = await import('./simulate.js');
+  const { withLeases } = await import('./dhcp.js');
+  const srv = dev(withLeases(m.doc), 'srv').config.slaac6.ip;
+  assert.match(simulatePing(m.doc, 'pc1', srv).log.at(-1).text, /bloqué par le pare-feu IPv6, règle 0 « chain=forward action=drop protocol=icmpv6 src-address=2001:db8:1:1::\/64 »/);
+  assert.match(m.run('/export'), /\/ipv6 firewall filter\nadd chain=forward action=drop protocol=icmpv6 src-address=2001:db8:1:1::\/64/);
+  // Containerlab : ip6tables, et ports traduits (IPv4 aussi)
+  const { clabCommands } = await import('../export/containerlab.js');
+  assert.ok(clabCommands(t.doc).get('r2').includes('ip6tables -A acl6-SERVEUR -j DROP'));
+  assert.ok(clabCommands(m.doc).get('r3').includes('ip6tables -A FORWARD -p ipv6-icmp -s 2001:db8:1:1::/64 -j DROP'));
+  const { SERVICES_DEMO } = await import('../examples.js');
+  assert.ok(clabCommands(SERVICES_DEMO).get('r2').includes('iptables -A acl-110 -p tcp -s 192.168.20.0/24 --dport 80 -d 172.16.0.10/32 -j RETURN'));
+});

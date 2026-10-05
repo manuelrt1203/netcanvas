@@ -8,8 +8,8 @@
 //    en respectant les VLAN des ports de switch (access / trunk, VLAN natif 1). Un hub répète tout.
 //  - niveau 1 : un câble hors service (mauvais câble, port inexistant, clock rate absent) ne transmet rien.
 //  - IPv6 (destination IPv6) : préfixes et passerelle (souvent link-local) des hôtes, table IPv6 des routeurs
-//    (routing6.js), NDP (Neighbor Solicitation / Advertisement) à la place d'ARP. Les ACL et le NAT IPv4
-//    ne s'appliquent pas aux paquets IPv6.
+//    (routing6.js), NDP (Neighbor Solicitation / Advertisement) à la place d'ARP. Filtrage par les ACL IPv6
+//    (ipv6 traffic-filter) et le pare-feu IPv6 MikroTik ; les ACL et le NAT IPv4 ne les touchent pas.
 import { formatIp, isValidCidr, isValidIp, networkLabel, networkOf, parseIp, sameSubnet } from './ip.js';
 import { buildTopology, isHost, isL3Switch, isRouting, v6Forwarding } from './topology.js';
 import { isMikrotik, modelOf } from './catalog.js';
@@ -23,6 +23,7 @@ import { computeRouting, lookup } from './routing.js';
 import { serviceEnabled } from './services.js';
 import { isLinkLocal6, isValidIp6, multicastMac6, networkLabel6, normIp6, sameSubnet6, solicitedNode6 } from './ip6.js';
 import { lookup6, routeText6 } from './routing6.js';
+import { blocksNdp, evaluateAcl6 } from './acl6.js';
 
 const MAX_TTL = 64;
 
@@ -132,10 +133,10 @@ function forward(ctx, startId, target, phase, result, log, name, fixedSrc = null
     const dev = topo.devices.get(current);
     const ownIp = (ip) => (ctx.v6 ? topo.l3Ifaces6(current).find((i) => i.ip === ip || i.linkLocal === ip)
       : topo.l3Ifaces(current).find((i) => parseIp(i.ip) === parseIp(ip)));
-    const v4Only = !ctx.v6; // ACL et NAT IPv4
+    const v4Only = !ctx.v6; // NAT IPv4
     // Filtrage en entrée (ACL « in », pare-feu MikroTik chain=input) ; pas sur le trafic émis par l'équipement
-    const pkt = () => ({ src: srcIp, dst: dstIp, ...l4(ctx, phase) });
-    if (v4Only && current !== startId && isRouting(dev) && arrived) filterIn(dev, arrived, pkt(), Boolean(ownIp(dstIp)), log, phase, name);
+    const pkt = () => ({ src: srcIp, dst: dstIp, ...l4(ctx, phase), ...(ctx.v6 && ctx.l4.proto === 'icmp' ? { icmpType: phase === 'request' ? 'echo-request' : 'echo-reply' } : {}) });
+    if (current !== startId && isRouting(dev) && arrived) filterIn(dev, arrived, pkt(), Boolean(ownIp(dstIp)), log, phase, name, ctx.v6);
     // NAT de destination à l'entrée (statique, dst-nat, ou retour d'une traduction)
     if (v4Only && current !== startId && isRouting(dev) && arrived) {
       const t = destNat(dev, arrived, pkt(), ctx.natTable, phase === 'reply');
@@ -191,7 +192,7 @@ function forward(ctx, startId, target, phase, result, log, name, fixedSrc = null
       }
     }
     // Filtrage en sortie (ACL « out », pare-feu MikroTik chain=forward)
-    if (v4Only && current !== startId && isRouting(dev)) filterOut(dev, arrived, step.iface.name, pkt(), log, phase, name);
+    if (current !== startId && isRouting(dev)) filterOut(dev, arrived, step.iface.name, pkt(), log, phase, name, ctx.v6);
 
     // Sous-interface 802.1Q : la trame part étiquetée sur le trunk
     const tag = step.iface.sub && !step.iface.native ? Number(step.iface.vlan) : null;
@@ -206,6 +207,7 @@ function forward(ctx, startId, target, phase, result, log, name, fixedSrc = null
     const known = (e) => e.device === current && e.ip === step.nextHop;
     const cached = !serial && (ctx.v6 ? ctx.learned.nd.some(known) : ctx.arpCache.some(known) || ctx.learned.arp.some(known));
     const res = ctx.v6 ? 'NDP' : 'ARP';
+    if (ctx.v6 && !serial && !cached) checkNdp(topo, dev, step.iface.name, topo.devices.get(l2.endpoint), l2.iface?.name, name);
     if (!serial) learn(ctx, dev, step, l2);
     log(
       phase,
@@ -347,7 +349,7 @@ function learn(ctx, dev, step, l2) {
 }
 
 const ifaceCfg = (dev, name) => (dev.config?.interfaces ?? []).find((i) => i.name === name);
-const packetText = (p) => (p.proto && p.proto !== 'icmp' ? `${p.src} → ${p.dst}:${p.dport} (${p.proto.toUpperCase()})` : `${p.src} → ${p.dst} (ICMP)`);
+const packetText = (p) => (p.proto && p.proto !== 'icmp' ? `${p.src} → ${p.dst}:${p.dport} (${p.proto.toUpperCase()})` : `${p.src} → ${p.dst} (${p.icmpType ? 'ICMPv6' : 'ICMP'})`);
 
 function checkAcl(dev, ifName, dir, packet, log, phase, name) {
   const aclName = ifaceCfg(dev, ifName)?.[dir === 'in' ? 'aclIn' : 'aclOut'];
@@ -364,21 +366,56 @@ function checkAcl(dev, ifName, dir, packet, log, phase, name) {
   log(phase, `${name(dev.id)} : ACL ${aclName} ${where} : autorisé (${rule}).`, 'info', dev.id);
 }
 
-function checkFirewall(dev, chain, inIface, outIface, packet, log, phase, name) {
-  const v = evaluateFirewall(dev.config?.firewall, chain, packet, inIface, outIface);
+function checkAcl6(dev, ifName, dir, packet, log, phase, name) {
+  const aclName = ifaceCfg(dev, ifName)?.[dir === 'in' ? 'aclIn6' : 'aclOut6'];
+  if (!aclName) return;
+  const where = `en ${dir === 'in' ? 'entrée' : 'sortie'} de ${ifName}`;
+  const acl = dev.config?.acls6?.[aclName];
+  if (!acl) {
+    log(phase, `${name(dev.id)} : l'ACL IPv6 ${aclName} appliquée ${where} n'existe pas : tout passe (comme sur IOS).`, 'info', dev.id);
+    return;
+  }
+  const v = evaluateAcl6(acl, packet);
+  const rule = v.line ? `ligne ${v.line} « ${v.text} »` : `${v.text}, aucune ligne ne correspond`;
+  if (!v.permit) throw new SimError(`${name(dev.id)} : paquet ${packetText(packet)} refusé ${where} par l'ACL IPv6 ${aclName}, ${rule}.`, dev.id);
+  log(phase, `${name(dev.id)} : ACL IPv6 ${aclName} ${where} : autorisé (${rule}).`, 'info', dev.id);
+}
+
+// NDP à travers une ACL IPv6 en entrée : un « deny ipv6 any any » explicite bloque aussi NS / NA
+function checkNdp(topo, sender, sendIface, target, targetIface, name) {
+  const blocked = (dev, ifName) => {
+    if (!dev || isMikrotik(dev)) return null;
+    const aclName = ifaceCfg(dev, ifName)?.aclIn6;
+    const acl = aclName && dev.config?.acls6?.[aclName];
+    const line = acl && blocksNdp(acl);
+    return line ? { aclName, line } : null;
+  };
+  for (const [dev, ifName, what] of [[target, targetIface, 'Neighbor Solicitation'], [sender, sendIface, 'Neighbor Advertisement']]) {
+    const b = blocked(dev, ifName);
+    if (b) {
+      throw new SimError(`${name(dev.id)} : la ligne ${b.line} de l'ACL IPv6 ${b.aclName} (en entrée de ${ifName}) refuse tout, y compris la découverte des voisins (${what}) : NDP échoue. Ajoute « permit icmp any any nd-ns » et « permit icmp any any nd-na » avant cette ligne.`, dev.id);
+    }
+  }
+}
+
+function checkFirewall(dev, chain, inIface, outIface, packet, log, phase, name, v6 = false) {
+  const v = evaluateFirewall(v6 ? dev.config?.firewall6 : dev.config?.firewall, chain, packet, inIface, outIface);
   if (v.line === null) return;
-  if (!v.permit) throw new SimError(`${name(dev.id)} : paquet ${packetText(packet)} bloqué par le pare-feu, règle ${v.line} « ${v.text} ».`, dev.id);
-  log(phase, `${name(dev.id)} : pare-feu, règle ${v.line} « ${v.text} » : accepté.`, 'info', dev.id);
+  const fw = v6 ? 'pare-feu IPv6' : 'pare-feu';
+  if (!v.permit) throw new SimError(`${name(dev.id)} : paquet ${packetText(packet)} bloqué par le ${fw}, règle ${v.line} « ${v.text} ».`, dev.id);
+  log(phase, `${name(dev.id)} : ${fw}, règle ${v.line} « ${v.text} » : accepté.`, 'info', dev.id);
 }
 
-function filterIn(dev, inIface, packet, toSelf, log, phase, name) {
+function filterIn(dev, inIface, packet, toSelf, log, phase, name, v6 = false) {
   if (isMikrotik(dev)) {
-    if (toSelf) checkFirewall(dev, 'input', inIface, null, packet, log, phase, name);
-  } else checkAcl(dev, inIface, 'in', packet, log, phase, name);
+    if (toSelf) checkFirewall(dev, 'input', inIface, null, packet, log, phase, name, v6);
+  } else if (v6) checkAcl6(dev, inIface, 'in', packet, log, phase, name);
+  else checkAcl(dev, inIface, 'in', packet, log, phase, name);
 }
 
-function filterOut(dev, inIface, outIface, packet, log, phase, name) {
-  if (isMikrotik(dev)) checkFirewall(dev, 'forward', inIface, outIface, packet, log, phase, name);
+function filterOut(dev, inIface, outIface, packet, log, phase, name, v6 = false) {
+  if (isMikrotik(dev)) checkFirewall(dev, 'forward', inIface, outIface, packet, log, phase, name, v6);
+  else if (v6) checkAcl6(dev, outIface, 'out', packet, log, phase, name);
   else checkAcl(dev, outIface, 'out', packet, log, phase, name);
 }
 

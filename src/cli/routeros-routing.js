@@ -302,25 +302,33 @@ export function runRouting(ctx, p) {
     }
 
     // --- Pare-feu (filtrage des paquets) -----------------------------------------
+    // /ip firewall filter -> config.firewall ; /ipv6 firewall filter -> config.firewall6 (adresses IPv6, icmpv6)
+    case 'ipv6 firewall filter|add':
     case 'ip firewall filter|add': {
+      const v6 = where.startsWith('ipv6');
       const text = Object.entries(n).map(([k, v]) => `${k}=${v}`).join(' ');
       const r = parseFirewallRule(text);
       if (r.error) return out.push(`failure: ${r.error}`, ''), true;
+      const bad = ['src', 'dst'].find((k) => r.rule[k] && r.rule[k].includes(':') !== v6);
+      if (bad) return out.push(`failure: ${bad}-address : adresse ${v6 ? 'IPv6' : 'IPv4'} attendue`, ''), true;
       const at = n['place-before'] !== undefined ? Number(n['place-before']) : null;
-      const rules = (cfg.firewall ??= []);
+      const rules = v6 ? (cfg.firewall6 ??= []) : (cfg.firewall ??= []);
       if (at !== null && at >= 0 && at <= rules.length) rules.splice(at, 0, r.rule);
       else rules.push(r.rule);
       changed();
       return true;
     }
+    case 'ipv6 firewall filter|print':
     case 'ip firewall filter|print':
       out.push('Flags: X - disabled, I - invalid, D - dynamic ');
-      (cfg.firewall ?? []).forEach((r, i) => out.push(` ${pad(i, 3)} ${firewallRuleText(r)}`));
+      ((where.startsWith('ipv6') ? cfg.firewall6 : cfg.firewall) ?? []).forEach((r, i) => out.push(` ${pad(i, 3)} ${firewallRuleText(r)}`));
       return out.push(''), true;
+    case 'ipv6 firewall filter|remove':
     case 'ip firewall filter|remove': {
+      const list = where.startsWith('ipv6') ? cfg.firewall6 : cfg.firewall;
       const k = Number(n.numbers ?? p.unnamed[0]);
-      if (!cfg.firewall?.[k]) return out.push('no such item', ''), true;
-      cfg.firewall.splice(k, 1);
+      if (!list?.[k]) return out.push('no such item', ''), true;
+      list.splice(k, 1);
       changed();
       return true;
     }
@@ -467,6 +475,7 @@ export function routingScript(dev) {
   const cfg = dev.config ?? {};
   const out = [];
   if (cfg.firewall?.length) out.push('/ip firewall filter', ...cfg.firewall.map((r) => `add ${firewallRuleText(r)}`));
+  if (cfg.firewall6?.length) out.push('/ipv6 firewall filter', ...cfg.firewall6.map((r) => `add ${firewallRuleText(r)}`));
   if (cfg.natRules?.length) out.push('/ip firewall nat', ...cfg.natRules.map((r) => `add ${natRuleText(r)}`));
   const dh = cfg.dhcp && cfg.dhcp !== true ? cfg.dhcp : null;
   if (dh?.ranges) out.push('/ip pool', ...Object.entries(dh.ranges).map(([name, [a, b]]) => `add name=${name} ranges=${a}-${b}`));
