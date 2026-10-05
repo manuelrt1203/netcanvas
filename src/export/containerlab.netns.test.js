@@ -4,7 +4,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { BGP_DEMO, DEMO, DHCP_DEMO, IPV6_DEMO, OSPF6_DEMO, L3_DEMO, NAT_DEMO, OSPF_DEMO, ROAS_DEMO, STP_DEMO } from '../examples.js';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { resolveName } from '../net/services.js';
+import { BGP_DEMO, DEMO, DHCP_DEMO, IPV6_DEMO, OSPF6_DEMO, SERVICES_DEMO, L3_DEMO, NAT_DEMO, OSPF_DEMO, ROAS_DEMO, STP_DEMO } from '../examples.js';
 import { buildTopology } from '../net/topology.js';
 import { isRouting, v6Forwarding } from '../net/topology.js';
 import { simulatePing } from '../net/simulate.js';
@@ -19,12 +23,26 @@ const skip = probe.status !== 0 && 'namespaces utilisateur indisponibles (unshar
 // En CI, ces tests doivent tourner : un « ignoré » silencieux masquerait une régression
 if (skip && process.env.NETCANVAS_REQUIRE_NETNS) throw new Error(`Tests réseau réels impossibles : ${skip}\n${probe.stderr}`);
 
+// DNS : dnsmasq abandonne ses droits (setgroups), interdit dans un namespace utilisateur : pour le test seulement,
+// une petite bibliothèque neutralise setgroups (LD_PRELOAD). Sans gcc ni dnsmasq, les tests DNS sont ignorés.
+const shimDir = mkdtempSync(join(tmpdir(), 'ncdns-'));
+const shim = join(shimDir, 'nogroups.so');
+writeFileSync(join(shimDir, 'nogroups.c'), '#include <grp.h>\n#include <unistd.h>\nint setgroups(size_t n, const gid_t *l){(void)n;(void)l;return 0;}\nint initgroups(const char *u, gid_t g){(void)u;(void)g;return 0;}\n');
+const dnsTools = spawnSync('sh', ['-c', `command -v dnsmasq && command -v dig && gcc -shared -fPIC -o ${shim} ${join(shimDir, 'nogroups.c')}`], { encoding: 'utf8' });
+const skipDns = skip || (dnsTools.status !== 0 && 'dnsmasq, dig ou gcc absent');
+if (skipDns && !skip && process.env.NETCANVAS_REQUIRE_NETNS) throw new Error(`Test DNS réel impossible : ${skipDns}`);
+const resolv = join(shimDir, 'resolv.conf');
+writeFileSync(resolv, '');
+
 // Monte le réseau puis lance les pings ; renvoie { "src>ip": true|false }
 // wait : secondes avant les pings (STP : écoute puis apprentissage) ; probes : commandes dont on veut la sortie
 function runLab(doc, pings, { wait = 1, probes = [] } = {}) {
   const { table } = interfaceTable(doc);
   const commands = clabCommands(doc);
-  const script = ['set -e', 'mount -t tmpfs none /run', 'mkdir -p /run/netns'];
+  // /etc/resolv.conf remplacé dans ce namespace : les commandes du lab ne touchent jamais celui de la machine
+  // (lien vers /run, comme avec systemd-resolved : la cible est recréée dans le /run temporaire)
+  const script = ['set -e', 'mount -t tmpfs none /run', 'mkdir -p /run/netns',
+    `if [ -L /etc/resolv.conf ]; then t=$(readlink -m /etc/resolv.conf); case "$t" in /run/*) mkdir -p "$(dirname "$t")"; : > "$t";; *) exit 3;; esac; else mount --bind ${resolv} /etc/resolv.conf; fi`];
 
   for (const d of doc.devices) {
     script.push(`ip netns add ${d.id}`, `ip -n ${d.id} link set lo up`);
@@ -42,7 +60,7 @@ function runLab(doc, pings, { wait = 1, probes = [] } = {}) {
     );
   });
   for (const d of doc.devices) {
-    for (const c of commands.get(d.id)) script.push(`ip netns exec ${d.id} sh -c ${sh(c)}`);
+    for (const c of commands.get(d.id)) script.push(`ip netns exec ${d.id} ${/^dnsmasq /.test(c) ? `env LD_PRELOAD=${shim} ` : ''}sh -c ${sh(c)}`);
   }
   script.push('set +e', `sleep ${wait}`); // laisse les bridges passer en forwarding
   for (const [key, ns, cmd] of probes) script.push(`echo "${key} $(ip netns exec ${ns} ${cmd} | tr '\n' ' ')"`);
@@ -50,8 +68,9 @@ function runLab(doc, pings, { wait = 1, probes = [] } = {}) {
     script.push(`ip netns exec ${src} ping -c1 -W1 ${ip} >/dev/null 2>&1 && echo "${src}>${ip} ok" || echo "${src}>${ip} ko"`);
   }
 
-  const r = spawnSync('unshare', ['-rnm', 'sh', '-c', script.join('\n')], { encoding: 'utf8', timeout: 60_000 });
-  assert.equal(r.status, 0, r.stderr);
+  // set -x avant les pings : en cas d'échec, la dernière commande exécutée est dans le message
+  const r = spawnSync('unshare', ['-rnm', 'sh', '-c', script.join('\n').replace('set -e', 'set -e\nexec 3>&2; BASH_XTRACEFD=3; set -x')], { encoding: 'utf8', timeout: 60_000 });
+  assert.equal(r.status, 0, `${r.stderr.trim().split('\n').slice(-4).join('\n')}`);
   return Object.fromEntries(r.stdout.trim().split('\n').map((line) => {
     const [key, ...rest] = line.split(' ');
     const verdict = rest.join(' ');
@@ -267,4 +286,36 @@ test('containerlab : PC en DHCPv6 stateful (adresse du pool installée) sur un v
     ['pc1', '2001:db8:acad:30::10', true],
     ['srv', '2001:db8:acad:10::2', true], // l'adresse attribuée par DHCPv6 répond
   ]);
+});
+
+// Résolution réelle (dig vers le serveur DNS du client) comparée à la simulation
+function assertDnsMatches(doc, queries) {
+  const live = doc.devices;
+  const server = (id) => { const c = live.find((d) => d.id === id).config; return c.dns ?? c.nameServer; };
+  const probes = queries.map(([src, name], k) => [`q${k}`, src, `dig +short +time=1 +tries=1 @${server(src)} ${name}`]);
+  const real = runLab(doc, [], { probes });
+  queries.forEach(([src, name, expected], k) => {
+    const sim = resolveName(doc, src, name);
+    assert.equal(sim.ok ? sim.ip : null, expected, `simulateur ${src} : ${name}`);
+    const answer = String(real[`q${k}`] ?? '').trim().split(/\s+/).find((x) => /^[0-9a-f:.]+$/i.test(x) && x.includes(expected?.includes(':') ? ':' : '.')) ?? null;
+    assert.equal(answer, expected, `réseau Linux ${src} : ${name} (réponse « ${real[`q${k}`]} »)`);
+  });
+}
+
+test('containerlab : DNS réel (dnsmasq) : noms connus, nom inconnu, relais du routeur, ACL sur le port 53', { skip: skipDns }, () => {
+  const doc = structuredClone(SERVICES_DEMO);
+  // R1 sert aussi de DNS au VLAN 10 : entrée locale + relais vers le serveur
+  Object.assign(doc.devices.find((d) => d.id === 'r1').config, { dnsServer: true, nameServer: '172.16.0.10', hosts: [{ name: 'imprimante.lan', ip: '192.168.10.50' }] });
+  doc.devices.find((d) => d.id === 'pc2').config.dns = '192.168.10.1';
+  assertDnsMatches(doc, [
+    ['pc1', 'www.entreprise.lan', '172.16.0.10'], // serveur DNS direct
+    ['pc3', 'intranet.entreprise.lan', '172.16.0.10'], // VLAN 20 : l'ACL laisse passer UDP 53
+    ['pc1', 'mail.entreprise.lan', null], // inconnu : NXDOMAIN
+    ['pc2', 'imprimante.lan', '192.168.10.50'], // entrée locale du routeur
+    ['pc2', 'www.entreprise.lan', '172.16.0.10'], // relayé par R1 vers le serveur
+  ]);
+  // Sans la ligne « permit udp … eq domain », le VLAN 20 ne résout plus
+  const blocked = structuredClone(SERVICES_DEMO);
+  blocked.devices.find((d) => d.id === 'r2').config.acls[110].rules.splice(0, 1);
+  assertDnsMatches(blocked, [['pc3', 'www.entreprise.lan', null], ['pc1', 'www.entreprise.lan', '172.16.0.10']]);
 });

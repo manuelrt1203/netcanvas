@@ -24,6 +24,10 @@ jobs:
       - name: Autoriser les namespaces utilisateur
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+      # Test DNS réel de l'export Containerlab : dnsmasq (binaire seul, sans service) et dig
+      - name: Outils DNS
+        run: sudo apt-get update -q && sudo apt-get install -y -q dnsmasq-base bind9-dnsutils
+
       - name: Tests unitaires et réseaux réels
         env:
           NETCANVAS_REQUIRE_NETNS: 1

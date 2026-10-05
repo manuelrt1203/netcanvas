@@ -5,13 +5,18 @@
 //             STP (s'il y a une boucle) : le bridge Linux n'a qu'un arbre (802.1D) ; on reprend la config du VLAN 1
 //             (activé, priorité), la MAC du switch et les coûts de port, pour qu'il bloque le même port que NetCanvas.
 //   hôte    : adresse + route par défaut
+//   DNS     : un serveur DNS (service DNS d'un serveur, ou routeur « ip dns server » / allow-remote-requests)
+//             lance dnsmasq (installé par apk au démarrage s'il manque : il faut Internet au déploiement) avec ses
+//             enregistrements A/AAAA ; un nom inconnu donne NXDOMAIN, sauf relais vers le serveur DNS du routeur.
+//             Les clients reçoivent leur serveur DNS dans /etc/resolv.conf.
 //   IPv6    : adresses globales et link-local de NetCanvas (nodad : utilisables tout de suite), routes IPv6
 //             calculées ; un hôte SLAAC reçoit en statique l'adresse et la passerelle que NetCanvas a calculées.
 // Containerlab réserve eth0 au management : le 1er câble d'un équipement est eth1, le 2e eth2…
 import { isValidCidr, isValidIp } from '../net/ip.js';
 import { computeRouting, lookup, prefixText } from '../net/routing.js';
 import { isHost, isL3Switch, isLoopbackName, isRouting, v6Forwarding } from '../net/topology.js';
-import { isLinkLocal6 } from '../net/ip6.js';
+import { isLinkLocal6, isValidIp6, normIp6 } from '../net/ip6.js';
+import { dnsServerOf } from '../net/services.js';
 import { routeText6 } from '../net/routing6.js';
 import { isMikrotik } from '../net/catalog.js';
 import { PORT_NAMES } from '../net/acl.js';
@@ -113,9 +118,34 @@ export function clabCommands(rawDoc) {
         cmds.push(`ip route replace default via ${rows[0].gateway}`);
       }
     }
-    commands.set(d.id, [...cmds, ...v6Cmds(d, rows)]);
+    commands.set(d.id, [...cmds, ...v6Cmds(d, rows), ...dnsCmds(d)]);
   }
   return commands;
+
+  // DNS : serveur dnsmasq et/ou /etc/resolv.conf du client
+  function dnsCmds(d) {
+    const out = [];
+    const c = d.config ?? {};
+    const own = c.services?.dns?.enabled;
+    if (own || (!isHost(d) && c.dnsServer)) {
+      const byName = new Map();
+      for (const r of (own ? c.services.dns.records : c.hosts) ?? []) {
+        const name = String(r.name ?? '').toLowerCase().replace(/\.$/, '');
+        if (!name || !(isValidIp(r.ip) || isValidIp6(r.ip))) continue;
+        const e = byName.get(name) ?? {};
+        if (isValidIp6(r.ip)) e.v6 ??= normIp6(r.ip);
+        else e.v4 ??= r.ip;
+        byName.set(name, e);
+      }
+      const records = [...byName].map(([n, e]) => ` --host-record=${[n, e.v4, e.v6].filter(Boolean).join(',')}`).join('');
+      const upstream = !own && (isValidIp(c.nameServer) || isValidIp6(c.nameServer)) ? ` --server=${normIp6(c.nameServer) ?? c.nameServer}` : ' --local=/#/';
+      out.push('sh -c "command -v dnsmasq >/dev/null || apk add --no-cache -q dnsmasq"',
+        `dnsmasq -u root -g root --no-resolv --no-hosts --pid-file=/tmp/netcanvas-dns.pid${records}${upstream}`);
+    }
+    const server = dnsServerOf(d);
+    if (server && (isValidIp(server) || isValidIp6(server))) out.push(`sh -c "printf 'nameserver %s\\n' ${normIp6(server) ?? server} > /etc/resolv.conf"`);
+    return out;
+  }
 
   // IPv6 : adresses (link-local de NetCanvas en plus de celle du noyau), puis routes ou passerelle
   function v6Cmds(d, rows) {
