@@ -509,7 +509,7 @@ function Editor() {
   };
 
   // Pas à pas : trame i affichée sur le plan (câbles allumés ensemble, déjà parcourus en couleur)
-  const kindClass = (f) => (f.kind.startsWith('arp') ? 'arp' : f.phase);
+  const kindClass = (f) => (f.kind.startsWith('arp') || f.kind.startsWith('nd-') ? 'arp' : f.phase);
   const showFrame = (result, i) => {
     stopSim();
     const frames = result.frames ?? [];

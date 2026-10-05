@@ -225,7 +225,7 @@ step('router-on-a-stick : sous-interfaces dans le formulaire, ping inter-VLAN');
 await openDemo('Router-on-a-stick (802.1Q)');
 await page.getByTestId('rf__node-r1').click();
 assert.ok(await page.getByText('G0/0.20', { exact: true }).first().isVisible(), 'sous-interface affichée');
-await page.locator('.subifs input[type="number"]').nth(2).fill('30'); // VLAN de G0/0.20 -> 30
+await page.locator('.subifs .rows-item').nth(1).getByLabel('VLAN').fill('30'); // VLAN de G0/0.20 -> 30
 assert.ok(await page.getByText('G0/0.30', { exact: true }).first().isVisible(), 'renommée selon le VLAN');
 await page.click('role=tab[name="Simulation"]');
 await page.selectOption('#sim-src', { label: 'PC Profs' });
@@ -454,6 +454,30 @@ await page.click('role=button[name="Résoudre le nom"]');
 await page.waitForSelector('button:has-text("Résoudre le nom"):not([disabled])', { timeout: 15000 });
 assert.match(await page.locator('.sim-verdict').textContent(), /www\.entreprise\.lan = 172\.16\.0\.10/);
 assert.ok(await page.getByText(/R1 n'a pas www\.entreprise\.lan dans sa table locale : il relaie/).isVisible());
+
+step('IPv6 : SLAAC affiché, ping et pas à pas NDP, panne du routage IPv6 dans le formulaire');
+await openDemo('Double pile IPv4 / IPv6');
+await page.getByTestId('rf__node-pc1').click();
+await page.click('role=tab[name=/Propriétés/]');
+assert.match(await page.locator('.proto', { hasText: 'IPv6' }).locator('.ok-text').textContent(), /Annonce reçue : 2001:db8:acad:10:2e0:f7ff:fe[0-9a-f:]+\/64, passerelle fe80::1/);
+await page.click('role=tab[name="Simulation"]');
+await page.selectOption('#sim-kind', 'ping');
+await page.selectOption('#sim-src', { label: 'PC Compta' });
+await page.selectOption('#sim-dst', { label: 'Serveur Web · 2001:db8:acad:30::10' });
+await page.click('role=button[name="Pas à pas"]');
+assert.match(await page.locator('.frame-summary').textContent(), /Neighbor Solicitation \(multicast ff02::1:ff00:1\) : qui a fe80::1/);
+await page.locator('.frame-row', { hasText: 'ICMP' }).first().click();
+assert.match(await page.locator('.frame-summary').textContent(), /ICMPv6 echo request 2001:db8:acad:10:/);
+assert.ok(await page.locator('.layer summary', { hasText: /^IPv6$/ }).first().isVisible());
+await page.screenshot({ path: 'e2e/ipv6.png' });
+// Routage IPv6 coupé sur R2 dans le formulaire : explication
+await page.getByTestId('rf__node-r2').click();
+await page.click('role=tab[name=/Propriétés/]');
+await page.getByLabel(/Router les paquets IPv6/).uncheck();
+await page.click('role=tab[name="Simulation"]');
+await page.click('text=Lancer le ping');
+await page.waitForSelector('button:has-text("Lancer le ping"):not([disabled])', { timeout: 15000 });
+assert.ok(await page.getByText(/R2 reçoit un paquet IPv6 pour 2001:db8:acad:30::10 mais le routage IPv6 n'est pas activé/).first().isVisible());
 
 step('TP : objectifs en direct, indices, ajout d\'un objectif');
 await openDemo('TP : inter-VLAN en panne (3 pannes)');

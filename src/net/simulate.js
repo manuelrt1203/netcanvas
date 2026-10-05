@@ -1,4 +1,4 @@
-// Simulation d'un ping (ICMP echo request / reply) sur un schéma au format v2.
+// Simulation d'un ping (ICMP echo request / reply) sur un schéma au format v2, en IPv4 ou en IPv6.
 //
 // Modèle :
 //  - niveau 3 : chaque hôte choisit envoi direct ou passerelle selon son masque ;
@@ -7,6 +7,9 @@
 //  - niveau 2 : la résolution ARP est un parcours en largeur du domaine de diffusion,
 //    en respectant les VLAN des ports de switch (access / trunk, VLAN natif 1). Un hub répète tout.
 //  - niveau 1 : un câble hors service (mauvais câble, port inexistant, clock rate absent) ne transmet rien.
+//  - IPv6 (destination IPv6) : préfixes et passerelle (souvent link-local) des hôtes, table IPv6 des routeurs
+//    (routing6.js), NDP (Neighbor Solicitation / Advertisement) à la place d'ARP. Les ACL et le NAT IPv4
+//    ne s'appliquent pas aux paquets IPv6.
 import { formatIp, isValidCidr, isValidIp, networkLabel, networkOf, parseIp, sameSubnet } from './ip.js';
 import { buildTopology, isHost, isL3Switch, isRouting } from './topology.js';
 import { isMikrotik, modelOf } from './catalog.js';
@@ -18,6 +21,8 @@ import { macCisco, macOf } from './mac.js';
 import { flood } from './l2.js';
 import { computeRouting, lookup } from './routing.js';
 import { serviceEnabled } from './services.js';
+import { isLinkLocal6, isValidIp6, multicastMac6, networkLabel6, normIp6, sameSubnet6, solicitedNode6 } from './ip6.js';
+import { lookup6, routeText6 } from './routing6.js';
 
 const MAX_TTL = 64;
 
@@ -44,7 +49,9 @@ class SimError extends Error {
 //           oneWay : seulement l'aller (réponse ICMP d'un routeur pour traceroute),
 //           proto / dport : requête UDP ou TCP vers un service au lieu d'un ping ; app : couche applicative
 //           (pas à pas) { name, request: [[champ, valeur]], reply: [[champ, valeur]] }
-export function simulatePing(rawDoc, sourceId, dstIp, options = {}) {
+export function simulatePing(rawDoc, sourceId, target, options = {}) {
+  const v6 = isValidIp6(target);
+  const dstIp = v6 ? normIp6(target) : target;
   // Sans topologie fournie, on part du document effectif (clients DHCP avec leur bail)
   const doc = options.topo ? rawDoc : withLeases(rawDoc);
   const topo = options.topo ?? buildTopology(doc);
@@ -54,7 +61,8 @@ export function simulatePing(rawDoc, sourceId, dstIp, options = {}) {
   const ctx = {
     topo, routing, natTable: [...activeNat(runtime)], now: runtime.time, natAdded: [],
     arpCache: (runtime.arp ?? []).filter((e) => e.expires > runtime.time),
-    learned: { arp: [], mac: [] }, // entrées ARP / MAC apprises pendant ce ping
+    learned: { arp: [], mac: [], nd: [] }, // entrées ARP / MAC / voisins IPv6 apprises pendant ce ping
+    v6,
     frames: [], // trames une par une, avec leurs en-têtes (simulation pas à pas)
     cursor: 0, // journal déjà rattaché à une trame
     l4: { proto: options.proto ?? 'icmp', sport: EPHEMERAL_PORT, dport: options.dport ?? null },
@@ -62,7 +70,7 @@ export function simulatePing(rawDoc, sourceId, dstIp, options = {}) {
   };
   const svc = ctx.l4.proto === 'icmp' ? null : serviceAt(ctx.l4.proto, ctx.l4.dport);
   const what = svc ? `une requête ${SERVICE_PORTS[svc].label} (${ctx.l4.proto.toUpperCase()} ${ctx.l4.dport})`
-    : ctx.l4.proto === 'icmp' ? 'un ping' : `un paquet ${ctx.l4.proto.toUpperCase()} ${ctx.l4.dport}`;
+    : ctx.l4.proto === 'icmp' ? (v6 ? 'un ping IPv6' : 'un ping') : `un paquet ${ctx.l4.proto.toUpperCase()} ${ctx.l4.dport}`;
   // path : équipements atteints et adresse d'entrée (sert à traceroute)
   const result = { ok: false, hops: [], path: [], log: [], failedAt: null, srcIp: null };
   result.natAdded = ctx.natAdded; // traductions créées, à enregistrer dans la table persistante
@@ -73,7 +81,7 @@ export function simulatePing(rawDoc, sourceId, dstIp, options = {}) {
 
   try {
     if (!topo.devices.has(sourceId)) throw new SimError("Choisis l'équipement source.");
-    if (!isValidIp(dstIp)) throw new SimError(`« ${dstIp} » n'est pas une adresse IPv4 valide.`);
+    if (!isValidIp(dstIp) && !v6) throw new SimError(`« ${dstIp} » n'est pas une adresse IPv4 ou IPv6 valide.`);
 
     log('request', `${name(sourceId)} envoie ${what} vers ${dstIp}.`);
     const req = forward(ctx, sourceId, dstIp, 'request', result, log, name, options.srcIp);
@@ -93,9 +101,11 @@ export function simulatePing(rawDoc, sourceId, dstIp, options = {}) {
       log('request', `${name(req.arrivedAt)} reçoit la requête sur ${proto} ${ctx.l4.dport} (service ${SERVICE_PORTS[svc].label}) et répond.`, 'ok', req.arrivedAt);
     } else log('request', `${name(req.arrivedAt)} reçoit l'echo request et répond.`, 'ok', req.arrivedAt);
 
+    // La réponse à une link-local repart par l'interface d'arrivée
+    ctx.replyIface = req.inIface;
     const rep = forward(ctx, req.arrivedAt, req.srcIp, 'reply', result, log, name);
     log('reply', svc ? `${name(rep.arrivedAt)} reçoit la réponse ${SERVICE_PORTS[svc].label} : échange réussi.`
-      : `${name(rep.arrivedAt)} reçoit l'echo reply : ping réussi (TTL ${rep.ttl}).`, 'ok', rep.arrivedAt);
+      : `${name(rep.arrivedAt)} reçoit l'echo reply : ping réussi (${v6 ? 'Hop Limit' : 'TTL'} ${rep.ttl}).`, 'ok', rep.arrivedAt);
     result.ok = true;
     result.ttl = rep.ttl;
     endFrame(ctx, result, { kind: 'done', phase: 'reply', at: rep.arrivedAt, summary: svc ? `Réponse ${SERVICE_PORTS[svc].label} reçue` : 'Ping réussi' });
@@ -120,12 +130,14 @@ function forward(ctx, startId, target, phase, result, log, name, fixedSrc = null
 
   while (true) {
     const dev = topo.devices.get(current);
-    const ownIp = (ip) => topo.l3Ifaces(current).find((i) => parseIp(i.ip) === parseIp(ip));
+    const ownIp = (ip) => (ctx.v6 ? topo.l3Ifaces6(current).find((i) => i.ip === ip || i.linkLocal === ip)
+      : topo.l3Ifaces(current).find((i) => parseIp(i.ip) === parseIp(ip)));
+    const v4Only = !ctx.v6; // ACL et NAT IPv4
     // Filtrage en entrée (ACL « in », pare-feu MikroTik chain=input) ; pas sur le trafic émis par l'équipement
     const pkt = () => ({ src: srcIp, dst: dstIp, ...l4(ctx, phase) });
-    if (current !== startId && isRouting(dev) && arrived) filterIn(dev, arrived, pkt(), Boolean(ownIp(dstIp)), log, phase, name);
+    if (v4Only && current !== startId && isRouting(dev) && arrived) filterIn(dev, arrived, pkt(), Boolean(ownIp(dstIp)), log, phase, name);
     // NAT de destination à l'entrée (statique, dst-nat, ou retour d'une traduction)
-    if (current !== startId && isRouting(dev) && arrived) {
+    if (v4Only && current !== startId && isRouting(dev) && arrived) {
       const t = destNat(dev, arrived, pkt(), ctx.natTable, phase === 'reply');
       if (t) {
         log(phase, `${name(current)} : NAT, destination ${dstIp} traduite en ${t.dst} (${t.how}).`, 'info', current);
@@ -133,7 +145,7 @@ function forward(ctx, startId, target, phase, result, log, name, fixedSrc = null
       }
     }
     const own = ownIp(dstIp);
-    if (own) return { arrivedAt: current, srcIp: srcIp ?? own.ip, ttl };
+    if (own) return { arrivedAt: current, srcIp: srcIp ?? (ctx.v6 && isLinkLocal6(dstIp) ? own.linkLocal : own.ip), ttl, inIface: arrived };
 
     if (current !== startId && !isRouting(dev)) {
       const why = dev.type !== 'switch' ? "n'est pas un routeur : il le jette"
@@ -141,19 +153,29 @@ function forward(ctx, startId, target, phase, result, log, name, fixedSrc = null
           : `ne route pas (un ${modelOf(dev).short} est un switch de niveau 2 : il faut un routeur ou un switch niveau 3)`;
       throw new SimError(`${name(current)} reçoit un paquet pour ${dstIp} ${why}.`, current);
     }
+    if (ctx.v6 && current !== startId && !dev.config?.ipv6Routing) {
+      throw new SimError(`${name(current)} reçoit un paquet IPv6 pour ${dstIp} mais le routage IPv6 n'est pas activé (« ipv6 unicast-routing ») : il le jette.`, current);
+    }
+    if (ctx.v6 && current !== startId && isLinkLocal6(dstIp)) {
+      throw new SimError(`${name(current)} : ${dstIp} est une adresse link-local, elle ne traverse jamais un routeur.`, current);
+    }
     // Chaque routeur (ou switch niveau 3) traversé décrémente le TTL
     if (isRouting(dev) && current !== startId && --ttl === 0) {
-      throw new SimError(`${name(current)} : TTL expiré, le paquet tourne en boucle entre les routeurs.`, current);
+      throw new SimError(`${name(current)} : ${ctx.v6 ? 'Hop Limit' : 'TTL'} expiré, le paquet tourne en boucle entre les routeurs.`, current);
     }
 
-    const step = isRouting(dev) ? routerDecision(ctx, current, dstIp, name)
-      : dev.type === 'switch' ? switchHostDecision(topo, current, dstIp, name)
-        : hostDecision(topo, current, dstIp, name);
-    srcIp ??= step.iface.ip;
+    const step = ctx.v6
+      ? (isRouting(dev) ? routerDecision6(ctx, current, dstIp, name, phase === 'reply' && current === startId ? ctx.replyIface : null)
+        : dev.type === 'switch' ? switchHostDecision6(topo, current, dstIp, name)
+          : hostDecision6(topo, current, dstIp, name))
+      : isRouting(dev) ? routerDecision(ctx, current, dstIp, name)
+        : dev.type === 'switch' ? switchHostDecision(topo, current, dstIp, name)
+          : hostDecision(topo, current, dstIp, name);
+    srcIp ??= step.srcIp ?? step.iface.ip;
     if (phase === 'request') result.srcIp = srcIp;
     log(phase, step.text, 'info', current);
     // NAT de source (inside -> outside, masquerade) puis filtrage en sortie, comme sur IOS
-    if (current !== startId && isRouting(dev)) {
+    if (v4Only && current !== startId && isRouting(dev)) {
       const t = sourceNat(dev, arrived, step.iface.name, step.iface.ip, pkt());
       if (t) {
         // Identifiant ICMP (le « port » du PAT) : suivant libre pour ce routeur
@@ -169,26 +191,27 @@ function forward(ctx, startId, target, phase, result, log, name, fixedSrc = null
       }
     }
     // Filtrage en sortie (ACL « out », pare-feu MikroTik chain=forward)
-    if (current !== startId && isRouting(dev)) filterOut(dev, arrived, step.iface.name, pkt(), log, phase, name);
+    if (v4Only && current !== startId && isRouting(dev)) filterOut(dev, arrived, step.iface.name, pkt(), log, phase, name);
 
     // Sous-interface 802.1Q : la trame part étiquetée sur le trunk
     const tag = step.iface.sub && !step.iface.native ? Number(step.iface.vlan) : null;
     const l2 = step.iface.svi
-      ? deliver(topo, current, null, step.nextHop, name, null, step.iface.vlan)
-      : deliver(topo, current, step.iface.link, step.nextHop, name, tag);
+      ? deliver(topo, current, null, step.nextHop, name, null, step.iface.vlan, ctx.v6)
+      : deliver(topo, current, step.iface.link, step.nextHop, name, tag, null, ctx.v6);
     result.hops.push(...l2.hops.map((h) => ({ ...h, phase })));
     result.path.push({ phase, device: l2.endpoint, ip: l2.iface?.ip ?? null });
     const via = l2.vlan != null ? ` (VLAN ${l2.vlan})` : '';
     const serial = topo.links.get(step.iface.link)?.cable === 'serial';
     // En cache : entrée encore valide, ou apprise pendant ce ping (la cible d'une requête ARP apprend l'émetteur)
     const known = (e) => e.device === current && e.ip === step.nextHop;
-    const cached = !serial && (ctx.arpCache.some(known) || ctx.learned.arp.some(known));
+    const cached = !serial && (ctx.v6 ? ctx.learned.nd.some(known) : ctx.arpCache.some(known) || ctx.learned.arp.some(known));
+    const res = ctx.v6 ? 'NDP' : 'ARP';
     if (!serial) learn(ctx, dev, step, l2);
     log(
       phase,
       serial ? `Liaison série point à point : ${name(l2.endpoint)} reçoit le paquet.`
-        : cached ? `ARP (en cache) : ${step.nextHop} est ${name(l2.endpoint)}${via}. Trame transmise.`
-          : `ARP : ${step.nextHop} est ${name(l2.endpoint)}${via}. Trame transmise.`,
+        : cached ? `${res} (en cache) : ${step.nextHop} est ${name(l2.endpoint)}${via}. Trame transmise.`
+          : `${res} : ${step.nextHop} est ${name(l2.endpoint)}${via}. Trame transmise.`,
       'info',
       l2.endpoint,
     );
@@ -203,6 +226,7 @@ function forward(ctx, startId, target, phase, result, log, name, fixedSrc = null
 // ensemble), at (équipement qui la reçoit), summary, layers [{ name, fields: [[champ, valeur]] }],
 // notes (ce que l'équipement émetteur a décidé, d'après le journal) }
 const ETHERTYPE_IP = '0x0800 (IPv4)';
+const ETHERTYPE_IP6 = '0x86DD (IPv6)';
 const BROADCAST = 'ffff.ffff.ffff';
 
 function takeNotes(ctx, result) {
@@ -223,7 +247,28 @@ function addFrames(ctx, result, { dev, step, l2, phase, serial, cached, packet }
   const senderMac = macCisco(macOf(dev, step.iface.name));
   const targetMac = macCisco(macOf(target, l2.iface?.name));
   const frames = [];
-  if (!serial && !cached) {
+  if (ctx.v6 && !serial && !cached) {
+    // NDP : Neighbor Solicitation au multicast « nœud sollicité », Neighbor Advertisement en retour
+    const from6 = step.iface.linkLocal ?? step.iface.ip;
+    const sn = solicitedNode6(step.nextHop);
+    const nd = (type, tgt, extra) => ({ name: 'ICMPv6', fields: [['Type', type], ['Adresse cible', tgt], ...extra] });
+    const ip6 = (src, dst) => ({ name: 'IPv6', fields: [['Source', src], ['Destination', dst], ['Hop Limit', '255'], ['Next Header', '58 (ICMPv6)']] });
+    frames.push({
+      kind: 'nd-ns', phase, hops: l2.traversed ?? l2.hops, at: l2.endpoint,
+      summary: `NDP Neighbor Solicitation (multicast ${sn}) : qui a ${step.nextHop} ?`,
+      layers: [...ethLayers(senderMac, multicastMac6(sn), ETHERTYPE_IP6, l2.hops[0]?.tag), ip6(from6, sn), nd('135 (Neighbor Solicitation)', step.nextHop, [['Option', `MAC source ${senderMac}`]])],
+    });
+    const isRouter = isRouting(target);
+    for (const h of [...l2.hops].reverse()) {
+      frames.push({
+        kind: 'nd-na', phase, hops: [{ ...h, from: h.to, to: h.from }], at: h.from,
+        summary: `NDP Neighbor Advertisement : ${step.nextHop} est à ${targetMac}`,
+        layers: [...ethLayers(targetMac, senderMac, ETHERTYPE_IP6, h.tag), ip6(l2.iface?.linkLocal ?? step.nextHop, from6),
+          nd('136 (Neighbor Advertisement)', step.nextHop, [['Drapeaux', `${isRouter ? 'R ' : ''}S O`], ['Option', `MAC cible ${targetMac}`]])],
+      });
+    }
+  }
+  if (!ctx.v6 && !serial && !cached) {
     const arp = (op, smac, sip, tmac, tip) => ({
       name: 'ARP',
       fields: [['Opération', op === 1 ? '1 (request)' : '2 (reply)'], ['MAC émetteur', smac], ['IP émetteur', sip], ['MAC cible', tmac], ['IP cible', tip]],
@@ -242,10 +287,16 @@ function addFrames(ctx, result, { dev, step, l2, phase, serial, cached, packet }
     }
   }
   const t = l4(ctx, phase);
-  const PROTO_NUM = { icmp: '1 (ICMP)', tcp: '6 (TCP)', udp: '17 (UDP)' };
-  const ip = { name: 'IPv4', fields: [['Source', packet.src], ['Destination', packet.dst], ['TTL', String(packet.ttl)], ['Protocole', PROTO_NUM[t.proto]]] };
+  const PROTO_NUM = ctx.v6 ? { icmp: '58 (ICMPv6)', tcp: '6 (TCP)', udp: '17 (UDP)' } : { icmp: '1 (ICMP)', tcp: '6 (TCP)', udp: '17 (UDP)' };
+  const ip = ctx.v6
+    ? { name: 'IPv6', fields: [['Source', packet.src], ['Destination', packet.dst], ['Hop Limit', String(packet.ttl)], ['Next Header', PROTO_NUM[t.proto]]] }
+    : { name: 'IPv4', fields: [['Source', packet.src], ['Destination', packet.dst], ['TTL', String(packet.ttl)], ['Protocole', PROTO_NUM[t.proto]]] };
+  const ethertype = ctx.v6 ? ETHERTYPE_IP6 : ETHERTYPE_IP;
+  const echo = ctx.v6
+    ? { name: 'ICMPv6', fields: [['Type', phase === 'request' ? '128 (echo request)' : '129 (echo reply)'], ['Code', '0'], ['Identifiant', '1'], ['Séquence', '1']] }
+    : { name: 'ICMP', fields: [['Type', phase === 'request' ? '8 (echo request)' : '0 (echo reply)'], ['Code', '0'], ['Identifiant', '1'], ['Séquence', '1']] };
   const upper = t.proto === 'icmp'
-    ? [{ name: 'ICMP', fields: [['Type', phase === 'request' ? '8 (echo request)' : '0 (echo reply)'], ['Code', '0'], ['Identifiant', '1'], ['Séquence', '1']] }]
+    ? [echo]
     : [
       { name: t.proto.toUpperCase(), fields: [['Port source', String(t.sport)], ['Port destination', String(t.dport)], ...(t.proto === 'tcp' ? [['Drapeaux', 'PSH, ACK']] : [])] },
       ...(ctx.app ? [{ name: ctx.app.name, fields: phase === 'request' ? ctx.app.request : ctx.app.reply }] : []),
@@ -254,11 +305,11 @@ function addFrames(ctx, result, { dev, step, l2, phase, serial, cached, packet }
   for (const h of l2.hops) {
     frames.push({
       kind: t.proto, phase, hops: [h], at: h.to,
-      summary: t.proto === 'icmp' ? `ICMP echo ${phase === 'request' ? 'request' : 'reply'} ${packet.src} → ${packet.dst}`
+      summary: t.proto === 'icmp' ? `${ctx.v6 ? 'ICMPv6' : 'ICMP'} echo ${phase === 'request' ? 'request' : 'reply'} ${packet.src} → ${packet.dst}`
         : `${svcName} ${phase === 'request' ? 'requête' : 'réponse'} ${packet.src}:${t.sport} → ${packet.dst}:${t.dport}`,
       layers: serial
-        ? [{ name: 'HDLC', fields: [['Adresse', '0x0F'], ['Protocole', ETHERTYPE_IP]] }, ip, ...upper]
-        : [...ethLayers(senderMac, targetMac, ETHERTYPE_IP, h.tag), ip, ...upper],
+        ? [{ name: 'HDLC', fields: [['Adresse', '0x0F'], ['Protocole', ethertype]] }, ip, ...upper]
+        : [...ethLayers(senderMac, targetMac, ethertype, h.tag), ip, ...upper],
     });
   }
   // Ce que l'émetteur a décidé est affiché avec sa première trame
@@ -277,8 +328,14 @@ function learn(ctx, dev, step, l2) {
   const target = topo.devices.get(l2.endpoint);
   const senderMac = macOf(dev, step.iface.name);
   const targetMac = macOf(target, l2.iface?.name);
-  learned.arp.push({ device: dev.id, ip: step.nextHop, mac: targetMac, iface: step.iface.name });
-  if (isValidIp(step.iface.ip)) learned.arp.push({ device: target.id, ip: step.iface.ip, mac: senderMac, iface: l2.iface?.name });
+  if (ctx.v6) {
+    learned.nd.push({ device: dev.id, ip: step.nextHop, mac: targetMac, iface: step.iface.name });
+    const mine = step.iface.linkLocal ?? step.iface.ip;
+    if (mine) learned.nd.push({ device: target.id, ip: mine, mac: senderMac, iface: l2.iface?.name });
+  } else {
+    learned.arp.push({ device: dev.id, ip: step.nextHop, mac: targetMac, iface: step.iface.name });
+    if (isValidIp(step.iface.ip)) learned.arp.push({ device: target.id, ip: step.iface.ip, mac: senderMac, iface: l2.iface?.name });
+  }
   for (const s of l2.switches ?? []) {
     if (s.inLink) learned.mac.push({ switch: s.device, mac: senderMac, vlan: s.vlan, port: topo.portName(s.inLink, s.device) });
   }
@@ -443,17 +500,96 @@ function noRoute(topo, routing, id, dstIp, name) {
   return `${name(id)} : aucune route vers ${dstIp} (destination injoignable).${tail}`;
 }
 
+// --- Décisions IPv6 -----------------------------------------------------------------------------
+// Chaque décision renvoie aussi srcIp : l'adresse source choisie (link-local pour une destination link-local)
+function hostDecision6(topo, id, dstIp, name) {
+  const base = topo.hostIface(id);
+  if (!base.link) throw new SimError(`${name(id)} n'est relié à aucun équipement.`, id);
+  if (!topo.isUp(base.link)) throw new SimError(`${name(id)} : câble hors service. ${topo.status.get(base.link).reason}`, id);
+  const v = topo.l3Ifaces6(id, { includeDown: true })[0];
+  if (isLinkLocal6(dstIp)) {
+    return { iface: v, nextHop: dstIp, srcIp: v.linkLocal, text: `${name(id)} : ${dstIp} est une link-local, envoi direct sur son lien depuis ${v.linkLocal}.` };
+  }
+  if (v.slaac && v.slaacError) throw new SimError(`${name(id)} n'a pas d'adresse IPv6 automatique (SLAAC) : ${v.slaacError}.`, id);
+  if (!v.ip || v.prefix == null) throw new SimError(`${name(id)} n'a pas d'adresse IPv6 globale (seulement sa link-local ${v.linkLocal}) : il ne peut joindre que son lien.`, id);
+  const net = networkLabel6(v.ip, v.prefix);
+  if (sameSubnet6(v.ip, dstIp, v.prefix)) {
+    return { iface: v, nextHop: dstIp, srcIp: v.ip, text: `${name(id)} : ${dstIp} est dans son réseau ${net}, envoi direct.` };
+  }
+  if (!v.gateway) throw new SimError(`${name(id)} : ${dstIp} est hors de son réseau ${net} et aucune passerelle IPv6 n'est configurée.`, id);
+  if (!isLinkLocal6(v.gateway) && !sameSubnet6(v.ip, v.gateway, v.prefix)) {
+    throw new SimError(`${name(id)} : la passerelle IPv6 ${v.gateway} n'est ni une link-local ni dans le réseau ${net}.`, id);
+  }
+  const how = v.slaac ? ' (apprise par l\'annonce RA)' : '';
+  return { iface: v, nextHop: v.gateway, srcIp: v.ip, text: `${name(id)} : ${dstIp} est hors de son réseau ${net}, envoi à la passerelle ${v.gateway}${how}.` };
+}
+
+function switchHostDecision6(topo, id, dstIp, name) {
+  const svis = topo.l3Ifaces6(id).filter((s) => s.svi);
+  const direct = svis.find((s) => (isLinkLocal6(dstIp) ? true : s.ip && sameSubnet6(s.ip, dstIp, s.prefix)));
+  if (!direct) throw new SimError(`${name(id)} : aucune interface VLAN en IPv6 n'est dans le réseau de ${dstIp}.`, id);
+  return { iface: direct, nextHop: dstIp, srcIp: isLinkLocal6(dstIp) ? direct.linkLocal : direct.ip, text: `${name(id)} : ${dstIp} est dans le réseau de ${direct.name}, envoi direct.` };
+}
+
+function routerDecision6({ topo, routing }, id, dstIp, name, replyIface) {
+  const ifaces = topo.l3Ifaces6(id);
+  // Link-local : seulement sur le lien d'où vient la demande
+  if (isLinkLocal6(dstIp)) {
+    const out = replyIface && ifaces.find((i) => i.name === replyIface);
+    if (!out) throw new SimError(`${name(id)} : ${dstIp} est une link-local ; il faut préciser l'interface de sortie (une link-local n'existe que sur son lien).`, id);
+    return { iface: out, nextHop: dstIp, srcIp: out.linkLocal, text: `${name(id)} : ${dstIp} est une link-local, réponse par ${out.name}.` };
+  }
+  const rib = routing.ribs6?.get(id) ?? new Map();
+  const route = lookup6(rib, dstIp);
+  if (!route) throw new SimError(noRoute6(topo, id, dstIp, name), id);
+  const netText = routeText6(route);
+  const out = ifaces.find((i) => i.name === route.iface);
+  const srcIp = out.ip ?? out.linkLocal;
+  if (route.proto === 'C' || route.proto === 'L') {
+    if (out.loopback) throw new SimError(`${name(id)} : ${dstIp} est dans le réseau de ${out.name} (loopback), mais aucune interface n'a cette adresse.`, id);
+    return { iface: out, nextHop: dstIp, srcIp, text: `${name(id)} : ${netText} est connecté sur ${out.name}.` };
+  }
+  const hop = route.nextHop ?? dstIp;
+  const kind = DECISION[route.proto] ?? route.proto;
+  return { iface: out, nextHop: hop, srcIp, text: `${name(id)} : ${kind} IPv6 ${netText} via ${route.nextHop ?? 'interface directe'} (${out.name}).` };
+}
+
+// Pourquoi aucune route IPv6 : interface down, route statique inutilisable, sinon rien
+function noRoute6(topo, id, dstIp, name) {
+  const all = topo.l3Ifaces6(id, { includeDown: true });
+  const isDown = (i) => i.shutdown || (i.svi ? !topo.sviUp(id, i.vlan) : !i.loopback && !topo.isUp(i.link));
+  const down = all.find((i) => i.ip && i.prefix != null && isDown(i) && sameSubnet6(i.ip, dstIp, i.prefix));
+  if (down) {
+    const why = down.shutdown ? `${name(id)} ${down.name} est désactivée (shutdown).` : down.link ? topo.status.get(down.link).reason : `${down.name} n'est pas câblée.`;
+    return `${name(id)} : ${networkLabel6(down.ip, down.prefix)} est sur ${down.name}, mais l'interface est down. ${why}`;
+  }
+  for (const r of topo.devices.get(id).config?.routes6 ?? []) {
+    if (!isValidIp6(r.network) || r.prefix == null || !sameSubnet6(r.network, dstIp, r.prefix)) continue;
+    const text = networkLabel6(r.network, r.prefix);
+    if (r.nextHop && isLinkLocal6(r.nextHop) && !r.iface) return `${name(id)} : la route IPv6 ${text} a un saut suivant link-local (${r.nextHop}) sans interface de sortie : elle n'est pas installée.`;
+    return `${name(id)} : le saut suivant ${r.nextHop ?? r.iface} de la route IPv6 ${text} n'est sur aucun réseau connecté actif.`;
+  }
+  return `${name(id)} : aucune route IPv6 vers ${dstIp} (destination injoignable).`;
+}
+
 // Résolution ARP + acheminement de la trame dans le domaine de diffusion.
 // Renvoie le chemin (liste de câbles) jusqu'à l'équipement qui possède targetIp.
-function deliver(topo, fromId, linkId, targetIp, name, tag = null, sviVlan = null) {
+function deliver(topo, fromId, linkId, targetIp, name, tag = null, sviVlan = null, v6 = false) {
   if (linkId != null && !topo.isUp(linkId)) throw new SimError(`${name(fromId)} : câble hors service. ${topo.status.get(linkId).reason}`, fromId);
-  const target = parseIp(targetIp);
+  const target = v6 ? null : parseIp(targetIp);
   const { endpoints, drops, vlansSeen, switches, traversed, storm } = flood(topo, fromId, linkId, tag, sviVlan);
   if (storm) {
     const names = storm.switches.map((id) => name(id)).join(', ');
-    throw new SimError(`Tempête de diffusion dans le VLAN ${storm.vlan} : la requête ARP tourne sans fin dans la boucle entre ${names}, car STP est désactivé. Le réseau est saturé et plus rien ne passe. Réactive STP (« spanning-tree vlan ${storm.vlan} ») ou retire un câble de la boucle.`, fromId);
+    throw new SimError(`Tempête de diffusion dans le VLAN ${storm.vlan} : la requête ${v6 ? 'NDP' : 'ARP'} tourne sans fin dans la boucle entre ${names}, car STP est désactivé. Le réseau est saturé et plus rien ne passe. Réactive STP (« spanning-tree vlan ${storm.vlan} ») ou retire un câble de la boucle.`, fromId);
   }
   for (const e of endpoints) {
+    if (v6) {
+      const i6 = e.svi != null ? topo.l3Ifaces6(e.device).find((s) => s.svi && s.vlan === e.svi) : topo.l3IfaceOn6(e.device, e.inLink, e.tag);
+      if (i6 && !i6.shutdown && (i6.ip === targetIp || i6.linkLocal === targetIp)) {
+        return { endpoint: e.device, inLink: e.inLink, tag: e.tag, hops: e.hops, vlan: e.vlan, iface: i6, switches, traversed };
+      }
+      continue;
+    }
     const iface = e.svi != null ? topo.l3Ifaces(e.device).find((s) => s.svi && s.vlan === e.svi) : topo.l3IfaceOn(e.device, e.inLink, e.tag);
     // Le routeur répond aussi en ARP pour ses adresses publiques de NAT statique
     const natOwner = iface && natGlobals(topo.devices.get(e.device), iface.name).includes(targetIp);
@@ -463,5 +599,5 @@ function deliver(topo, fromId, linkId, targetIp, name, tag = null, sviVlan = nul
   }
   const where = vlansSeen.size ? ` dans le VLAN ${[...vlansSeen].join(', ')}` : ' sur ce lien';
   const extra = drops.length ? ` (${drops.join(' ; ')})` : '';
-  throw new SimError(`${name(fromId)} : pas de réponse ARP, aucun équipement ne possède ${targetIp}${where}${extra}.`, fromId);
+  throw new SimError(`${name(fromId)} : pas de réponse ${v6 ? 'NDP (Neighbor Advertisement)' : 'ARP'}, aucun équipement ne possède ${targetIp}${where}${extra}.`, fromId);
 }

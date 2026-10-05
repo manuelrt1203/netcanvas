@@ -60,3 +60,69 @@ test('IPv6 : sérialisation aller-retour', () => {
   assert.equal(dev(back, 'pc1').config.slaac, true);
   assert.deepEqual([dev(back, 'pc2').config.ipv6, dev(back, 'pc2').config.prefix6, dev(back, 'pc2').config.gateway6], ['2001:db8:acad:10::11', 64, 'fe80::1']);
 });
+
+test('IPv6 : SLAAC (préfixe annoncé + EUI-64, passerelle link-local) et ses échecs', async () => {
+  const { withLeases } = await import('./dhcp.js');
+  const live = withLeases(IPV6_DEMO);
+  const s = dev(live, 'pc1').config.slaac6;
+  assert.match(s.ip, /^2001:db8:acad:10:2e0:f7ff:fe/);
+  assert.deepEqual([s.prefix, s.gateway, s.router, s.iface], [64, 'fe80::1', 'r1', 'G0/0']);
+  const off = structuredClone(IPV6_DEMO);
+  dev(off, 'r1').config.ipv6Routing = false;
+  assert.match(dev(withLeases(off), 'pc1').config.slaacError, /R1 a une adresse IPv6 sur ce réseau mais n'envoie pas d'annonces RA/);
+  const p48 = structuredClone(IPV6_DEMO);
+  dev(p48, 'r1').config.interfaces[0].prefix6 = 56;
+  assert.match(dev(withLeases(p48), 'pc1').config.slaacError, /R1 annonce 2001:db8:acad::\/56 : SLAAC demande un préfixe \/64/);
+  assert.ok(validate(off).some((i) => /PC Compta n'obtient pas d'adresse IPv6 automatique/.test(i.text)));
+});
+
+test('IPv6 : ping de bout en bout (NDP, passerelle link-local, routes statiques)', async () => {
+  const { simulatePing } = await import('./simulate.js');
+  const r = simulatePing(IPV6_DEMO, 'pc1', '2001:db8:acad:30::10');
+  assert.equal(r.ok, true);
+  assert.equal(r.ttl, 62);
+  const texts = r.log.map((l) => l.text);
+  assert.ok(texts.includes("PC Compta : 2001:db8:acad:30::10 est hors de son réseau 2001:db8:acad:10::/64, envoi à la passerelle fe80::1 (apprise par l'annonce RA)."));
+  assert.ok(texts.includes('R1 : route statique par défaut IPv6 ::/0 via 2001:db8:acad:12::2 (Se0/0/0).'));
+  // Trames : NS au multicast nœud sollicité, NA, puis ICMPv6 128 dans de l'IPv6 (0x86DD)
+  const ns = r.frames.find((f) => f.kind === 'nd-ns');
+  assert.match(ns.summary, /Neighbor Solicitation \(multicast ff02::1:ff00:1\) : qui a fe80::1/);
+  assert.equal(ns.layers[0].fields[0][1], '3333.ff00.0001');
+  const echo = r.frames.find((f) => f.kind === 'icmp');
+  assert.deepEqual(echo.layers.map((l) => l.name), ['Ethernet II', '802.1Q', 'IPv6', 'ICMPv6'].filter((n) => echo.layers.some((l) => l.name === n)));
+  assert.equal(echo.layers.find((l) => l.name === 'ICMPv6').fields[0][1], '128 (echo request)');
+  assert.equal(echo.layers[0].fields[2][1], '0x86DD (IPv6)');
+  // Ping de la passerelle link-local : réponse par la même interface
+  assert.equal(simulatePing(IPV6_DEMO, 'pc2', 'fe80::1').ok, true);
+  // Écriture non compressée acceptée
+  assert.equal(simulatePing(IPV6_DEMO, 'pc2', '2001:0db8:acad:0030:0000:0000:0000:0010').ok, true);
+});
+
+test('IPv6 : pannes expliquées', async () => {
+  const { simulatePing } = await import('./simulate.js');
+  const why = (doc, s, d) => simulatePing(doc, s, d).log.findLast((l) => l.level === 'error')?.text;
+  let doc = structuredClone(IPV6_DEMO);
+  dev(doc, 'r2').config.ipv6Routing = false;
+  assert.match(why(doc, 'pc2', '2001:db8:acad:30::10'), /R2 reçoit un paquet IPv6 pour 2001:db8:acad:30::10 mais le routage IPv6 n'est pas activé/);
+  doc = structuredClone(IPV6_DEMO);
+  dev(doc, 'r2').config.routes6 = [];
+  assert.match(why(doc, 'pc2', '2001:db8:acad:30::10'), /R2 : aucune route IPv6 vers 2001:db8:acad:10::11/);
+  doc = structuredClone(IPV6_DEMO);
+  dev(doc, 'pc2').config.gateway6 = 'fe80::99';
+  assert.match(why(doc, 'pc2', '2001:db8:acad:30::10'), /pas de réponse NDP \(Neighbor Advertisement\), aucun équipement ne possède fe80::99/);
+  doc = structuredClone(IPV6_DEMO);
+  delete dev(doc, 'pc2').config.gateway6;
+  assert.match(why(doc, 'pc2', '2001:db8:acad:30::10'), /aucune passerelle IPv6 n'est configurée/);
+  doc = structuredClone(IPV6_DEMO);
+  Object.assign(dev(doc, 'pc2').config, { ipv6: undefined, gateway6: undefined });
+  assert.match(why(doc, 'pc2', '2001:db8:acad:30::10'), /n'a pas d'adresse IPv6 globale \(seulement sa link-local fe80::/);
+  // L'IPv4 n'est pas touché par la config IPv6
+  assert.equal(simulatePing(IPV6_DEMO, 'pc1', '172.16.0.10').ok, true);
+});
+
+test('IPv6 : traceroute', async () => {
+  const { traceroute } = await import('./traceroute.js');
+  const t = traceroute(IPV6_DEMO, 'pc1', '2001:db8:ffff::2');
+  assert.deepEqual(t.hops.map((h) => h.ip), ['2001:db8:acad:10::1', '2001:db8:acad:12::2', '2001:db8:ffff::2']);
+  assert.equal(t.ok, true);
+});

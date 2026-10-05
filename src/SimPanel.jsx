@@ -7,13 +7,13 @@ const KINDS = {
   dns: { label: 'Requête DNS (nslookup)', run: 'Résoudre le nom', ok: (s) => `${s.name} = ${s.ip}`, fail: 'Nom non résolu' },
   web: { label: 'Page web (HTTP)', run: 'Ouvrir la page', ok: (s) => `Page reçue de ${s.ip}`, fail: 'Page inaccessible' },
 };
-const KIND = { 'arp-request': 'ARP', 'arp-reply': 'ARP', icmp: 'ICMP', udp: 'UDP', tcp: 'TCP', done: 'Fin', drop: 'Perdu' };
+const KIND = { 'arp-request': 'ARP', 'arp-reply': 'ARP', 'nd-ns': 'NDP', 'nd-na': 'NDP', icmp: 'ICMP', udp: 'UDP', tcp: 'TCP', done: 'Fin', drop: 'Perdu' };
 
 // Simulation pas à pas : liste des trames, en-têtes de la trame choisie, décisions de l'équipement
 function Stepper({ frames, step, onStep, labels }) {
   const frame = frames[step];
   const label = (id) => labels.get(id) ?? id;
-  const route = (f) => (f.hops.length ? `${label(f.hops[0].from)} → ${f.hops.length > 1 && f.kind === 'arp-request' ? 'diffusion' : label(f.at)}` : label(f.at));
+  const route = (f) => (f.hops.length ? `${label(f.hops[0].from)} → ${f.hops.length > 1 && f.kind === 'arp-request' ? 'diffusion' : f.hops.length > 1 && f.kind === 'nd-ns' ? 'multicast' : label(f.at)}` : label(f.at));
   return (
     <section className="stepper" aria-label="Simulation pas à pas (flèches gauche et droite)"
       onKeyDown={(e) => {
@@ -65,9 +65,11 @@ export default function SimPanel({ doc, form, setForm, result, playing, onRun, o
   const { sources, targets } = useMemo(() => {
     const topo = buildTopology(doc);
     const sources = doc.devices.filter((d) => isHost(d) || d.type === 'router' || (d.type === 'switch' && topo.l3Ifaces(d.id).length));
-    const targets = doc.devices.flatMap((d) =>
-      topo.l3Ifaces(d.id).map((i) => ({ device: d.id, ip: i.ip, text: `${d.label}${d.type === 'router' ? ` ${i.name}` : ''} · ${i.ip}` })),
-    );
+    const text = (d, i, ip) => `${d.label}${d.type === 'router' ? ` ${i.name}` : ''} · ${ip}`;
+    const targets = [
+      ...doc.devices.flatMap((d) => topo.l3Ifaces(d.id).map((i) => ({ device: d.id, ip: i.ip, text: text(d, i, i.ip) }))),
+      ...doc.devices.flatMap((d) => topo.l3Ifaces6(d.id).filter((i) => i.ip).map((i) => ({ device: d.id, ip: i.ip, text: text(d, i, i.ip), v6: true }))),
+    ];
     return { sources, targets };
   }, [doc]);
 
@@ -128,7 +130,12 @@ export default function SimPanel({ doc, form, setForm, result, playing, onRun, o
         <div className="field">
           <label htmlFor="sim-dst">Vers</label>
           <select id="sim-dst" value={tgt} onChange={(e) => setTarget(e.target.value)}>
-            {targets.map((t) => (
+            {targets.some((t) => t.v6) ? (
+              <>
+                <optgroup label="IPv4">{targets.filter((t) => !t.v6).map((t) => <option key={`${t.ip}-${t.text}`} value={t.ip}>{t.text}</option>)}</optgroup>
+                <optgroup label="IPv6">{targets.filter((t) => t.v6).map((t) => <option key={`${t.ip}-${t.text}`} value={t.ip}>{t.text}</option>)}</optgroup>
+              </>
+            ) : targets.map((t) => (
               <option key={`${t.ip}-${t.text}`} value={t.ip}>{t.text}</option>
             ))}
             <option value={CUSTOM}>Autre adresse…</option>
@@ -136,8 +143,8 @@ export default function SimPanel({ doc, form, setForm, result, playing, onRun, o
         </div>
         {tgt === CUSTOM && (
           <div className="field">
-            <label htmlFor="sim-ip">Adresse IP de destination</label>
-            <input id="sim-ip" placeholder="8.8.8.8" inputMode="decimal" value={custom} onChange={(e) => setCustom(e.target.value)} />
+            <label htmlFor="sim-ip">Adresse IPv4 ou IPv6 de destination</label>
+            <input id="sim-ip" placeholder="8.8.8.8 ou fe80::1" spellCheck="false" autoCapitalize="none" value={custom} onChange={(e) => setCustom(e.target.value)} />
           </div>
         )}
         </>)}

@@ -10,6 +10,7 @@
 // un pool pour ce réseau répond ; sinon un relais la transmet à son serveur, qui choisit le pool du réseau
 // du relais (giaddr). Adresse attribuée : la première libre (ni exclue, ni statique, ni déjà louée).
 import { flood } from './l2.js';
+import { withSlaac } from './ndp.js';
 import { formatIp, isValidCidr, isValidIp, maskBits, networkOf, parseIp } from './ip.js';
 import { buildTopology, isHost, isRouting } from './topology.js';
 import { isMikrotik } from './catalog.js';
@@ -160,18 +161,20 @@ export function computeLeases(doc) {
 }
 
 // Document « effectif » : les hôtes DHCP reçoivent leur bail (ou une adresse APIPA sans passerelle),
-// et runtime.leases contient les baux à garder (le schéma les enregistre)
+// les hôtes SLAAC leur adresse IPv6 annoncée, et runtime.leases contient les baux à garder (le schéma les enregistre)
 const cache = new WeakMap();
 export function withLeases(doc) {
   if (cache.has(doc)) return cache.get(doc);
   const rt = runtimeOf(doc);
   if (!doc.devices.some(isDhcpClient) && !Object.keys(rt.leases ?? {}).length) {
-    cache.set(doc, doc);
-    return doc;
+    const out = withSlaac(doc);
+    cache.set(doc, out);
+    cache.set(out, out);
+    return out;
   }
   const { leases, store } = computeLeases(doc);
   const released = new Set(rt.released ?? []);
-  const out = {
+  const out = withSlaac({
     ...doc,
     runtime: { ...rt, leases: store },
     devices: doc.devices.map((d) => {
@@ -183,7 +186,7 @@ export function withLeases(doc) {
       else config = { ...d.config, ip: apipa(d.id), mask: 16, gateway: null, dhcpError: l?.error ?? 'pas de réponse DHCP' };
       return { ...d, config };
     }),
-  };
+  });
   cache.set(doc, out);
   cache.set(out, out);
   return out;

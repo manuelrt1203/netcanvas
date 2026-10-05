@@ -9,6 +9,7 @@
 // La sélection finale se fait par distance administrative, comme sur IOS.
 //
 // Chaque refus (adjacence absente, session down, route non annoncée) est expliqué dans `issues`.
+import { buildRib6, connectedAndStatic6 } from './routing6.js';
 import { buildTopology, isRouting } from './topology.js';
 import { flood } from './l2.js';
 import { formatIp, isValidCidr, isValidIp, maskBits, networkOf, parseIp, sameSubnet } from './ip.js';
@@ -137,9 +138,19 @@ export function computeRouting(doc, topo = buildTopology(doc)) {
   computeBgp(routers, issue, doc, topo);
   for (const r of routers.values()) for (const route of r.bgp.routes) pick(r.rib, route);
 
+  // IPv6 : connecté et statique (OSPFv3 : à venir)
+  for (const r of routers.values()) {
+    r.ifaces6 = topo.l3Ifaces6(r.id);
+    const { connected, statics } = connectedAndStatic6(r.ifaces6, r.cfg);
+    r.connected6 = connected;
+    r.statics6 = statics;
+    r.rib6 = buildRib6([...connected.values(), ...statics]);
+  }
+
   return {
     routers,
     ribs: new Map([...routers].map(([id, r]) => [id, r.rib])),
+    ribs6: new Map([...routers].map(([id, r]) => [id, r.rib6])),
     issues: [...routers.values()].flatMap((r) => r.issues),
   };
 }

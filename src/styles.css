@@ -481,7 +481,7 @@ button.linklike { background: none; border: 0; padding: 0; min-height: 0; color:
 .frame-n { color: var(--muted); font-variant-numeric: tabular-nums; }
 .frame-kind { font-size: .72rem; font-weight: 700; border-radius: 4px; padding: 1px 4px; text-align: center; color: var(--surface); background: var(--request); }
 .frame-kind.phase-reply { background: var(--reply); }
-.frame-kind.kind-arp-request, .frame-kind.kind-arp-reply { background: var(--warn); }
+.frame-kind.kind-arp-request, .frame-kind.kind-arp-reply, .frame-kind.kind-nd-ns, .frame-kind.kind-nd-na { background: var(--warn); }
 .frame-kind.kind-drop { background: var(--danger); }
 .frame-kind.kind-done { background: var(--ok); }
 .frame-route { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
