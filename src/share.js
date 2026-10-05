@@ -40,6 +40,8 @@ export const saveShared = (id, token, doc) => rpc('update_diagram', { p_id: id, 
 
 // Rôle sur un schéma ouvert par son lien : owner | editor | viewer
 export const sharedAccess = (id, token) => rpc('diagram_access', { p_id: id, p_token: token });
+// Clé du canal d'édition en temps réel (éditeurs seulement)
+export const collabKeyOf = (id, token) => rpc('collab_key', { p_id: id, p_token: token });
 
 // Historique des versions (éditeurs) : archivées automatiquement (au plus une toutes les 10 min) ou à la main
 export const listVersions = (id, token) => rpc('list_versions', { p_id: id, p_token: token });

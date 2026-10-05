@@ -2,7 +2,7 @@ import { memo } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import { Icon, iconName } from './devices.jsx';
 import { TYPES, modelOf } from './net/catalog.js';
-import { useSim } from './SimContext.js';
+import { usePeersOn, useSim } from './SimContext.js';
 
 // Un point de connexion sur chaque côté ; ConnectionMode.Loose permet de relier n'importe lesquels.
 const SIDES = [
@@ -27,12 +27,15 @@ function summary(type, data) {
 
 function DeviceNode({ id, data, type, selected }) {
   const sim = useSim();
+  const peers = usePeersOn(id);
   const model = modelOf({ type, model: data.model });
   const lines = summary(type, data);
   const state = sim.failedAt === id ? ' sim-fail' : sim.nodes.has(id) ? ' sim-hit' : '';
 
   return (
-    <div className={`device device-${type}${selected ? ' selected' : ''}${state}`}>
+    <div className={`device device-${type}${selected ? ' selected' : ''}${state}${peers ? ' peer-selected' : ''}`}
+      style={peers ? { '--peer': peers[0].color } : undefined} title={peers ? `Sélectionné par ${peers.map((p) => p.name).join(', ')}` : undefined}>
+      {peers && <span className="peer-tag" style={{ background: peers[0].color }}>{peers.map((p) => p.name).join(', ')}</span>}
       <div className="device-icon"><Icon name={iconName(type, data.model)} /></div>
       <div className="device-label">{data.label}</div>
       {model.label !== TYPES[type].label && <div className="device-model">{model.short}</div>}

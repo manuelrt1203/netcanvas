@@ -13,3 +13,7 @@ export const useSim = () => useContext(SimContext);
 // État des câbles (Map linkId -> { up, data, reason }), recalculé à chaque modification du schéma
 export const LinkContext = createContext(new Map());
 export const useLinkStatus = (id) => useContext(LinkContext).get(id);
+
+// Collaboration : Map équipement -> [{ name, color }] des autres personnes qui l'ont sélectionné
+export const PeersContext = createContext(new Map());
+export const usePeersOn = (id) => useContext(PeersContext).get(id);

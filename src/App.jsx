@@ -39,13 +39,14 @@ import { evaluateExercise } from './net/exercise.js';
 import { createExam, loadExam, parseExamLocation, rememberExam, startExam, submitExam } from './share.js';
 import { ExamBanner, ExamDashboard, ExamStart } from './ExamViews.jsx';
 import { examSession, newClientId, remainingSeconds, saveExamSession } from './exam.js';
-import { claimShared, createShared, loadShared, setShareExpiry, myShares, parseShareLocation, rememberShare, saveShared, shareEnabled, shareLinks, sharedAccess } from './share.js';
+import { applyPatch, collabEnabled, diffDocs, joinCollab, myIdentity } from './collab.js';
+import { claimShared, collabKeyOf, createShared, loadShared, setShareExpiry, myShares, parseShareLocation, rememberShare, saveShared, shareEnabled, shareLinks, sharedAccess } from './share.js';
 import { accountsEnabled, currentUser, handleAuthRedirect, onUserChange } from './account.js';
 import AccountDialog from './AccountDialog.jsx';
 import VersionsPanel from './VersionsPanel.jsx';
 import { CABLES, MODELS, TYPES } from './net/catalog.js';
 import { pickPorts } from './net/cabling.js';
-import { EMPTY_SIM, LinkContext, SimContext } from './SimContext.js';
+import { EMPTY_SIM, LinkContext, PeersContext, SimContext } from './SimContext.js';
 
 const STORAGE_KEY = 'netcanvas:draft';
 const MODE_KEY = 'netcanvas:config-mode';
@@ -332,6 +333,71 @@ function Editor() {
       accountDialog.current?.showModal();
     });
   }, []);
+  // --- Collaboration en temps réel (schéma partagé) ------------------------------------
+  // Éditeurs : canal secret (clé donnée par la base) ; lecteurs : canal de lecture, réception seulement.
+  const [people, setPeople] = useState([]);
+  const collab = useRef(null);
+  const collabBase = useRef(null); // dernier état envoyé ou reçu : on n'envoie que la différence
+  const docRef = useRef(doc);
+  docRef.current = doc;
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
+  const me = useMemo(() => myIdentity(user), [user]);
+  const applyRemote = (patch) => {
+    const merged = applyPatch(docRef.current, patch);
+    collabBase.current = applyPatch(collabBase.current ?? docRef.current, patch);
+    const loaded = loadDoc(merged);
+    const sel = new Set(nodesRef.current.filter((n) => n.selected).map((n) => n.id));
+    history.current.restoring = true; // une modification des autres n'est pas une étape d'annulation locale
+    setNodes(loaded.nodes.map((n) => (sel.has(n.id) ? { ...n, selected: true } : n)));
+    setEdges(loaded.edges);
+    setName(loaded.name ?? docRef.current.name);
+    if ('exercise' in patch) setExercise(loaded.exercise ?? null);
+  };
+  const collabReady = Boolean(collabEnabled && shared?.id && shared.status !== 'loading' && !shared.embed);
+  useEffect(() => {
+    if (!collabReady) return undefined;
+    let left = false;
+    let handle = null;
+    collabBase.current = docRef.current;
+    const join = (editKey) => {
+      if (left) return;
+      handle = joinCollab({
+        id: shared.id, editKey, me,
+        onPatch: (patch) => applyRemote(patch),
+        onPeople: (list) => setPeople(list.filter((p) => p.id !== me.id)),
+      });
+      collab.current = editKey ? handle : null;
+    };
+    if (editable) collabKeyOf(shared.id, shared.token).then(join).catch(() => join(null));
+    else join(null);
+    return () => {
+      left = true;
+      handle?.leave();
+      collab.current = null;
+      setPeople([]);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [collabReady, shared?.id, editable, me.id]);
+  // Envoi des modifications locales (regroupées : un glisser n'envoie pas 60 messages par seconde)
+  useEffect(() => {
+    if (!collab.current) return undefined;
+    const t = setTimeout(() => {
+      const patch = diffDocs(collabBase.current, docRef.current);
+      collabBase.current = docRef.current;
+      if (patch) collab.current?.send(patch);
+    }, 120);
+    return () => clearTimeout(t);
+  }, [doc]);
+  // Sélection visible des autres
+  const selectedIds = nodes.filter((n) => n.selected).map((n) => n.id).join(',');
+  useEffect(() => { collab.current?.select(selectedIds ? selectedIds.split(',') : []); }, [selectedIds]);
+  const peersOn = useMemo(() => {
+    const m = new Map();
+    for (const p of people) for (const id of p.selected ?? []) m.set(id, [...(m.get(id) ?? []), p]);
+    return m;
+  }, [people]);
+
   const openAccount = (mode = null) => {
     setAccountMode(mode);
     setAccountOpen((n) => n + 1);
@@ -869,6 +935,7 @@ function Editor() {
   ];
 
   return (
+    <PeersContext.Provider value={peersOn}>
     <LinkContext.Provider value={linkStatus}>
       <SimContext.Provider value={sim.view}>
         <div className={`app${wideInspector ? ' wide-inspector' : ''}${readOnly ? ' read-only' : ''}${shared?.embed ? ' embed' : ''}`}>
@@ -943,6 +1010,11 @@ function Editor() {
                   : shared.status === 'error' ? <span className="field-error">Enregistrement en ligne impossible : {shared.message}</span>
                     : shared.status === 'saving' ? 'Enregistrement en ligne…'
                       : <>{shared.owner ? 'Schéma de ton compte' : 'Schéma partagé'}, enregistré en ligne{shared.savedAt ? ` à ${new Date(shared.savedAt).toLocaleTimeString('fr-FR')}` : ''}.</>}
+              {people.length > 0 && (
+                <span className="people" aria-label="Personnes connectées">
+                  En ligne : {people.map((p) => <span key={p.id} className="person" style={{ background: p.color }} title={p.name}>{p.name}</span>)}
+                </span>
+              )}
               <span className="share-actions">
                 {readOnly ? (
                   <button type="button" className="ghost small-btn" onClick={() => leaveShared(true)}>Dupliquer pour modifier</button>
@@ -1224,6 +1296,7 @@ function Editor() {
         </div>
       </SimContext.Provider>
     </LinkContext.Provider>
+    </PeersContext.Provider>
   );
 }
 

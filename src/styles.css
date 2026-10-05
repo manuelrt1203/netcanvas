@@ -540,3 +540,10 @@ button.link { background: none; border: 0; padding: 0; color: var(--primary); fo
 .exam-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
 .exam-table th, .exam-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
 .exam-table tr.late td { color: var(--danger); }
+
+/* Collaboration en temps réel */
+.device.peer-selected { outline: 3px solid var(--peer); outline-offset: 3px; }
+.peer-tag { position: absolute; top: -22px; left: 0; color: #fff; font-size: .7rem; padding: 1px 6px; border-radius: 4px; white-space: nowrap; pointer-events: none; }
+.people { display: inline-flex; gap: 4px; align-items: center; }
+.person { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 11px; color: #fff; font-size: .75rem; font-weight: 600; }
+.device { position: relative; }

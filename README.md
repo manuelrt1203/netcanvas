@@ -307,6 +307,15 @@ npm run test:share   # contre la vraie base (npm run dev lancé) : création, en
 ```
 
 
+### Collaboration en temps réel
+
+- Plusieurs personnes avec le lien d'édition (ou le propriétaire) modifient le même schéma en même temps : chaque modification est diffusée équipement par équipement et câble par câble (Supabase Realtime), donc deux personnes qui modifient des équipements différents ne s'écrasent pas ; sur le même équipement, la dernière modification gagne.
+- Présence : les personnes en ligne s'affichent dans le bandeau ; un équipement sélectionné par quelqu'un d'autre est entouré de sa couleur, avec son nom.
+- Les lecteurs (lien de lecture) voient les modifications en direct.
+- Sécurité : les éditeurs écoutent un canal secret dont la base ne donne le nom qu'aux éditeurs (`collab_key`) ; un lecteur ne peut donc rien injecter dans le schéma (vérifié par un test d'attaque). Limite : un message forgé sur le canal de lecture peut fausser l'affichage des autres lecteurs jusqu'à ce qu'ils rechargent, jamais les données enregistrées.
+- Une modification reçue n'entre pas dans l'historique d'annulation local (Ctrl+Z annule vos propres modifications).
+- Test : `npm run test:collab` (trois navigateurs, vrai Supabase).
+
 ### Comptes et historique
 
 - **Compte** (facultatif, e-mail + mot de passe, Supabase Auth) : « Se connecter » dans la barre ou l'accueil. Un schéma partagé par quelqu'un de connecté lui appartient : il le retrouve dans **Mes schémas** sur n'importe quel appareil (ouvrir, renommer, supprimer) et le modifie sans lien d'édition. Les schémas partagés avant, depuis ce navigateur, peuvent être rattachés au compte.
