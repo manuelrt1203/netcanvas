@@ -9,10 +9,12 @@ import { traceroute } from '../net/traceroute.js';
 import { macColon, macOf } from '../net/mac.js';
 import { ROUTING_MENUS, routeTable, routingScript, runRouting } from './routeros-routing.js';
 import { isHostname, resolveName } from '../net/services.js';
+import { IPV6_ARGS, IPV6_MENUS, ipv6Script, runIpv6 } from './routeros-ipv6.js';
+import { isValidIp6, normIp6 } from '../net/ip6.js';
 
 // Menus : sous-menus et commandes de chaque chemin
 const MENUS = {
-  '': { menus: ['interface', 'ip', 'routing', 'system', 'tool'], commands: ['ping', 'export', 'quit'] },
+  '': { menus: ['interface', 'ip', 'ipv6', 'routing', 'system', 'tool'], commands: ['ping', 'export', 'quit'] },
   tool: { menus: [], commands: ['traceroute'] },
   interface: { menus: ['ethernet', 'vlan'], commands: ['print', 'enable', 'disable', 'export'] },
   'interface vlan': { menus: [], commands: ['add', 'print', 'remove', 'export'] },
@@ -25,6 +27,7 @@ const MENUS = {
   system: { menus: ['identity'], commands: ['reboot'] },
   'system identity': { menus: [], commands: ['print', 'set', 'export'] },
   ...ROUTING_MENUS,
+  ...IPV6_MENUS,
 };
 
 const match = (word, options) => {
@@ -126,6 +129,7 @@ export function routerosScript(dev) {
     for (const r of routes) lines.push(`add dst-address=${r.network}/${r.mask} gateway=${r.nextHop}`);
   }
   lines.push(...routingScript(dev));
+  lines.push(...ipv6Script(dev));
   const c = dev.config ?? {};
   if (c.nameServer || c.dnsServer) lines.push('/ip dns', `set${c.dnsServer ? ' allow-remote-requests=yes' : ''}${c.nameServer ? ` servers=${c.nameServer}` : ''}`);
   if (c.hosts?.length) lines.push('/ip dns static', ...c.hosts.map((h) => `add address=${h.ip} name=${h.name}`));
@@ -140,6 +144,7 @@ const index = (n, items) => {
 
 // Destination par nom (ping, traceroute) : résolue d'abord ; null si échec (message affiché)
 function resolveTarget(ctx, target) {
+  if (isValidIp6(target)) return normIp6(target);
   if (isValidIp(target) || !isHostname(target)) return target;
   const r = resolveName(withDevice(ctx.doc, ctx.dev), ctx.dev.id, target);
   if (r.query) ctx.effects.push({ type: 'ping', source: ctx.dev.id, target: ctx.dev.config.nameServer, options: { proto: 'udp', dport: 53 } });
@@ -328,7 +333,7 @@ function run(ctx, p) {
     case '|ping': {
       const target = resolveTarget(ctx, p.named.address ?? p.unnamed[0]);
       if (target === null) return;
-      if (!isValidIp(target)) return out.push('invalid value for argument address', '');
+      if (!isValidIp(target) && !isValidIp6(target)) return out.push('invalid value for argument address', '');
       const count = Math.min(Number(p.named.count) || 4, 10);
       const r = ping(doc, dev.id, target);
       ctx.effects.push({ type: 'ping', source: dev.id, target });
@@ -344,7 +349,7 @@ function run(ctx, p) {
     case 'tool|traceroute': {
       const target = resolveTarget(ctx, p.named.address ?? p.unnamed[0]);
       if (target === null) return;
-      if (!isValidIp(target)) return out.push('invalid value for argument address', '');
+      if (!isValidIp(target) && !isValidIp6(target)) return out.push('invalid value for argument address', '');
       const t = traceroute(doc, dev.id, target);
       ctx.effects.push({ type: 'ping', source: dev.id, target });
       out.push(` # ${pad('ADDRESS', 39)}LOSS SENT LAST`);
@@ -362,12 +367,16 @@ function run(ctx, p) {
     case 'system identity|export':
     case 'ip dns|export':
     case 'ip dns static|export':
+    case 'ipv6|export':
+    case 'ipv6 address|export':
+    case 'ipv6 route|export':
+    case 'ipv6 settings|export':
       return out.push(...routerosScript(dev), '');
     case '|quit':
       s.path = [];
       return out.push('interrupted', '');
     default:
-      if (runDns(ctx, p) || runRouting(ctx, p)) return;
+      if (runDns(ctx, p) || runIpv6(ctx, p, iface) || runRouting(ctx, p)) return;
       return out.push(...err('expected command name', 1));
   }
 }
@@ -408,7 +417,7 @@ export const routeros = {
     if (p.error) return p.error;
     const menu = MENUS[p.path.join(' ')];
     if (p.command) {
-      const ARGS = { 'ip address|add': 'address= interface=', 'ip route|add': 'dst-address= gateway=', '|ping': 'address count=', 'system identity|set': 'name=', 'ip dns|set': 'servers= allow-remote-requests=', 'ip dns static|add': 'name= address=' };
+      const ARGS = { 'ip address|add': 'address= interface=', 'ip route|add': 'dst-address= gateway=', '|ping': 'address count=', 'system identity|set': 'name=', 'ip dns|set': 'servers= allow-remote-requests=', 'ip dns static|add': 'name= address=', ...IPV6_ARGS };
       return [`${p.command} ${ARGS[`${p.path.join(' ')}|${p.command}`] ?? ''}`.trim(), ''];
     }
     return [...menu.menus.map((m) => `  ${pad(m, 12)} --`), ...menu.commands.map((c) => `  ${c}`), ''];

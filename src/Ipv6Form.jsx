@@ -2,6 +2,8 @@
 // routage IPv6 d'un routeur (ipv6 unicast-routing, routes statiques). Même config que les terminaux.
 import { useId } from 'react';
 import { isLinkLocal6, isValidIp6, splitPrefix6 } from './net/ip6.js';
+import { isMikrotik } from './net/catalog.js';
+import { v6Forwarding } from './net/topology.js';
 
 const toPrefix = (v) => (v === '' ? undefined : Math.max(0, Math.min(128, Math.trunc(Number(v)))));
 const v6Error = (v) => (v && !isValidIp6(v) ? 'Format attendu : 2001:db8:1::1' : null);
@@ -107,6 +109,8 @@ export function HostIpv6Form({ node, update, v6 }) {
 // Routeur (ou switch niveau 3) : ipv6 unicast-routing et routes statiques IPv6
 export function Ipv6RoutingForm({ node, update }) {
   const d = node.data;
+  const mk = isMikrotik({ type: node.type, model: d.model });
+  const forwarding = v6Forwarding({ type: node.type, model: d.model, config: d });
   const routes = d.routes6 ?? [];
   const setRoutes = (list) => update((x) => {
     const { routes6, ...rest } = x;
@@ -114,13 +118,14 @@ export function Ipv6RoutingForm({ node, update }) {
   });
   const patchRoute = (i, p) => setRoutes(routes.map((r, j) => (j === i ? { ...r, ...p } : r)));
   return (
-    <details className="proto" open={Boolean(d.ipv6Routing || routes.length)}>
-      <summary>Routage IPv6 {d.ipv6Routing && <span className="badge-on">actif</span>}</summary>
+    <details className="proto" open={Boolean((!mk && forwarding) || routes.length)}>
+      <summary>Routage IPv6 {forwarding && <span className="badge-on">actif</span>}</summary>
       <label className="check">
-        <input type="checkbox" checked={Boolean(d.ipv6Routing)} onChange={(e) => update((x) => {
-          const { ipv6Routing, ...rest } = x;
+        <input type="checkbox" checked={forwarding} onChange={(e) => update((x) => {
+          const { ipv6Routing, ipv6NoForward, ...rest } = x;
+          if (mk) return e.target.checked ? rest : { ...rest, ipv6NoForward: true };
           return e.target.checked ? { ...rest, ipv6Routing: true } : rest;
-        })} /> Router les paquets IPv6 et envoyer les annonces RA (ipv6 unicast-routing)
+        })} /> {mk ? 'Router les paquets IPv6 et envoyer les annonces RA (/ipv6 settings forward=yes)' : 'Router les paquets IPv6 et envoyer les annonces RA (ipv6 unicast-routing)'}
       </label>
       {routes.map((r, i) => (
         <fieldset key={i} className="iface">

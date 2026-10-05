@@ -126,3 +126,156 @@ test('IPv6 : traceroute', async () => {
   assert.deepEqual(t.hops.map((h) => h.ip), ['2001:db8:acad:10::1', '2001:db8:acad:12::2', '2001:db8:ffff::2']);
   assert.equal(t.ok, true);
 });
+
+// Rejoue des commandes dans le terminal d'un équipement
+async function terminal(start, id) {
+  const { runLine, shellFor } = await import('../cli/index.js');
+  const { mergeLearned } = await import('./tables.js');
+  const { runtimeOf } = await import('./runtime.js');
+  const { simulatePing } = await import('./simulate.js');
+  const state = { doc: start };
+  const shell = shellFor(dev(start, id));
+  const s = shell.newSession();
+  state.run = (...lines) => lines.map((line) => {
+    const r = runLine(shell, s, line, dev(state.doc, id), state.doc);
+    if (r.device) state.doc = { ...state.doc, devices: state.doc.devices.map((d) => (d.id === id ? r.device : d)) };
+    // Comme l'éditeur : un ping apprend les voisins (tables)
+    for (const e of r.effects) {
+      if (e.type === 'ping') state.doc = { ...state.doc, runtime: mergeLearned(runtimeOf(state.doc), simulatePing(state.doc, e.source, e.target, e.options).learned, state.doc) };
+    }
+    return r.output.join('\n');
+  }).join('\n');
+  return state;
+}
+
+test('IOS : configuration IPv6 au terminal, identique au formulaire', async () => {
+  const blank = structuredClone(IPV6_DEMO);
+  const r1 = dev(blank, 'r1').config;
+  delete r1.ipv6Routing;
+  delete r1.routes6;
+  for (const i of r1.interfaces) for (const k of ['ipv6', 'prefix6', 'linkLocal']) delete i[k];
+  const t = await terminal(blank, 'r1');
+  t.run('enable', 'configure terminal', 'ipv6 unicast-routing',
+    'interface g0/0', 'ipv6 address 2001:DB8:ACAD:10::1/64', 'ipv6 address FE80::1 link-local',
+    'interface g0/1', 'ipv6 address 2001:db8:acad:20::1/64', 'ipv6 address fe80::1 link-local',
+    'interface se0/0/0', 'ipv6 address 2001:db8:acad:12::1/64', 'exit',
+    'ipv6 route ::/0 2001:db8:acad:12::2', 'end');
+  const mine = dev(t.doc, 'r1').config;
+  const ref = dev(IPV6_DEMO, 'r1').config;
+  assert.equal(mine.ipv6Routing, true);
+  assert.deepEqual(mine.routes6, ref.routes6);
+  assert.deepEqual(mine.interfaces.map((i) => [i.ipv6, i.prefix6, i.linkLocal]), ref.interfaces.map((i) => [i.ipv6, i.prefix6, i.linkLocal]));
+  // Erreurs comme IOS
+  t.run('configure terminal', 'interface g0/1');
+  assert.match(t.run('ipv6 address 2001:db8:acad:10::5/64'), /% 2001:DB8:ACAD:10::\/64 overlaps with GigabitEthernet0\/0/);
+  assert.match(t.run('ipv6 address fe80::9/64'), /must be configured with the link-local keyword/);
+  t.run('exit');
+  assert.match(t.run('ipv6 route 2001:db8:9::/64 fe80::2'), /Interface has to be specified for a link-local nexthop/);
+  t.run('ipv6 route 2001:db8:9::/64 g0/1 fe80::2', 'end');
+  assert.deepEqual(dev(t.doc, 'r1').config.routes6.at(-1), { network: '2001:db8:9::', prefix: 64, iface: 'G0/1', nextHop: 'fe80::2' });
+  const run = t.run('show running-config');
+  assert.match(run, /hostname R1\n!\nipv6 unicast-routing/);
+  assert.match(run, /interface GigabitEthernet0\/0\n ip address 192\.168\.10\.1 255\.255\.255\.0\n ipv6 address FE80::1 link-local\n ipv6 address 2001:DB8:ACAD:10::1\/64/);
+  assert.match(run, /ipv6 route ::\/0 2001:DB8:ACAD:12::2\nipv6 route 2001:DB8:9::\/64 GigabitEthernet0\/1 FE80::2/);
+  // Le même texte, réimporté, redonne la même config
+  const { importConfig } = await import('../cli/import.js');
+  const fresh = structuredClone(blank);
+  const back = importConfig(dev(fresh, 'r1'), fresh, run);
+  assert.deepEqual(back.ignored.filter((l) => /ipv6/.test(l.text)), []);
+  assert.deepEqual(back.device.config.routes6, dev(t.doc, 'r1').config.routes6);
+  // Retrait
+  t.run('configure terminal', 'no ipv6 route 2001:db8:9::/64 g0/1 fe80::2', 'interface g0/1', 'no ipv6 address', 'exit', 'no ipv6 unicast-routing', 'end');
+  const c = dev(t.doc, 'r1').config;
+  assert.equal(c.ipv6Routing, undefined);
+  assert.equal(c.routes6.length, 1);
+  assert.equal(c.interfaces.find((i) => i.name === 'G0/1').ipv6, undefined);
+});
+
+test('IOS : show ipv6, ping et traceroute IPv6', async () => {
+  const t = await terminal(structuredClone(IPV6_DEMO), 'r1');
+  t.run('enable');
+  const brief = t.run('show ipv6 interface brief');
+  assert.match(brief, /GigabitEthernet0\/0\s+\[up\/up\]\n    FE80::1\n    2001:DB8:ACAD:10::1/);
+  assert.match(brief, /GigabitEthernet0\/2\s+\[down\/down\]\n    unassigned/);
+  const route = t.run('show ipv6 route');
+  assert.match(route, /S   ::\/0 \[1\/0\]\n     via 2001:DB8:ACAD:12::2/);
+  assert.match(route, /C   2001:DB8:ACAD:10::\/64 \[0\/0\]\n     via GigabitEthernet0\/0, directly connected/);
+  assert.match(route, /L   2001:DB8:ACAD:10::1\/128 \[0\/0\]\n     via GigabitEthernet0\/0, receive/);
+  assert.match(t.run('ping 2001:db8:acad:30::10'), /!!!!!/);
+  assert.match(t.run('ping ipv6 2001:db8:dead::1'), /Success rate is 0 percent[\s\S]*R2 : aucune route IPv6 vers 2001:db8:dead::1/);
+  // Dans la /48 mais sans réseau : R1 (route par défaut) et R2 (route /48) se renvoient le paquet
+  assert.match(t.run('ping 2001:db8:acad:99::1'), /R2 : Hop Limit expiré, le paquet tourne en boucle/);
+  assert.match(t.run('traceroute ipv6 2001:db8:ffff::2'), /1 2001:db8:acad:12::2[\s\S]*2 2001:db8:ffff::2/);
+  // Un ping sur Ethernet remplit le cache des voisins (pas de NDP sur la liaison série)
+  t.run('ping 2001:db8:acad:10::11');
+  assert.match(t.run('show ipv6 neighbors'), /2001:DB8:ACAD:10::11\s+0\s+00e0\.[0-9a-f]{4}\.[0-9a-f]{4}\s+REACH Gi0\/0/);
+});
+
+test('Export Cisco : IPv6 des routeurs et des PC', async () => {
+  const { ciscoConfigs } = await import('../export/cisco.js');
+  const out = ciscoConfigs(IPV6_DEMO);
+  const r1 = out.find((x) => x.id === 'r1').text;
+  assert.match(r1, /ipv6 unicast-routing/);
+  assert.match(r1, /interface GigabitEthernet0\/0\n description [^\n]+\n ip address 192\.168\.10\.1 255\.255\.255\.0\n ipv6 address FE80::1 link-local\n ipv6 address 2001:DB8:ACAD:10::1\/64/);
+  assert.match(r1, /ipv6 route ::\/0 2001:DB8:ACAD:12::2/);
+  assert.match(out.find((x) => x.id === 'pc1').text, /IPv6 : Automatic \(SLAAC\)/);
+  assert.match(out.find((x) => x.id === 'pc2').text, /IPv6 Address    : 2001:db8:acad:10::11\/64\n  IPv6 Gateway    : fe80::1/);
+  const gns3 = ciscoConfigs(IPV6_DEMO, { target: 'gns3' });
+  assert.match(gns3.find((x) => x.id === 'pc1').text, /ip auto/);
+});
+
+test('PC : ipconfig, ipv6config, ping et tracert IPv6', async () => {
+  const t = await terminal(structuredClone(IPV6_DEMO), 'pc1');
+  const ip = t.run('ipconfig');
+  assert.match(ip, /Link-local IPv6 Address\.+: FE80::2E0:F7FF:FE[0-9A-F:]+\n   IPv6 Address\.+: 2001:DB8:ACAD:10:2E0:F7FF:FE[0-9A-F:]+\n   IPv4 Address\.+: 192\.168\.10\.10/);
+  assert.match(ip, /Default Gateway\.+: FE80::1\n {37}192\.168\.10\.1/);
+  assert.match(t.run('ipv6config'), /Autoconfiguration\.+: Enabled/);
+  assert.match(t.run('ping 2001:db8:acad:30::10'), /Reply from 2001:DB8:ACAD:30::10: bytes=32 time<1ms TTL=62/);
+  assert.match(t.run('tracert 2001:db8:ffff::2'), /1   <1 ms     <1 ms     <1 ms     2001:db8:acad:10::1[\s\S]*Trace complete/);
+  // Passage en statique au terminal = même config que le formulaire
+  t.run('ipv6config 2001:DB8:ACAD:10::50/64 fe80::1');
+  assert.deepEqual(['slaac', 'ipv6', 'prefix6', 'gateway6'].map((k) => dev(t.doc, 'pc1').config[k]), [undefined, '2001:db8:acad:10::50', 64, 'fe80::1']);
+  assert.match(t.run('ipv6config 2001:db8:acad:10::50/64 2001:db8:acad:99::1'), /Invalid gateway/);
+  assert.match(t.run('ipv6config /autoconfig'), /IPv6 Address\.+: 2001:DB8:ACAD:10:2E0:F7FF:FE[0-9A-F:]+\/64 \(annonce RA, passerelle FE80::1\)/);
+});
+
+test('MikroTik : /ipv6 address, route, settings, neighbor ; RA actives par défaut', async () => {
+  const { OSPF_DEMO } = await import('../examples.js');
+  const { withLeases } = await import('./dhcp.js');
+  const doc = structuredClone(OSPF_DEMO);
+  dev(doc, 'srv').config.slaac = true;
+  const t = await terminal(doc, 'r3');
+  t.run('/ipv6 address add address=2001:db8:3::1/64 interface=ether2', '/ipv6 address add address=fe80::1/64 interface=ether2',
+    '/ipv6 address add address=2001:db8:23::/64 eui-64=yes interface=ether1', '/ipv6 route add dst-address=::/0 gateway=fe80::2%ether1');
+  const e2 = dev(t.doc, 'r3').config.interfaces.find((i) => i.name === 'ether2');
+  assert.deepEqual([e2.ipv6, e2.prefix6, e2.linkLocal], ['2001:db8:3::1', 64, 'fe80::1']);
+  assert.deepEqual(dev(t.doc, 'r3').config.routes6, [{ network: '::', prefix: 0, nextHop: 'fe80::2', iface: 'ether1' }]);
+  assert.match(t.run('/ipv6 address add address=2001:db8:3::9/64 interface=ether3'), /overlaps with ether2/);
+  // SLAAC : le MikroTik annonce sans réglage (forward=yes par défaut)
+  const srv = dev(withLeases(t.doc), 'srv').config.slaac6;
+  assert.match(srv.ip, /^2001:db8:3:0:2e0:f7ff:fe/);
+  assert.equal(srv.gateway, 'fe80::1');
+  assert.match(t.run(`/ping ${srv.ip} count=1`), /received=1/);
+  assert.match(t.run('/ipv6 neighbor print'), new RegExp(`${srv.ip.replace(/:/g, ':')}\\s+ether2\\s+00:E0:F7:[0-9A-F:]+\\s+reachable`));
+  const addr = t.run('/ipv6 address print');
+  assert.match(addr, /1\s+G 2001:db8:3::1\/64\s+ether2\s+yes/);
+  assert.match(addr, /G 2001:db8:23:0:4e5e:cff:fe[0-9a-f:]+\/64\s+ether1/);
+  assert.match(addr, / L fe80::1\/64\s+ether2/);
+  assert.match(addr, /DL fe80::4e5e:cff:fe[0-9a-f:]+\/64\s+ether1/);
+  const routes = t.run('/ipv6 route print');
+  assert.match(routes, /0\s+As ::\/0\s+fe80::2%ether1\s+1/);
+  assert.match(routes, /DAc 2001:db8:3::\/64\s+ether2\s+0/);
+  assert.match(t.run('/ipv6 route remove 1'), /cannot remove dynamic route/);
+  // Export puis import : même config
+  const exported = t.run('/export');
+  assert.match(exported, /\/ipv6 address\nadd address=2001:db8:23::\/64 eui-64=yes interface=ether1\nadd address=fe80::1\/64 advertise=no interface=ether2\nadd address=2001:db8:3::1\/64 interface=ether2\n\/ipv6 route\nadd dst-address=::\/0 gateway=fe80::2%ether1/);
+  const { importConfig } = await import('../cli/import.js');
+  const fresh = structuredClone(OSPF_DEMO);
+  const back = importConfig(dev(fresh, 'r3'), fresh, exported);
+  assert.deepEqual(back.ignored.filter((l) => /ipv6|eui/.test(l.text)), []);
+  assert.deepEqual(back.device.config.routes6, dev(t.doc, 'r3').config.routes6);
+  // forward=no : plus de routage ni d'annonce
+  t.run('/ipv6 settings set forward=no');
+  assert.match(dev(withLeases(t.doc), 'srv').config.slaacError, /n'envoie pas d'annonces RA/);
+  assert.match(t.run('/ipv6 settings print'), /forward: no/);
+});

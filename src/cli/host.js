@@ -6,6 +6,8 @@ import { withLeases } from '../net/dhcp.js';
 import { arpRows, clearArp } from '../net/tables.js';
 import { macWindows } from '../net/mac.js';
 import { dnsServerOf, httpGet, isHostname, resolveName } from '../net/services.js';
+import { isLinkLocal6, isValidIp6, normIp6, sameSubnet6, splitPrefix6 } from '../net/ip6.js';
+import { buildTopology } from '../net/topology.js';
 import { cidrToMask, isBroadcastAddress, isNetworkAddress, isValidCidr, isValidIp, sameSubnet } from '../net/ip.js';
 
 const HELP = [
@@ -13,7 +15,10 @@ const HELP = [
   '  ipconfig                         affiche la configuration IP',
   '  ipconfig <ip> <masque> [passerelle]  configure l\'adresse IP',
   '  ipconfig /renew | /release       adresse par DHCP / rendre l\'adresse',
-  '  ping <ip|nom> [-n nombre]        envoie des echo request',
+  '  ipv6config                       affiche la configuration IPv6',
+  '  ipv6config <adresse>/<préfixe> [passerelle]  IPv6 statique',
+  '  ipv6config /autoconfig           IPv6 automatique (SLAAC)',
+  '  ping <ip|ipv6|nom> [-n nombre]   envoie des echo request',
   '  tracert <ip|nom>                 routeurs traversés jusqu\'à la destination',
   '  nslookup <nom> [serveur]         demande l\'adresse d\'un nom au serveur DNS',
   '  curl http://<nom|ip>             demande une page web (navigateur)',
@@ -22,16 +27,24 @@ const HELP = [
   '',
 ];
 
-// c : configuration effective (bail DHCP appliqué)
-function ipconfig(c, all = false) {
+// Vue IPv6 de la carte réseau (link-local, adresse statique ou SLAAC, passerelle)
+const v6Of = (doc, id) => buildTopology(withLeases(doc)).l3Ifaces6(id, { includeDown: true })[0] ?? null;
+const UP = (a) => String(a).toUpperCase();
+
+// c : configuration effective (bail DHCP appliqué) ; v6 : vue IPv6
+function ipconfig(c, all = false, v6 = null) {
   const ok = isValidIp(c.ip) && isValidCidr(c.mask);
   const lines = ['', 'FastEthernet0 Connection:(default port)', '', '   Connection-specific DNS Suffix..: '];
+  if (v6?.linkLocal) lines.push(`   Link-local IPv6 Address.........: ${UP(v6.linkLocal)}`);
+  if (v6?.ip) lines.push(`   IPv6 Address....................: ${UP(v6.ip)}`);
   if (c.dhcpError) {
     lines.push(`   Autoconfiguration IPv4 Address..: ${c.ip}`, `   Subnet Mask.....................: ${cidrToMask(c.mask)}`,
       '   Default Gateway.................: 0.0.0.0', '', `NetCanvas : pas de bail DHCP, ${c.dhcpError}.`);
   } else {
-    lines.push(`   IPv4 Address....................: ${ok ? c.ip : '0.0.0.0'}`, `   Subnet Mask.....................: ${ok ? cidrToMask(c.mask) : '0.0.0.0'}`,
-      `   Default Gateway.................: ${isValidIp(c.gateway) ? c.gateway : '0.0.0.0'}`);
+    lines.push(`   IPv4 Address....................: ${ok ? c.ip : '0.0.0.0'}`, `   Subnet Mask.....................: ${ok ? cidrToMask(c.mask) : '0.0.0.0'}`);
+    // Passerelles IPv6 puis IPv4, comme Packet Tracer
+    const gws = [v6?.gateway && UP(v6.gateway), isValidIp(c.gateway) ? c.gateway : '0.0.0.0'].filter(Boolean);
+    lines.push(`   Default Gateway.................: ${gws[0]}`, ...gws.slice(1).map((g) => `                                     ${g}`));
     if (all || c.lease) lines.push(`   DHCP Enabled....................: ${c.dhcp ? 'Yes' : 'No'}`);
     const dns = c.lease?.dns ?? c.dns;
     if (dns) lines.push(`   DNS Servers.....................: ${dns}`);
@@ -67,7 +80,8 @@ export const host = {
         const live = () => withLeases(ctx.doc).devices.find((d) => d.id === dev.id)?.config ?? dev.config ?? {};
         const flag = args[0]?.toLowerCase();
         if (!args.length || flag === '/all') {
-          out.push(...ipconfig(live(), flag === '/all'));
+          out.push(...ipconfig(live(), flag === '/all', v6Of(ctx.doc, dev.id)));
+          if (v6Of(ctx.doc, dev.id)?.slaacError) out.push(`NetCanvas : pas d'adresse IPv6 automatique, ${v6Of(ctx.doc, dev.id).slaacError}.`, '');
           break;
         }
         const released = (rt, on) => ({ ...rt, released: [...new Set([...(rt.released ?? []).filter((x) => x !== dev.id), ...(on ? [dev.id] : [])])] });
@@ -111,8 +125,42 @@ export const host = {
         ctx.changed = true;
         break;
       }
+      case 'ipv6config': {
+        const flag = args[0]?.toLowerCase();
+        const { slaac, ipv6, prefix6, gateway6, ...rest } = dev.config ?? {};
+        if (!args.length) {
+          const v = v6Of(doc, dev.id);
+          out.push('', 'FastEthernet0 Connection:(default port)', '', `   IPv6 Address....................: ${v?.ip ? `${UP(v.ip)}/${v.prefix}` : '::'}`,
+            `   Link-local IPv6 Address.........: ${UP(v?.linkLocal ?? '::')}`, `   Default Gateway.................: ${UP(v?.gateway ?? '::')}`,
+            `   Autoconfiguration...............: ${slaac ? 'Enabled' : 'Disabled'}`, '');
+          if (v?.slaacError) out.push(`NetCanvas : pas d'adresse IPv6 automatique, ${v.slaacError}.`, '');
+          break;
+        }
+        if (flag === '/autoconfig') {
+          dev.config = { ...rest, slaac: true };
+          ctx.changed = true;
+          const next = { ...doc, devices: doc.devices.map((d) => (d.id === dev.id ? dev : d)) };
+          const v = v6Of(next, dev.id);
+          out.push(v?.ip ? `IPv6 Address....: ${UP(v.ip)}/64 (annonce RA, passerelle ${UP(v.gateway)})` : `NetCanvas : pas d'annonce RA, ${v?.slaacError ?? 'aucun routeur'}.`, '');
+          break;
+        }
+        const addr = splitPrefix6(args[0]);
+        const gw = args[1];
+        if (!addr || isLinkLocal6(addr.ip)) {
+          out.push('Invalid command.', 'Usage : ipv6config <adresse>/<préfixe> [passerelle], ex. ipv6config 2001:db8:1::10/64 fe80::1', '');
+          break;
+        }
+        if (gw && (!isValidIp6(gw) || (!isLinkLocal6(gw) && !sameSubnet6(addr.ip, gw, addr.prefix)))) {
+          out.push(`Invalid gateway: ${gw} n'est ni une link-local ni dans le réseau de ${args[0]}.`, '');
+          break;
+        }
+        dev.config = { ...rest, ipv6: addr.ip, prefix6: addr.prefix, ...(gw ? { gateway6: normIp6(gw) } : {}) };
+        ctx.changed = true;
+        break;
+      }
       case 'ping': {
         const asked = args.find((a) => !a.startsWith('-') && !/^\d+$/.test(a)) ?? args.find((a) => isValidIp(a));
+        const v6 = isValidIp6(asked);
         const n = args.includes('-n') ? Math.min(Number(args[args.indexOf('-n') + 1]) || 4, 10) : 4;
         // Un nom est d'abord résolu par le serveur DNS (requête simulée)
         const named = isHostname(asked) ? resolveName(doc, dev.id, asked) : null;
@@ -121,15 +169,15 @@ export const host = {
           out.push(`Ping request could not find host ${asked}. Please check the name and try again.`, '', `NetCanvas : ${named.log.at(-1).text}`, '');
           break;
         }
-        const target = named ? named.ip : asked;
-        if (!isValidIp(target)) {
+        const target = named ? named.ip : v6 ? normIp6(asked) : asked;
+        if (!isValidIp(target) && !v6) {
           out.push(`Ping request could not find host ${asked ?? ''}. Please check the name and try again.`, '');
           break;
         }
         const r = ping(doc, dev.id, target);
         ctx.effects.push({ type: 'ping', source: dev.id, target });
         out.push('', named ? `Pinging ${asked} [${target}] with 32 bytes of data:` : `Pinging ${target} with 32 bytes of data:`, '');
-        for (let i = 0; i < n; i++) out.push(r.ok ? `Reply from ${target}: bytes=32 time<1ms TTL=${r.ttl}` : 'Request timed out.');
+        for (let i = 0; i < n; i++) out.push(r.ok ? `Reply from ${v6 ? UP(target) : target}: bytes=32 time<1ms TTL=${r.ttl}` : 'Request timed out.');
         const recv = r.ok ? n : 0;
         out.push('', `Ping statistics for ${target}:`, `    Packets: Sent = ${n}, Received = ${recv}, Lost = ${n - recv} (${r.ok ? 0 : 100}% loss),`);
         if (r.ok) out.push('Approximate round trip times in milli-seconds:', '    Minimum = 0ms, Maximum = 0ms, Average = 0ms');
@@ -197,7 +245,7 @@ export const host = {
       case 'tracert': {
         const asked = args.find((a) => !a.startsWith('-'));
         const named = isHostname(asked) ? resolveName(doc, dev.id, asked) : null;
-        const target = named?.ok ? named.ip : args.find((a) => isValidIp(a));
+        const target = named?.ok ? named.ip : args.find((a) => isValidIp(a)) ?? normIp6(args.find((a) => isValidIp6(a)) ?? '');
         if (!target) {
           out.push(`Unable to resolve target system name ${args[0] ?? ''}.`, '');
           break;
@@ -216,7 +264,7 @@ export const host = {
   },
   help: () => HELP,
   complete(s, line) {
-    const words = ['ipconfig', 'ping', 'help', 'cls', 'tracert', 'nslookup', 'curl', 'arp'];
+    const words = ['ipconfig', 'ipv6config', 'ping', 'help', 'cls', 'tracert', 'nslookup', 'curl', 'arp'];
     if (/\s/.test(line.trim()) || !line.trim()) return line;
     const m = words.filter((w) => w.startsWith(line.trim().toLowerCase()));
     return m.length === 1 ? `${m[0]} ` : line;

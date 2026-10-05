@@ -5,7 +5,7 @@ import { runtimeOf } from './runtime.js';
 import { buildTopology } from './topology.js';
 import { isValidIp } from './ip.js';
 
-// Ajoute les entrées apprises (learned = { arp, mac }) ; une entrée existante est rafraîchie
+// Ajoute les entrées apprises (learned = { arp, mac, nd }) ; une entrée existante est rafraîchie
 export function mergeLearned(runtime, learned, doc) {
   const now = runtime.time ?? 0;
   const devices = new Map(doc.devices.map((d) => [d.id, d]));
@@ -26,8 +26,31 @@ export function mergeLearned(runtime, learned, doc) {
     if (i >= 0) mac[i] = entry;
     else mac.push(entry);
   }
-  return { ...runtime, arp, mac };
+  // Voisins IPv6 (NDP) : même durée de vie que le cache ARP de l'équipement
+  const nd = (runtime.nd ?? []).filter((e) => e.expires > now);
+  for (const e of learned?.nd ?? []) {
+    if (!e.mac || !e.ip) continue;
+    const i = nd.findIndex((x) => x.device === e.device && x.ip === e.ip);
+    const entry = { ...e, learned: now, expires: now + arpTimeout(devices.get(e.device)) };
+    if (i >= 0) nd[i] = entry;
+    else nd.push(entry);
+  }
+  return { ...runtime, arp, mac, nd };
 }
+
+// Voisins IPv6 d'un équipement (état REACH pendant 30 s, puis STALE comme sur IOS)
+export const ND_REACHABLE = 30;
+export function ndRows(dev, doc) {
+  const rt = runtimeOf(doc);
+  return (rt.nd ?? [])
+    .filter((e) => e.device === dev.id && e.expires > rt.time)
+    .map((e) => {
+      const age = rt.time - e.learned;
+      return { ip: e.ip, mac: e.mac, iface: e.iface, age, state: age < ND_REACHABLE ? 'REACH' : 'STALE' };
+    })
+    .sort((a, b) => a.iface.localeCompare(b.iface, undefined, { numeric: true }) || a.ip.localeCompare(b.ip));
+}
+export const clearNd = (id) => (rt) => ({ ...rt, nd: (rt.nd ?? []).filter((e) => e.device !== id) });
 
 // Cache ARP d'un équipement : ses propres adresses (routeur, statiques) puis les entrées apprises
 export function arpRows(dev, doc) {

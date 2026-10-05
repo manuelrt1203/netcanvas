@@ -3,7 +3,7 @@
 // donne le préfixe ; l'hôte complète par son EUI-64 et prend la link-local du routeur comme passerelle.
 // Résultat dans config.slaac6 = { ip, prefix, gateway, router, iface } ou config.slaacError.
 import { flood } from './l2.js';
-import { buildTopology, isHost } from './topology.js';
+import { buildTopology, isHost, v6Forwarding } from './topology.js';
 import { eui64Address, isLinkLocal6, networkLabel6 } from './ip6.js';
 import { macCisco, macOf } from './mac.js';
 
@@ -21,7 +21,7 @@ function announce(topo, hostId) {
     if (isHost(dev)) continue;
     const v6 = e.svi != null ? topo.l3Ifaces6(e.device).find((s) => s.svi && s.vlan === e.svi) : topo.l3IfaceOn6(e.device, e.inLink, e.tag);
     if (!v6?.ip || isLinkLocal6(v6.ip) || v6.shutdown) continue;
-    if (!dev.config?.ipv6Routing) {
+    if (!v6Forwarding(dev)) {
       silent ??= `${dev.label} a une adresse IPv6 sur ce réseau mais n'envoie pas d'annonces RA (« ipv6 unicast-routing » n'est pas activé)`;
       continue;
     }

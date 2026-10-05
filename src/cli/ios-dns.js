@@ -3,6 +3,7 @@ import { arg, kw } from './engine.js';
 import { pad, withDevice } from './device.js';
 import { isValidIp } from '../net/ip.js';
 import { isHostname, resolveName } from '../net/services.js';
+import { isValidIp6, normIp6 } from '../net/ip6.js';
 
 const isIp = (t) => isValidIp(t);
 const norm = (n) => n.toLowerCase().replace(/\.$/, '');
@@ -75,6 +76,7 @@ export const showHostsCommand = () => kw('hosts', 'IP domain-name, lookup style,
 // Nom -> adresse avant un ping / traceroute ; null (message déjà affiché) si la résolution échoue
 export function resolveTarget(c, target) {
   if (isValidIp(target)) return target;
+  if (isValidIp6(target)) return normIp6(target);
   const r = resolveName(withDevice(c.doc, c.dev), c.dev.id, target);
   // Entrée « ip host » : pas de requête DNS
   if (r.ok && !r.query) return r.ip;
@@ -86,4 +88,4 @@ export function resolveTarget(c, target) {
 }
 
 // Destination de ping / traceroute : une adresse ou un nom
-export const isTarget = (t) => isValidIp(t) || isHostname(t);
+export const isTarget = (t) => isValidIp(t) || isValidIp6(t) || isHostname(t);

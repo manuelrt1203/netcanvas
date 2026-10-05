@@ -11,7 +11,7 @@
 //    (routing6.js), NDP (Neighbor Solicitation / Advertisement) à la place d'ARP. Les ACL et le NAT IPv4
 //    ne s'appliquent pas aux paquets IPv6.
 import { formatIp, isValidCidr, isValidIp, networkLabel, networkOf, parseIp, sameSubnet } from './ip.js';
-import { buildTopology, isHost, isL3Switch, isRouting } from './topology.js';
+import { buildTopology, isHost, isL3Switch, isRouting, v6Forwarding } from './topology.js';
 import { isMikrotik, modelOf } from './catalog.js';
 import { evaluateAcl, evaluateFirewall } from './acl.js';
 import { destNat, isPrivate, natGlobals, sourceNat } from './nat.js';
@@ -153,8 +153,8 @@ function forward(ctx, startId, target, phase, result, log, name, fixedSrc = null
           : `ne route pas (un ${modelOf(dev).short} est un switch de niveau 2 : il faut un routeur ou un switch niveau 3)`;
       throw new SimError(`${name(current)} reçoit un paquet pour ${dstIp} ${why}.`, current);
     }
-    if (ctx.v6 && current !== startId && !dev.config?.ipv6Routing) {
-      throw new SimError(`${name(current)} reçoit un paquet IPv6 pour ${dstIp} mais le routage IPv6 n'est pas activé (« ipv6 unicast-routing ») : il le jette.`, current);
+    if (ctx.v6 && current !== startId && !v6Forwarding(dev)) {
+      throw new SimError(`${name(current)} reçoit un paquet IPv6 pour ${dstIp} mais le routage IPv6 n'est pas activé (${isMikrotik(dev) ? '/ipv6 settings forward=no' : '« ipv6 unicast-routing »'}) : il le jette.`, current);
     }
     if (ctx.v6 && current !== startId && isLinkLocal6(dstIp)) {
       throw new SimError(`${name(current)} : ${dstIp} est une adresse link-local, elle ne traverse jamais un routeur.`, current);

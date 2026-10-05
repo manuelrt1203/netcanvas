@@ -5,10 +5,14 @@
 //             STP (s'il y a une boucle) : le bridge Linux n'a qu'un arbre (802.1D) ; on reprend la config du VLAN 1
 //             (activé, priorité), la MAC du switch et les coûts de port, pour qu'il bloque le même port que NetCanvas.
 //   hôte    : adresse + route par défaut
+//   IPv6    : adresses globales et link-local de NetCanvas (nodad : utilisables tout de suite), routes IPv6
+//             calculées ; un hôte SLAAC reçoit en statique l'adresse et la passerelle que NetCanvas a calculées.
 // Containerlab réserve eth0 au management : le 1er câble d'un équipement est eth1, le 2e eth2…
 import { isValidCidr, isValidIp } from '../net/ip.js';
 import { computeRouting, lookup, prefixText } from '../net/routing.js';
-import { isL3Switch, isLoopbackName, isRouting } from '../net/topology.js';
+import { isHost, isL3Switch, isLoopbackName, isRouting, v6Forwarding } from '../net/topology.js';
+import { isLinkLocal6 } from '../net/ip6.js';
+import { routeText6 } from '../net/routing6.js';
 import { isMikrotik } from '../net/catalog.js';
 import { wildcardToCidr } from '../net/routing.js';
 import { withLeases } from '../net/dhcp.js';
@@ -108,9 +112,37 @@ export function clabCommands(rawDoc) {
         cmds.push(`ip route replace default via ${rows[0].gateway}`);
       }
     }
-    commands.set(d.id, cmds);
+    commands.set(d.id, [...cmds, ...v6Cmds(d, rows)]);
   }
   return commands;
+
+  // IPv6 : adresses (link-local de NetCanvas en plus de celle du noyau), puis routes ou passerelle
+  function v6Cmds(d, rows) {
+    const out = [];
+    const views = topo.l3Ifaces6(d.id);
+    for (const v of views) {
+      const dev = isHost(d) ? (rows[0] ? ifname(rows[0].index) : null) : linuxDev(d, rows, v.name);
+      if (!dev || v.loopback && !v.ip) continue;
+      if (v.linkLocal && !v.loopback) out.push(`ip -6 addr add ${v.linkLocal}/64 dev ${dev} nodad`);
+      if (v.ip && v.prefix != null) out.push(`ip -6 addr add ${v.ip}/${v.loopback ? 128 : v.prefix} dev ${dev} nodad`);
+    }
+    if (!views.some((v) => v.ip)) return out;
+    if (isHost(d)) {
+      const v = views[0];
+      if (v.gateway && rows[0]) out.push(`ip -6 route replace default via ${v.gateway} dev ${ifname(rows[0].index)}`);
+      return out;
+    }
+    const rib = routing.ribs6.get(d.id);
+    if (!rib || !v6Forwarding(d)) return out;
+    for (const r of [...rib.values()].filter((x) => !['C', 'L'].includes(x.proto))) {
+      const dev = linuxDev(d, rows, r.iface);
+      const dst = r.prefix === 0 ? 'default' : routeText6(r);
+      const via = r.nextHop ? ` via ${r.nextHop}` : '';
+      // Saut suivant link-local (ou route vers une interface) : Linux veut l'interface
+      out.push(`ip -6 route replace ${dst}${via}${!r.nextHop || isLinkLocal6(r.nextHop) ? ` dev ${dev}` : ''}`);
+    }
+    return out;
+  }
 }
 
 // --- ACL Cisco et pare-feu MikroTik -> iptables ------------------------------------------------
@@ -248,15 +280,16 @@ export function toContainerlab(doc) {
     '  nodes:',
   ];
 
+  // Docker désactive souvent IPv6 dans les conteneurs : on le réactive s'il sert
+  const usesV6 = doc.devices.some((d) => d.config?.slaac || d.config?.ipv6 || (d.config?.interfaces ?? []).some((i) => i.ipv6 || i.linkLocal || i.ipv6Enable));
   for (const d of doc.devices) {
     out.push(`    ${names.get(d.id)}:`);
     out.push(`      labels: { netcanvas-type: ${d.type}, netcanvas-label: ${q(d.label)} }`);
-    if (isRouting(d)) {
-      out.push('      sysctls:', '        net.ipv4.ip_forward: 1', '        net.ipv4.conf.all.arp_ignore: 1');
-    } else if (d.type === 'switch') {
+    const sysctls = isRouting(d) ? ['net.ipv4.ip_forward: 1', 'net.ipv4.conf.all.arp_ignore: 1']
       // Switch sans « ip routing » : ses interfaces VLAN ne doivent pas router (le défaut hérité peut être 1)
-      out.push('      sysctls:', '        net.ipv4.ip_forward: 0');
-    }
+      : d.type === 'switch' ? ['net.ipv4.ip_forward: 0'] : [];
+    if (usesV6) sysctls.push('net.ipv6.conf.all.disable_ipv6: 0', `net.ipv6.conf.all.forwarding: ${isRouting(d) && v6Forwarding(d) ? 1 : 0}`);
+    if (sysctls.length) out.push('      sysctls:', ...sysctls.map((x) => `        ${x}`));
     const cmds = commands.get(d.id);
     if (cmds.length) {
       out.push('      exec:');

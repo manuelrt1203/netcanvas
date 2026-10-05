@@ -4,9 +4,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { BGP_DEMO, DEMO, DHCP_DEMO, L3_DEMO, NAT_DEMO, OSPF_DEMO, ROAS_DEMO, STP_DEMO } from '../examples.js';
+import { BGP_DEMO, DEMO, DHCP_DEMO, IPV6_DEMO, L3_DEMO, NAT_DEMO, OSPF_DEMO, ROAS_DEMO, STP_DEMO } from '../examples.js';
 import { buildTopology } from '../net/topology.js';
-import { isRouting } from '../net/topology.js';
+import { isRouting, v6Forwarding } from '../net/topology.js';
 import { simulatePing } from '../net/simulate.js';
 import { clabCommands } from './containerlab.js';
 import { interfaceTable } from './common.js';
@@ -28,6 +28,8 @@ function runLab(doc, pings, { wait = 1, probes = [] } = {}) {
   for (const d of doc.devices) {
     script.push(`ip netns add ${d.id}`, `ip -n ${d.id} link set lo up`);
     script.push(`ip netns exec ${d.id} sh -c 'echo ${isRouting(d) ? 1 : 0} > /proc/sys/net/ipv4/ip_forward'`);
+    // IPv6 : comme les sysctls de l'export (forwarding des routeurs IPv6)
+    script.push(`ip netns exec ${d.id} sh -c 'echo ${isRouting(d) && v6Forwarding(d) ? 1 : 0} > /proc/sys/net/ipv6/conf/all/forwarding'`);
   }
   doc.links.forEach((l, i) => {
     const a = table.get(l.source).find((r) => r.link === l.id);
@@ -201,4 +203,23 @@ test('containerlab : STP du noyau Linux, même port bloqué que NetCanvas, ping 
   const blocking = Object.entries(res).filter(([k]) => k.startsWith('stp-'))
     .flatMap(([k, v]) => [...v.matchAll(/(eth\d+)@?\S*:.*?state blocking/g)].map((m) => `${k.slice(4)}|${m[1]}`));
   assert.deepEqual(blocking, [`${sw}|${eth}`]);
+});
+
+test('containerlab : IPv6 sur un vrai réseau (SLAAC calculé, passerelle link-local, routes IPv6)', { skip }, () => {
+  const doc = structuredClone(IPV6_DEMO);
+  assertMatchesSimulator(doc, [
+    ['pc1', '2001:db8:acad:30::10', true], // SLAAC -> fe80::1 (R1) -> série -> R2 -> serveur
+    ['pc2', '2001:db8:ffff::2', true], // route par défaut IPv6 jusqu'à Internet
+    ['pc3', '2001:db8:acad:10::11', true], // inter-VLAN en IPv6
+    ['pc2', '2001:db8:dead::1', false], // aucune route sur R2
+  ]);
+});
+
+test('containerlab : routage IPv6 coupé sur R2 = ping IPv6 perdu, IPv4 intact', { skip }, () => {
+  const doc = structuredClone(IPV6_DEMO);
+  doc.devices.find((d) => d.id === 'r2').config.ipv6Routing = false;
+  assertMatchesSimulator(doc, [
+    ['pc2', '2001:db8:acad:30::10', false],
+    ['pc2', '172.16.0.10', true],
+  ]);
 });

@@ -5,10 +5,11 @@
 //   nat    : [{ router, proto, insideLocal, insideGlobal, outsideLocal, outsideGlobal, id, created, expires }]
 //   arp    : [{ device, ip, mac, iface, learned, expires }]   (caches ARP)
 //   mac    : [{ switch, mac, vlan, port, learned, expires }]  (tables MAC des switches)
-export const EMPTY_RUNTIME = { time: 0, leases: {}, released: [], nat: [], arp: [], mac: [] };
+//   nd     : [{ device, ip, mac, iface, learned, expires }]   (voisins IPv6, NDP)
+export const EMPTY_RUNTIME = { time: 0, leases: {}, released: [], nat: [], arp: [], mac: [], nd: [] };
 
 export const runtimeOf = (doc) => ({ ...EMPTY_RUNTIME, ...doc?.runtime });
-export const isEmptyRuntime = (r) => !r || (!r.time && !Object.keys(r.leases ?? {}).length && !r.released?.length && !r.nat?.length && !r.arp?.length && !r.mac?.length);
+export const isEmptyRuntime = (r) => !r || (!r.time && !Object.keys(r.leases ?? {}).length && !r.released?.length && !r.nat?.length && !r.arp?.length && !r.mac?.length && !r.nd?.length);
 
 // IOS : délai d'expiration d'une traduction ICMP (ip nat translation icmp-timeout)
 export const NAT_ICMP_TIMEOUT = 60;

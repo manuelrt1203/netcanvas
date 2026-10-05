@@ -4,7 +4,7 @@ import { computeStp } from './stp.js';
 import { isValidCidr, isValidIp } from './ip.js';
 import { eui64Address, linkLocalOf, normIp6 } from './ip6.js';
 import { macCisco, macOf } from './mac.js';
-import { devicePorts, isDataMedia, isSviName, modelId, modelOf } from './catalog.js';
+import { devicePorts, isDataMedia, isMikrotik, isSviName, modelId, modelOf } from './catalog.js';
 import { autoCable, checkLink } from './cabling.js';
 
 export const HOST_TYPES = new Set(['pc', 'server', 'printer', 'cloud']);
@@ -17,6 +17,8 @@ export const isL3Switch = (d) => d?.type === 'switch' && Boolean(modelOf(d).l3) 
 export const isRouting = (d) => d?.type === 'router' || isL3Switch(d);
 
 // Interface virtuelle toujours active (sauf shutdown) : Loopback0 chez Cisco, lo chez MikroTik
+// Routage IPv6 actif : « ipv6 unicast-routing » chez Cisco ; chez MikroTik par défaut (/ipv6 settings forward=yes)
+export const v6Forwarding = (d) => (isMikrotik(d) ? !d?.config?.ipv6NoForward : Boolean(d?.config?.ipv6Routing));
 export const isLoopbackName = (name) => /^(Lo\d+|lo)$/.test(name ?? '');
 
 export function buildTopology(doc) {

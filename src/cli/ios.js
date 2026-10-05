@@ -4,12 +4,13 @@ import { dataPorts, ensureEntry, getEntry, linkOf, maskToCidr, pad, ping, withDe
 import { buildTopology, isLoopbackName } from '../net/topology.js';
 import { cidrToMask, formatIp, isBroadcastAddress, isNetworkAddress, isValidIp, networkOf, parseIp, sameSubnet } from '../net/ip.js';
 import { isSviName, modelOf } from '../net/catalog.js';
-import { hostname as iosHostname, iosStpLines, iosStpPortLines, iosAclLines, iosInterfaceExtras, iosDhcpLines, iosDnsLines, iosLongName, iosNatLines, iosRoutingLines } from '../export/cisco.js';
+import { hostname as iosHostname, iosStpLines, iosStpPortLines, iosAclLines, iosInterfaceExtras, iosDhcpLines, iosDnsLines, iosIpv6GlobalLines, iosIpv6IfaceLines, iosLongName, iosNatLines, iosRoutingLines } from '../export/cisco.js';
 import { traceroute } from '../net/traceroute.js';
 import { ipArpShow, tableClears, tableShows } from './ios-tables.js';
 import { stpConfigCommand, stpInterfaceCommands, stpNoConfigCommand, stpShowCommand } from './ios-stp.js';
 import { clearDhcpCommand, dhcpConfigCommand, dhcpTree, helperCommands, showDhcp } from './ios-dhcp.js';
 import { clearNatCommand, natConfigCommand, natInterfaceCommands, showNatTranslations } from './ios-nat.js';
+import { ipv6GlobalCommands, ipv6InterfaceCommands, ipv6ShowCommand } from './ios-ipv6.js';
 import { dnsConfigCommands, isTarget, resolveTarget, showHostsCommand } from './ios-dns.js';
 import { accessGroupCommands, aclConfigCommands, aclShows, aclTree, showAccessLists } from './ios-acl.js';
 import { bgpTree, interfaceRoutingCommands, ospfTree, ripTree, routeFilters, routerCommands, routingShows, showIpRoute } from './ios-routing.js';
@@ -97,6 +98,7 @@ function showIpIntBrief(dev, doc) {
 
 function runningConfig(dev) {
   const lines = ['!', 'version 15.1', 'no service timestamps log datetime msec', '!', `hostname ${iosHostname(dev.label, dev.type)}`, '!'];
+  if (dev.config?.ipv6Routing) lines.push('ipv6 unicast-routing', '!');
   if (dev.type === 'switch') {
     lines.push(...iosStpLines(dev.config ?? {}), '!');
     for (const p of dataPorts(dev)) {
@@ -115,7 +117,7 @@ function runningConfig(dev) {
       lines.push(`interface ${e.name}`);
       if (e.description) lines.push(` description ${e.description}`);
       lines.push(e.ip && e.mask != null ? ` ip address ${e.ip} ${cidrToMask(e.mask)}` : ' no ip address');
-      lines.push(...iosInterfaceExtras(dev.config ?? {}, e), ...(e.shutdown ? [' shutdown'] : []), '!');
+      lines.push(...iosIpv6IfaceLines(e), ...iosInterfaceExtras(dev.config ?? {}, e), ...(e.shutdown ? [' shutdown'] : []), '!');
     }
     const c = dev.config ?? {};
     if (c.ipRouting) lines.push('ip routing', '!');
@@ -123,7 +125,7 @@ function runningConfig(dev) {
     for (const r of c.routes ?? []) {
       if (isValidIp(r.network) && r.mask != null && isValidIp(r.nextHop)) lines.push(`ip route ${r.network} ${cidrToMask(r.mask)} ${r.nextHop}`);
     }
-    lines.push(...iosDhcpLines(c), ...iosRoutingLines(c), ...iosAclLines(c), ...iosDnsLines(c), '!');
+    lines.push(...iosIpv6GlobalLines(c), ...iosDhcpLines(c), ...iosRoutingLines(c), ...iosAclLines(c), ...iosDnsLines(c), '!');
   } else {
     for (const p of allInterfaces(dev)) {
       const e = getEntry(dev, p.name);
@@ -131,7 +133,7 @@ function runningConfig(dev) {
       if (e?.description) lines.push(` description ${e.description}`);
       if (e?.parent && e.vlan) lines.push(` encapsulation dot1Q ${e.vlan}${e.native ? ' native' : ''}`);
       lines.push(e?.ip && isValidIp(e.ip) && e.mask != null ? ` ip address ${e.ip} ${cidrToMask(e.mask)}` : ' no ip address');
-      lines.push(...iosInterfaceExtras(dev.config ?? {}, e));
+      lines.push(...iosIpv6IfaceLines(e), ...iosInterfaceExtras(dev.config ?? {}, e));
       if (e?.clockRate) lines.push(` clock rate ${e.clockRate}`);
       if (e?.shutdown) lines.push(' shutdown');
       lines.push('!');
@@ -145,6 +147,7 @@ function runningConfig(dev) {
     for (const r of dev.config?.routes ?? []) {
       if (isValidIp(r.network) && r.mask != null && isValidIp(r.nextHop)) lines.push(`ip route ${r.network} ${cidrToMask(r.mask)} ${r.nextHop}`);
     }
+    lines.push(...iosIpv6GlobalLines(dev.config ?? {}));
     lines.push('!');
   }
   lines.push('line con 0', '!', 'line vty 0 4', ' login', '!', 'end');
@@ -337,6 +340,7 @@ function showTree(dev) {
     }),
     ...aclShows(),
     showHostsCommand(),
+    ipv6ShowCommand((d) => allInterfaces(d).map((p) => p.name), portState),
     kw('cdp', 'CDP information', { children: [kw('neighbors', 'CDP neighbor entries', { run: (c) => c.out.push(...showCdp(c.dev, c.doc)) })] }),
     kw('version', 'System hardware and software status', { run: (c) => c.out.push(...showVersion(c.dev)) }),
   ];
@@ -349,7 +353,8 @@ function showTree(dev) {
 }
 
 const pingCmd = () => kw('ping', 'Send echo messages', {
-  children: [arg('ip', 'WORD', 'Ping destination address or hostname', isTarget, { run: (c) => doPing(c, resolveTarget(c, c.args.ip)) })],
+  children: [
+    kw('ipv6', 'IPv6 echo', { children: [arg('ip', 'WORD', 'Ping destination address or hostname', isTarget, { run: (c) => doPing(c, resolveTarget(c, c.args.ip)) })] }),arg('ip', 'WORD', 'Ping destination address or hostname', isTarget, { run: (c) => doPing(c, resolveTarget(c, c.args.ip)) })],
 });
 
 function execTree(dev, privileged) {
@@ -364,7 +369,9 @@ function execTree(dev, privileged) {
         ...tableClears(dev),
       ],
     })] : []),
-    kw('traceroute', 'Trace route to destination', { children: [arg('ip', 'WORD', 'Trace route to destination address or hostname', isTarget, { run: (c) => doTraceroute(c, resolveTarget(c, c.args.ip)) })] }),
+    kw('traceroute', 'Trace route to destination', { children: [
+      kw('ipv6', 'IPv6 trace', { children: [arg('ip', 'WORD', 'Trace route to destination address or hostname', isTarget, { run: (c) => doTraceroute(c, resolveTarget(c, c.args.ip)) })] }),
+      arg('ip', 'WORD', 'Trace route to destination address or hostname', isTarget, { run: (c) => doTraceroute(c, resolveTarget(c, c.args.ip)) })] }),
     showTree(dev),
   ];
   if (privileged) {
@@ -426,6 +433,10 @@ function interfaceCmd(isSwitch) {
 
 function configTree(dev) {
   const isSwitch = dev.type === 'switch';
+  const ipv6Global = ipv6GlobalCommands((c) => (t) => {
+    const r = parseInterfaces(t, c.dev);
+    return r.error || r.names.length !== 1 ? null : r.names[0];
+  });
   const children = [
     kw('hostname', 'Set system\'s network name', {
       children: [arg('name', 'WORD', 'This system\'s network name', null, {
@@ -450,6 +461,7 @@ function configTree(dev) {
         kw('routing', 'Enable IP routing', { run: (c) => setIpRouting(c, true) }),
       ],
     }),
+    ...(!isSwitch || modelOf(dev).l3 ? [ipv6Global.add] : []),
     accept('enable', 'Modify enable password parameters'),
     accept('service', 'Modify use of network based services'),
     accept('banner', 'Define a login banner'),
@@ -459,7 +471,7 @@ function configTree(dev) {
     ...(!isSwitch || modelOf(dev).l3 ? [routerCommands().router] : []),
     kw('no', 'Negate a command or set its defaults', {
       children: [
-        ...(!isSwitch || modelOf(dev).l3 ? [routerCommands().noRouter] : []),
+        ...(!isSwitch || modelOf(dev).l3 ? [routerCommands().noRouter, ipv6Global.remove] : []),
         aclConfigCommands().noNumbered,
         ...(isSwitch ? [] : [kw('ip', 'Global IP configuration subcommands', {
           children: [
@@ -601,6 +613,9 @@ function interfaceTree(dev) {
       }), accessGroupCommands(forIfaces).add, helperCommands(forIfaces).add],
     }));
     no.push(kw('ip', '', { children: [kw('address', '', { run: onSvi((c) => forIfaces(c, (e) => { e.ip = null; e.mask = null; })) }), accessGroupCommands(forIfaces).remove] }));
+    const v6Svi = ipv6InterfaceCommands(forIfaces, onSvi);
+    children.push(v6Svi.add);
+    no.push(v6Svi.remove);
     children.push(
       kw('switchport', 'Set switching mode characteristics', {
         children: [
@@ -662,6 +677,9 @@ function interfaceTree(dev) {
         })],
       }),
     );
+    const v6 = ipv6InterfaceCommands(forIfaces);
+    children.push(v6.add);
+    no.push(v6.remove);
     no.push(
       kw('ip', '', { children: [kw('address', 'Set the IP address of an interface', { run: (c) => forIfaces(c, (e) => { e.ip = null; e.mask = null; }) }), interfaceRoutingCommands(forIfaces).noIpOspf, accessGroupCommands(forIfaces).remove, natInterfaceCommands(forIfaces).remove, helperCommands(forIfaces).remove] }),
       interfaceRoutingCommands(forIfaces).noBandwidth,

@@ -1,6 +1,6 @@
 // Contrôles de cohérence du plan d'adressage, affichés en direct dans l'éditeur.
 import { isBroadcastAddress, isNetworkAddress, isValidCidr, isValidIp, networkLabel, sameSubnet } from './ip.js';
-import { buildTopology, isHost } from './topology.js';
+import { buildTopology, isHost, v6Forwarding } from './topology.js';
 import { computeRouting } from './routing.js';
 import { withLeases } from './dhcp.js';
 import { dnsServerOf, isHostname, serviceEnabled } from './services.js';
@@ -182,7 +182,7 @@ export function validate(rawDoc, ctx = {}) {
         }
       }
       const active = ok.filter((v) => !v.loopback);
-      if (active.length > 1 && !c.ipv6Routing) {
+      if (active.length > 1 && !v6Forwarding(d)) {
         add(d.id, 'warning', `${d.label} a des adresses IPv6 sur ${active.length} interfaces mais le routage IPv6 n'est pas activé (« ipv6 unicast-routing ») : il ne route pas IPv6 et n'envoie pas d'annonces RA.`);
       }
       for (const r of c.routes6 ?? []) {
