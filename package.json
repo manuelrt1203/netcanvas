@@ -55,8 +55,7 @@
         "name": "Schéma NetCanvas",
         "description": "Schéma NetCanvas",
         "mimeType": "application/x-netcanvas",
-        "role": "Editor",
-        "icon": "icon"
+        "role": "Editor"
       }
     ],
     "linux": {
