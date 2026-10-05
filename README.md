@@ -77,6 +77,14 @@ Cisco et MikroTik se parlent : adjacence OSPF ou session BGP entre un 2911 et un
 
 Pas simulé : EIGRP, OSPF de type NSSA/stub et liens virtuels, résumé de routes, attributs BGP au-delà de l'AS_PATH (local-preference, MED, communautés), route-maps et filtres.
 
+
+### EIGRP
+
+- `router eigrp AS`, `network A.B.C.D [wildcard]` (sans wildcard : réseau par classe), `passive-interface`, `eigrp router-id`, `redistribute static` ; sur l'interface `bandwidth` et `delay`. Formulaire : section EIGRP, bande passante et délai dans chaque interface.
+- Métrique composite par défaut, comme IOS : 256 × (10⁷ / bande passante minimale du chemin + somme des délais en dizaines de µs). Délais par défaut : Gigabit 1, FastEthernet 10, série 2000 (1544 kbit/s), loopback 500. Routes `D` (AD 90) et `D EX` (AD 170, statiques redistribuées).
+- Adjacences : même AS, interfaces couvertes, non passives, même réseau ; sinon la raison est donnée (`show ip eigrp neighbors`, contrôles en direct).
+- `show ip eigrp neighbors`, `show ip eigrp topology` (FD / RD), `show ip route eigrp`. RouterOS n'a pas EIGRP : un MikroTik reste hors EIGRP.
+- Démo « EIGRP (bande passante et délai) » : le détour par deux liens Gigabit ([90/3328]) bat la liaison série directe ([90/2170112]) ; vérifié dans Containerlab (le noyau prend le même chemin).
 ## Terminal (`src/cli/`)
 
 Dans l'onglet Propriétés d'un équipement, le sélecteur **Formulaire / Terminal** change le mode (retenu d'une session à l'autre). Les commandes écrivent la même configuration que le formulaire : on peut passer de l'un à l'autre à tout moment.

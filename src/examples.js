@@ -83,6 +83,7 @@ const router = (id, label, model, x, y, interfaces, extra = {}) => ({
     ...(extra.ospf ? { ospf: extra.ospf } : {}),
     ...(extra.rip ? { rip: extra.rip } : {}),
     ...(extra.bgp ? { bgp: extra.bgp } : {}),
+    ...(extra.eigrp ? { eigrp: extra.eigrp } : {}),
   },
 });
 const link = (id, source, sourceIface, target, targetIface, cable = 'straight', handles = ['b', 't']) => ({
@@ -406,6 +407,39 @@ export const OSPF6_DEMO = (() => {
   return doc;
 })();
 
+// EIGRP : triangle R1-R2-R3. Le lien direct R1-R3 est une liaison série (1544 kbit/s) : EIGRP préfère le détour
+// par deux liens Gigabit (bande passante minimale plus grande), là où RIP prendrait le chemin le plus court en sauts.
+const eigrp100 = (networks, passive = []) => ({ asn: 100, networks: networks.map(([network, wildcard]) => ({ network, ...(wildcard ? { wildcard } : {}) })), passive });
+export const EIGRP_DEMO = {
+  format: 'netcanvas',
+  version: 3,
+  name: 'Démo : EIGRP (bande passante et délai)',
+  devices: [
+    pc('pc1', 'PC Siège', '192.168.1.10', 24, '192.168.1.1', 0, 496),
+    sw('sw1', 'SW Siège', [['e1', 'Fa0/1'], ['e2', 'Fa0/24']], 0, 320),
+    router('r1', 'R1 Siège', '2911', 0, 96, [
+      ['e2', 'G0/0', '192.168.1.1', 24], ['e3', 'G0/1', '10.0.12.1', 30], ['e5', 'Se0/0/0', '10.0.13.1', 30, { clockRate: 64000 }],
+    ], { modules: { 0: 'HWIC-2T' }, eigrp: eigrp100([['10.0.0.0'], ['192.168.1.0', '0.0.0.255']], ['G0/0']) }),
+    router('r2', 'R2 Transit', '2911', 384, 0, [
+      ['e3', 'G0/0', '10.0.12.2', 30], ['e4', 'G0/1', '10.0.23.1', 30],
+    ], { eigrp: eigrp100([['10.0.0.0']]) }),
+    router('r3', 'R3 Agence', '2911', 768, 96, [
+      ['e6', 'G0/0', '192.168.3.1', 24], ['e4', 'G0/1', '10.0.23.2', 30], ['e5', 'Se0/0/0', '10.0.13.2', 30],
+    ], { modules: { 0: 'HWIC-2T' }, eigrp: eigrp100([['10.0.0.0'], ['192.168.3.0', '0.0.0.255']], ['G0/0']) }),
+    sw('sw3', 'SW Agence', [['e6', 'Fa0/24'], ['e7', 'Fa0/1']], 768, 320),
+    pc('pc3', 'PC Agence', '192.168.3.10', 24, '192.168.3.1', 768, 496),
+  ],
+  links: [
+    link('e1', 'pc1', 'Fa0', 'sw1', 'Fa0/1', 'straight', ['t', 'b']),
+    link('e2', 'r1', 'G0/0', 'sw1', 'Fa0/24'),
+    link('e3', 'r1', 'G0/1', 'r2', 'G0/0', 'cross', ['r', 'l']),
+    link('e4', 'r2', 'G0/1', 'r3', 'G0/1', 'cross', ['r', 'l']),
+    { ...link('e5', 'r1', 'Se0/0/0', 'r3', 'Se0/0/0', 'serial', ['r', 'l']), dce: 'source' },
+    link('e6', 'r3', 'G0/0', 'sw3', 'Fa0/24'),
+    link('e7', 'pc3', 'Fa0', 'sw3', 'Fa0/1', 'straight', ['t', 'b']),
+  ],
+};
+
 // Triangle de switches : STP bloque un port pour casser la boucle (SW Cœur est root bridge)
 const trunk = (name) => ({ name, mode: 'trunk' });
 export const STP_DEMO = {
@@ -487,6 +521,7 @@ export const DEMOS = [
   { id: 'stp', label: 'STP (triangle de switches)', about: 'Root bridge, port bloqué, tempête sans STP.', doc: STP_DEMO },
   { id: 'services', label: 'DNS et web (ACL par port)', about: 'Serveur DNS et web, ACL étendue par port.', doc: SERVICES_DEMO },
   { id: 'ospf', label: 'OSPF 2 zones (Cisco + MikroTik)', about: 'Zones, ABR, route par défaut annoncée.', doc: OSPF_DEMO },
+  { id: 'eigrp', label: 'EIGRP (bande passante et délai)', about: 'Métrique composite : le détour Gigabit bat la liaison série directe.', doc: EIGRP_DEMO },
   { id: 'bgp', label: 'BGP eBGP + iBGP', about: 'Deux AS, iBGP entre loopbacks, next-hop-self.', doc: BGP_DEMO },
   { id: 'ipv6', label: 'Double pile IPv4 / IPv6', about: 'SLAAC, NDP, passerelles link-local, routes IPv6.', doc: IPV6_DEMO },
   { id: 'ospf6', label: 'OSPFv3 2 zones (IPv6, Cisco + MikroTik)', about: 'OSPFv3 sur link-local, route par défaut IPv6.', doc: OSPF6_DEMO },

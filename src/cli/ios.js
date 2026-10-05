@@ -13,7 +13,7 @@ import { clearNatCommand, natConfigCommand, natInterfaceCommands, showNatTransla
 import { dhcp6PoolTree, ipv6GlobalCommands, ipv6InterfaceCommands, ipv6ShowCommand } from './ios-ipv6.js';
 import { dnsConfigCommands, isTarget, resolveTarget, showHostsCommand } from './ios-dns.js';
 import { acl6Tree, accessGroupCommands, aclConfigCommands, aclShows, aclTree, showAccessLists } from './ios-acl.js';
-import { bgpTree, interfaceRoutingCommands, ospf6Tree, ospfTree, ripTree, routeFilters, routerCommands, routingShows, showIpRoute } from './ios-routing.js';
+import { bgpTree, delayCommands, eigrpShows, eigrpTree, interfaceRoutingCommands, ospf6Tree, ospfTree, ripTree, routeFilters, routerCommands, routingShows, showIpRoute } from './ios-routing.js';
 
 const NOT_SIMULATED = (what) => [`% NetCanvas : ${what} n'est pas encore simulé.`, ''];
 
@@ -326,7 +326,7 @@ function showTree(dev) {
             ? [`Default gateway is ${c.dev.config?.defaultGateway ?? 'not set'}`, '', 'Host               Gateway           Last Use    Total Uses  Interface', 'ICMP redirect cache is empty', '']
             : showIpRoute(c.dev, c.doc))),
           children: routeFilters(),
-        }), ...routingShows()] : []),
+        }), ...routingShows(), eigrpShows()] : []),
         kw('access-lists', 'List IP access lists', { run: (c) => c.out.push(...showAccessLists(c.dev)) }),
         ipArpShow(),
         kw('dhcp', 'Show items in the DHCP database', {
@@ -590,7 +590,7 @@ function interfaceTree(dev) {
     }),
     accept('speed', 'Configure speed operation.'),
     accept('duplex', 'Configure duplex operation.'),
-    ...(isSwitch ? [accept('bandwidth', 'Set bandwidth informational parameter')] : [interfaceRoutingCommands(forIfaces).bandwidth]),
+    ...(isSwitch ? [accept('bandwidth', 'Set bandwidth informational parameter')] : [interfaceRoutingCommands(forIfaces).bandwidth, delayCommands(forIfaces).add]),
     interfaceCmd(isSwitch),
     kw('exit', 'Exit from interface configuration mode', leave('config')),
     endCmd(),
@@ -683,6 +683,7 @@ function interfaceTree(dev) {
     no.push(
       kw('ip', '', { children: [kw('address', 'Set the IP address of an interface', { run: (c) => forIfaces(c, (e) => { e.ip = null; e.mask = null; }) }), interfaceRoutingCommands(forIfaces).noIpOspf, accessGroupCommands(forIfaces).remove, natInterfaceCommands(forIfaces).remove, helperCommands(forIfaces).remove] }),
       interfaceRoutingCommands(forIfaces).noBandwidth,
+      delayCommands(forIfaces).remove,
       kw('clock', '', { children: [kw('rate', '', { run: (c) => forIfaces(c, (e) => { delete e.clockRate; }) })] }),
     );
   }
@@ -737,6 +738,7 @@ const TREES = {
   acl6: (d) => acl6Tree([endCmd(), doCmd(d)]),
   'dhcp6-pool': (d) => dhcp6PoolTree([endCmd(), doCmd(d)]),
   'router-rip': (d) => ripTree([endCmd(), doCmd(d)]),
+  'router-eigrp': (d) => eigrpTree([endCmd(), doCmd(d)]),
   'router-bgp': (d) => bgpTree([endCmd(), doCmd(d)]),
   'acl-std': (d) => aclTree([endCmd(), doCmd(d)]),
   dhcp: (d) => dhcpTree([endCmd(), doCmd(d)]),
@@ -744,7 +746,7 @@ const TREES = {
 };
 
 const SUFFIX = { user: '>', priv: '#', config: '(config)#', if: '(config-if)#', 'if-range': '(config-if-range)#', vlan: '(config-vlan)#', line: '(config-line)#',
-  'router-ospf': '(config-router)#', 'router-ospf6': '(config-rtr)#', acl6: '(config-ipv6-acl)#', 'dhcp6-pool': '(config-dhcpv6)#', 'router-rip': '(config-router)#', 'router-bgp': '(config-router)#',
+  'router-ospf': '(config-router)#', 'router-ospf6': '(config-rtr)#', acl6: '(config-ipv6-acl)#', 'dhcp6-pool': '(config-dhcpv6)#', 'router-rip': '(config-router)#', 'router-eigrp': '(config-router)#', 'router-bgp': '(config-router)#',
   'acl-std': '(config-std-nacl)#', 'acl-ext': '(config-ext-nacl)#', dhcp: '(dhcp-config)#' };
 
 export const ios = {

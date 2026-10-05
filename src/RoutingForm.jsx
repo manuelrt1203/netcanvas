@@ -134,6 +134,7 @@ export function LoopbacksForm({ node, update }) {
 
 export function RoutingForm({ node, update, ports, state }) {
   const d = node.data;
+  const mk = isMikrotik({ type: node.type, model: d.model });
   const set = (key, fn) => update((x) => ({ ...x, [key]: fn(x[key]) }));
   const toggle = (key, init) => (on) => update((x) => {
     const copy = { ...x };
@@ -226,6 +227,44 @@ export function RoutingForm({ node, update, ports, state }) {
           </>
         )}
       </details>
+
+      {!mk && (
+      <details className="proto" open={Boolean(d.eigrp)}>
+        <summary>EIGRP {d.eigrp && <span className="badge-on">AS {d.eigrp.asn}</span>}</summary>
+        <Check label="Activer EIGRP" checked={d.eigrp} onChange={toggle('eigrp', { asn: 100, networks: [] })} />
+        {d.eigrp && (
+          <>
+            <Status
+              lines={(state?.eigrp?.neighbors ?? []).map((n) => `Voisin ${n.peer.label} (${n.peerIface.ip}) sur ${n.iface.name}`)}
+              problems={issues(/EIGRP/)} />
+            <div className="field-row">
+              <Input label="Numéro d'AS" type="number" min="1" max="65535" className="cidr" value={d.eigrp.asn ?? ''} onChange={(e) => set('eigrp', (x) => ({ ...x, asn: num(e.target.value) }))} />
+              <Input label="Router-ID" placeholder="auto" data-ip value={d.eigrp.routerId ?? ''} onChange={(e) => set('eigrp', (x) => ({ ...x, routerId: e.target.value.trim() || undefined }))} />
+            </div>
+            <p className="label">Réseaux (network ; sans masque : réseau par classe)</p>
+            <Rows
+              items={d.eigrp.networks ?? []}
+              addLabel="Ajouter un réseau"
+              onAdd={() => set('eigrp', (x) => ({ ...x, networks: [...(x.networks ?? []), { network: '' }] }))}
+              onRemove={(i) => set('eigrp', (x) => ({ ...x, networks: x.networks.filter((_, j) => j !== i) }))}
+              render={(n, i) => {
+                const patch = (v) => set('eigrp', (x) => ({ ...x, networks: x.networks.map((y, j) => (j === i ? { ...y, ...v } : y)) }));
+                return (
+                  <>
+                    <Input label="Réseau" placeholder="10.0.0.0" data-ip value={n.network} onChange={(e) => patch({ network: e.target.value.trim() })} />
+                    <Input label="/" type="number" min="0" max="32" className="cidr" placeholder="classe" value={n.wildcard ? wildcardToCidr(n.wildcard) ?? '' : ''}
+                      onChange={(e) => patch({ wildcard: e.target.value === '' ? undefined : cidrToWildcard(Math.max(0, Math.min(32, Number(e.target.value) || 0))) })} />
+                  </>
+                );
+              }} />
+            <p className="label">Interfaces passives</p>
+            <div className="checks">{passiveBoxes('eigrp')}</div>
+            <Check label="Redistribuer les routes statiques (D EX)" checked={d.eigrp.redistribute?.static} onChange={(v) => set('eigrp', (x) => ({ ...x, redistribute: v ? { static: true } : undefined }))} />
+            <p className="hint">Métrique : 256 × (10⁷ / bande passante minimale + somme des délais). Bande passante et délai se règlent sur chaque interface.</p>
+          </>
+        )}
+      </details>
+      )}
 
       <details className="proto" open={Boolean(d.bgp)}>
         <summary>BGP {d.bgp && <span className="badge-on">AS {d.bgp.asn}</span>}</summary>

@@ -1,7 +1,7 @@
 // Terminal IOS : routage dynamique (router ospf / rip / bgp) et commandes show associées.
 import { accept, arg, kw, rest } from './engine.js';
 import { pad } from './device.js';
-import { computeRouting, prefixText, wildcardToCidr } from '../net/routing.js';
+import { computeRouting, eigrpMetric, prefixText, wildcardToCidr } from '../net/routing.js';
 import { cidrToMask, formatIp, isValidIp, networkOf } from '../net/ip.js';
 import { iosLongName } from '../export/cisco.js';
 import { parseInterfaces } from './ios.js';
@@ -23,7 +23,7 @@ const CODES = [
   '       * - candidate default, U - per-user static route, o - ODR',
 ];
 
-const FILTERS = { connected: /^[CL]$/, static: /^S/, ospf: /^O/, rip: /^R/, bgp: /^B$/ };
+const FILTERS = { connected: /^[CL]$/, static: /^S/, ospf: /^O/, rip: /^R/, eigrp: /^D/, bgp: /^B$/ };
 
 export function showIpRoute(dev, doc, filter = null) {
   const rib = computeRouting(doc).ribs.get(dev.id) ?? new Map();
@@ -406,6 +406,11 @@ export function routerCommands() {
       cfg.ospf.processId = pid;
     }
     if (proto === 'rip') cfg.rip ??= { networks: [] };
+    if (proto === 'eigrp') {
+      const asn = Number(c.args.asn);
+      if (cfg.eigrp?.asn && Number(cfg.eigrp.asn) !== asn) return c.out.push(`% NetCanvas : un seul processus EIGRP par routeur (déjà « router eigrp ${cfg.eigrp.asn} »).`, '');
+      cfg.eigrp ??= { asn, networks: [] };
+    }
     if (proto === 'bgp') {
       const asn = Number(c.args.asn);
       if (cfg.bgp?.asn && Number(cfg.bgp.asn) !== asn) return c.out.push(`BGP is already running; AS is ${cfg.bgp.asn}`, '');
@@ -419,7 +424,7 @@ export function routerCommands() {
     kw('ospf', 'Open Shortest Path First (OSPF)', { children: [arg('pid', '<1-65535>', 'Process ID', isNum(1, 65535), { run: run('ospf') })] }),
     kw('rip', 'Routing Information Protocol (RIP)', { run: run('rip') }),
     kw('bgp', 'Border Gateway Protocol (BGP)', { children: [arg('asn', '<1-65535>', 'Autonomous system number', isNum(1, 4294967295), { run: run('bgp') })] }),
-    kw('eigrp', 'Enhanced Interior Gateway Routing Protocol (EIGRP)', { children: [rest('x', '<1-65535>', '', (c) => c.out.push('% NetCanvas : EIGRP n\'est pas simulé (OSPF, RIP et BGP le sont).', ''))] }),
+    kw('eigrp', 'Enhanced Interior Gateway Routing Protocol (EIGRP)', { children: [arg('asn', '<1-65535>', 'Autonomous System', isNum(1, 65535), { run: run('eigrp') })] }),
   ];
   return {
     router: kw('router', 'Enable a routing process', { children: tree(enter) }),
@@ -550,3 +555,87 @@ export function showOspf6Neighbor(dev, doc) {
   }
   return [...rows, '', ...explain(r, /^OSPFv3|OSPFv3/), ''];
 }
+
+// === EIGRP ===================================================================================
+const eigrpOf = (c) => c.dev.config.eigrp;
+
+export function eigrpTree(common) {
+  const network = (add) => kw('network', 'Enable routing on an IP network', {
+    children: [arg('net', 'A.B.C.D', 'Network number', isIp, {
+      run: (c) => setEigrpNetwork(c, add, null),
+      children: [arg('wc', 'A.B.C.D', 'EIGRP wild card bits', isIp, { run: (c) => setEigrpNetwork(c, add, c.args.wc) })],
+    })],
+  });
+  const redistribute = (add) => kw('redistribute', 'Redistribute IPv4 routes from another routing protocol', {
+    children: [kw('static', 'Static routes', {
+      run: (c) => { if (add) (eigrpOf(c).redistribute ??= {}).static = true; else delete eigrpOf(c).redistribute; touch(c); },
+      children: [rest('x', 'LINE', '', (c) => { if (add) (eigrpOf(c).redistribute ??= {}).static = true; else delete eigrpOf(c).redistribute; touch(c); })],
+    })],
+  });
+  return {
+    children: [
+      network(true),
+      passive(eigrpOf, true),
+      redistribute(true),
+      kw('eigrp', 'EIGRP specific commands', {
+        children: [kw('router-id', 'router-id for this EIGRP process', { children: [arg('rid', 'A.B.C.D', 'EIGRP Router-ID in IP address format', isIp, { run: (c) => { eigrpOf(c).routerId = c.args.rid; touch(c); } })] })],
+      }),
+      kw('auto-summary', 'Enable automatic network number summarization', { run: (c) => c.out.push('% NetCanvas : le résumé automatique n\'est pas simulé (routes calculées sans résumé, comme « no auto-summary »).', '') }),
+      accept('metric', 'Modify metrics and parameters for advertisement'),
+      accept('variance', 'Control load balancing variance'),
+      kw('no', 'Negate a command or set its defaults', {
+        children: [network(false), passive(eigrpOf, false), redistribute(false),
+          kw('auto-summary', 'Enable automatic network number summarization', { run() {} }),
+          kw('eigrp', '', { children: [kw('router-id', '', { run: (c) => { delete eigrpOf(c).routerId; touch(c); } })] })],
+      }),
+      leaveRouter(),
+      ...common,
+    ],
+  };
+}
+
+function setEigrpNetwork(c, add, wildcard) {
+  const e = eigrpOf(c);
+  if (wildcard && wildcardToCidr(wildcard) === null) return c.out.push('% EIGRP: Invalid wildcard mask', '');
+  const same = (n) => n.network === c.args.net && (n.wildcard ?? null) === (wildcard ?? null);
+  e.networks = (e.networks ?? []).filter((n) => !same(n));
+  if (add) e.networks.push({ network: c.args.net, ...(wildcard ? { wildcard } : {}) });
+  return touch(c);
+}
+
+// Interface : « delay N » (dizaines de microsecondes)
+export const delayCommands = (forIfaces) => ({
+  add: kw('delay', 'Specify interface throughput delay', {
+    children: [arg('d', '<1-16777215>', 'Throughput delay (tens of microseconds)', isNum(1, 16777215), { run: (c) => forIfaces(c, (e) => { e.delay = Number(c.args.d); }) })],
+  }),
+  remove: kw('delay', '', { run: (c) => forIfaces(c, (e) => { delete e.delay; }) }),
+});
+
+export function showEigrpNeighbors(dev, doc) {
+  const r = routerOf(dev, doc);
+  const rows = [`EIGRP-IPv4 Neighbors for AS(${dev.config?.eigrp?.asn ?? '-'})`, `${pad('H', 4)}${pad('Address', 17)}${pad('Interface', 14)}${pad('Hold', 6)}${pad('Uptime', 10)}${pad('SRTT', 6)}${pad('RTO', 6)}${pad('Q', 4)}Seq`,
+    `${pad('', 4)}${pad('', 17)}${pad('', 14)}${pad('(sec)', 6)}${pad('', 10)}${pad('(ms)', 6)}${pad('', 6)}${pad('Cnt', 4)}Num`];
+  (r?.eigrp?.neighbors ?? []).forEach((n, i) => rows.push(`${pad(i, 4)}${pad(n.peerIface.ip, 17)}${pad(n.iface.name.replace(/^G(?=\d)/, 'Gi'), 14)}${pad(12, 6)}${pad(UPTIME, 10)}${pad(1, 6)}${pad(100, 6)}${pad(0, 4)}${3 + i}`));
+  return [...rows, '', ...explain(r, /^EIGRP|EIGRP/), ...((r?.issues ?? []).some((i) => /EIGRP/.test(i.text)) ? [''] : [])];
+}
+
+// Topologie : successeurs avec distance faisable (FD) et distance annoncée (RD)
+export function showEigrpTopology(dev, doc) {
+  const r = routerOf(dev, doc);
+  const out = [`EIGRP-IPv4 Topology Table for AS(${dev.config?.eigrp?.asn ?? '-'})/ID(${r?.eigrp?.routerId ?? '0.0.0.0'})`,
+    'Codes: P - Passive, A - Active, U - Update, Q - Query, R - Reply,', '       r - reply Status, s - sia Status', ''];
+  for (const e of r?.eigrp?.table.values() ?? []) {
+    const fd = eigrpMetric(e.bw, e.delay);
+    out.push(`P ${prefixText(e.net, e.mask)}, 1 successors, FD is ${fd}`);
+    out.push(e.local ? `        via Connected, ${long(r.eigrp.ifaces.find((x) => networkOf(x.iface.ip, e.mask) === e.net)?.iface.name ?? '')}`
+      : `        via ${e.via.nextHop} (${fd}/${e.rd}), ${long(e.via.iface)}`);
+  }
+  return [...out, ''];
+}
+
+export const eigrpShows = () => kw('eigrp', 'IP-EIGRP show commands', {
+  children: [
+    kw('neighbors', 'IP-EIGRP neighbors', { run: (c) => c.out.push(...showEigrpNeighbors(c.dev, c.doc)) }),
+    kw('topology', 'IP-EIGRP Topology Table', { run: (c) => c.out.push(...showEigrpTopology(c.dev, c.doc)) }),
+  ],
+});

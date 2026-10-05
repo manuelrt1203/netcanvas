@@ -8,7 +8,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { httpGet, resolveName } from '../net/services.js';
-import { BGP_DEMO, DEMO, DHCP_DEMO, IPV6_DEMO, OSPF6_DEMO, SERVICES_DEMO, L3_DEMO, NAT_DEMO, OSPF_DEMO, ROAS_DEMO, STP_DEMO } from '../examples.js';
+import { BGP_DEMO, DEMO, DHCP_DEMO, EIGRP_DEMO, IPV6_DEMO, OSPF6_DEMO, SERVICES_DEMO, L3_DEMO, NAT_DEMO, OSPF_DEMO, ROAS_DEMO, STP_DEMO } from '../examples.js';
 import { buildTopology } from '../net/topology.js';
 import { isRouting, v6Forwarding } from '../net/topology.js';
 import { simulatePing } from '../net/simulate.js';
@@ -342,4 +342,12 @@ test('containerlab : serveur web réel (busybox httpd) : page, ACL par port, ser
   const off = structuredClone(SERVICES_DEMO);
   off.devices.find((d) => d.id === 'srv').config.services.http.enabled = false;
   assertWebMatches(off, [['pc1', '172.16.0.10', null]]);
+});
+
+test('containerlab : EIGRP (routes calculées) : le noyau passe par le détour Gigabit, pas par la série', { skip }, () => {
+  const doc = structuredClone(EIGRP_DEMO);
+  const real = runLab(doc, [['pc1', '192.168.3.10']], { probes: [['route', 'r1', 'ip route get 192.168.3.10']] });
+  assert.equal(real['pc1>192.168.3.10'], true);
+  assert.equal(simulatePing(doc, 'pc1', '192.168.3.10').ok, true);
+  assert.match(real.route, /via 10\.0\.12\.2/);
 });

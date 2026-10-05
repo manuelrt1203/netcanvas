@@ -472,6 +472,7 @@ function hostDecision(topo, id, dstIp, name) {
 const DECISION = {
   S: 'route statique', 'S*': 'route statique par défaut', O: 'route OSPF', 'O IA': 'route OSPF inter-zones',
   'O E2': 'route OSPF externe (E2)', 'O*E2': 'route OSPF par défaut (E2)', R: 'route RIP', 'R*': 'route RIP par défaut', B: 'route BGP',
+  D: 'route EIGRP', 'D EX': 'route EIGRP externe',
 };
 
 function routerDecision({ topo, routing }, id, dstIp, name) {
@@ -501,6 +502,7 @@ function routerDecision({ topo, routing }, id, dstIp, name) {
     route.proto.endsWith('E2') ? `, métrique externe ${route.metric}`
       : route.proto.startsWith('O') ? `, coût ${route.metric}`
       : route.proto.startsWith('R') ? `, ${route.metric} saut${route.metric > 1 ? 's' : ''}`
+        : route.proto.startsWith('D') ? `, métrique ${route.metric}`
         : route.proto === 'B' ? `, AS_PATH ${route.asPath.length ? route.asPath.join(' ') : '(même AS)'}${via}`
           : '';
   return { iface: out, nextHop: hop.nextHop, text: `${name(id)} : ${DECISION[route.proto] ?? route.proto} ${netText} via ${route.nextHop} (${out.name})${detail}.` };

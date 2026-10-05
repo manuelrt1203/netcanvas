@@ -28,7 +28,7 @@ await page.evaluate(() => localStorage.clear());
 await page.reload();
 step('écran d\'accueil, nouveau projet');
 assert.ok(await page.getByRole('heading', { name: 'NetCanvas' }).isVisible());
-assert.equal(await page.locator('.welcome .example').count(), 13);
+assert.equal(await page.locator('.welcome .example').count(), 14);
 await page.click('role=button[name="Nouveau projet"]');
 
 step('ajout et connexion d’équipements');

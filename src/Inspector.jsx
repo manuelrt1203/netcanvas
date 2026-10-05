@@ -169,6 +169,14 @@ function RouterForm({ node, edges, labels, update, routing, issues, live6 }) {
             )}
             {!serial && <SubInterfaces node={node} parent={p.name} update={update} />}
             {dce && <ClockRate link={p.link} value={p.clockRate} onChange={(clockRate) => patchIface(p, { clockRate })} />}
+            {node.data.eigrp && (
+              <div className="field-row">
+                <Field label="Bande passante (kbit/s, EIGRP)" type="number" min="1" placeholder={serial ? '1544' : 'auto'} value={p.bandwidth ?? ''}
+                  onChange={(e) => patchIface(p, { bandwidth: e.target.value ? Math.max(1, Number(e.target.value)) : undefined })} />
+                <Field label="Délai (dizaines de µs)" type="number" min="1" placeholder={serial ? '2000' : 'auto'} value={p.delay ?? ''}
+                  onChange={(e) => patchIface(p, { delay: e.target.value ? Math.max(1, Number(e.target.value)) : undefined })} />
+              </div>
+            )}
             {node.data.ospf && (
               <Field label="Coût OSPF (vide = selon le débit)" type="number" min="1" max="65535" className="cidr" value={p.ospfCost ?? ''}
                 onChange={(e) => patchIface(p, { ospfCost: e.target.value ? Math.max(1, Number(e.target.value)) : undefined })} />

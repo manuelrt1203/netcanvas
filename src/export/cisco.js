@@ -297,6 +297,7 @@ export function iosLongName(n) {
 export function iosInterfaceExtras(cfg, entry) {
   const out = [];
   if (entry?.bandwidth) out.push(` bandwidth ${entry.bandwidth}`);
+  if (entry?.delay) out.push(` delay ${entry.delay}`);
   if (entry?.ospfCost) out.push(` ip ospf cost ${entry.ospfCost}`);
   const o = cfg.ospf?.interfaces?.find((x) => x.name === entry?.name);
   if (o) out.push(` ip ospf ${cfg.ospf.processId ?? 1} area ${o.area}`);
@@ -333,6 +334,15 @@ export function iosRoutingLines(cfg, ifName = iosLongName) {
     if (r.defaultOriginate) out.push(' default-information originate');
     if (!r.autoSummary) out.push(' no auto-summary');
     out.push('!');
+  }
+  const e = cfg.eigrp;
+  if (e?.asn) {
+    out.push(`router eigrp ${e.asn}`);
+    if (e.routerId) out.push(` eigrp router-id ${e.routerId}`);
+    if (e.redistribute?.static) out.push(' redistribute static');
+    for (const p of e.passive ?? []) out.push(` passive-interface ${ifName(p)}`);
+    for (const n of e.networks ?? []) out.push(` network ${n.network}${n.wildcard ? ` ${n.wildcard}` : ''}`);
+    out.push(' no auto-summary', '!');
   }
   const b = cfg.bgp;
   if (b?.asn) {

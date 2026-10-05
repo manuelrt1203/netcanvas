@@ -220,3 +220,68 @@ test('bgp : boucle d\'AS rejetée', () => {
   assert.ok(r2.table.has(`${0x0a001700}/30`));
   assert.ok(!computeRouting(doc).routers.get('r3').bgp.table.get(`${0x0a001700}/30`)?.some((p) => p.asPath.includes(65002)));
 });
+
+test('EIGRP : métrique composite (bande passante minimale + délais), adjacences et pannes expliquées', async () => {
+  const { EIGRP_DEMO } = await import('../examples.js');
+  const { simulatePing } = await import('./simulate.js');
+  const { validate } = await import('./validate.js');
+  const r = computeRouting(EIGRP_DEMO);
+  const route = (id, p) => [...r.ribs.get(id).values()].find((x) => `${prefixText(x.net, x.mask)}` === p);
+  // Valeurs d'un vrai IOS : détour Gigabit (3328) préféré à la série directe (2170112)
+  const r1 = route('r1', '192.168.3.0/24');
+  assert.deepEqual([r1.proto, r1.ad, r1.metric, r1.nextHop, r1.iface], ['D', 90, 3328, '10.0.12.2', 'G0/1']);
+  assert.equal(route('r2', '10.0.13.0/30').metric, 2170112);
+  assert.deepEqual(validate(EIGRP_DEMO).filter((i) => /EIGRP/.test(i.text)), []);
+  const ping = simulatePing(EIGRP_DEMO, 'pc1', '192.168.3.10');
+  assert.equal(ping.ok, true);
+  assert.ok(ping.log.some((l) => l.text === 'R1 Siège : route EIGRP 192.168.3.0/24 via 10.0.12.2 (G0/1), métrique 3328.'));
+  // R2 en panne (AS différent) : seule la série reste
+  const doc = structuredClone(EIGRP_DEMO);
+  doc.devices.find((d) => d.id === 'r2').config.eigrp.asn = 200;
+  const r2 = computeRouting(doc);
+  const via = [...r2.ribs.get('r1').values()].find((x) => prefixText(x.net, x.mask) === '192.168.3.0/24');
+  assert.deepEqual([via.nextHop, via.metric], ['10.0.13.2', 2170112]); // 256 × (10⁷/1544 + 2000 + 1)
+  assert.ok(validate(doc).some((i) => /EIGRP : pas de voisin R1 Siège G0\/1 ↔ R2 Transit G0\/0 : numéros d'AS différents \(100 et 200\)/.test(i.text)));
+  // Délai augmenté sur un lien Gigabit : la métrique suit
+  const slow = structuredClone(EIGRP_DEMO);
+  slow.devices.find((d) => d.id === 'r1').config.interfaces.find((i) => i.name === 'G0/1').delay = 9000; // 256 × (10 + 9002) > 2170112
+  const v = [...computeRouting(slow).ribs.get('r1').values()].find((x) => prefixText(x.net, x.mask) === '192.168.3.0/24');
+  assert.equal(v.nextHop, '10.0.13.2', 'délai énorme sur G0/1 : la série redevient meilleure');
+  // Redistribution d'une route statique : D EX, AD 170
+  const ex = structuredClone(EIGRP_DEMO);
+  const r3 = ex.devices.find((d) => d.id === 'r3').config;
+  r3.routes = [{ network: '0.0.0.0', mask: 0, nextHop: '192.168.3.254' }];
+  r3.eigrp.redistribute = { static: true };
+  const def = computeRouting(ex).ribs.get('r1').get('0/0');
+  assert.deepEqual([def.proto, def.ad], ['D EX', 170]);
+});
+
+test('EIGRP au terminal IOS : configuration, show, running-config et réimport', async () => {
+  const { EIGRP_DEMO } = await import('../examples.js');
+  const { runLine, shellFor } = await import('../cli/index.js');
+  const { importConfig } = await import('../cli/import.js');
+  let doc = structuredClone(EIGRP_DEMO);
+  delete doc.devices.find((d) => d.id === 'r2').config.eigrp;
+  const r2 = () => doc.devices.find((d) => d.id === 'r2');
+  const shell = shellFor(r2());
+  const s = shell.newSession();
+  const run = (...lines) => lines.map((line) => {
+    const res = runLine(shell, s, line, r2(), doc);
+    if (res.device) doc = { ...doc, devices: doc.devices.map((d) => (d.id === 'r2' ? res.device : d)) };
+    return res.output.join('\n');
+  }).join('\n');
+  run('enable', 'configure terminal', 'router eigrp 100', 'network 10.0.0.0', 'no auto-summary', 'end');
+  assert.deepEqual(r2().config.eigrp, { asn: 100, networks: [{ network: '10.0.0.0' }] });
+  assert.match(run('show ip eigrp neighbors'), /EIGRP-IPv4 Neighbors for AS\(100\)[\s\S]*0   10\.0\.12\.1\s+Gi0\/0[\s\S]*1   10\.0\.23\.2\s+Gi0\/1/);
+  assert.match(run('show ip route eigrp'), /D    192\.168\.1\.0\/24 \[90\/3072\] via 10\.0\.12\.1/);
+  assert.match(run('show ip eigrp topology'), /P 192\.168\.3\.0\/24, 1 successors, FD is 3072\n        via 10\.0\.23\.2 \(3072\/2816\), GigabitEthernet0\/1/);
+  run('configure terminal', 'interface g0/1', 'delay 200', 'end');
+  const conf = run('show running-config');
+  assert.match(conf, /interface GigabitEthernet0\/1\n[^!]*delay 200/);
+  assert.match(conf, /router eigrp 100\n network 10\.0\.0\.0\n no auto-summary/);
+  const fresh = structuredClone(EIGRP_DEMO);
+  delete fresh.devices.find((d) => d.id === 'r2').config.eigrp;
+  const back = importConfig(fresh.devices.find((d) => d.id === 'r2'), fresh, conf).device.config;
+  assert.deepEqual(back.eigrp, r2().config.eigrp);
+  assert.equal(back.interfaces.find((i) => i.name === 'G0/1').delay, 200);
+});

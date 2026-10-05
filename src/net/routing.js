@@ -17,7 +17,7 @@ import { formatIp, isValidCidr, isValidIp, maskBits, networkOf, parseIp, sameSub
 import { isMikrotik } from './catalog.js';
 import { simulatePing } from './simulate.js';
 
-export const AD = { C: 0, L: 0, S: 1, eBGP: 20, O: 110, R: 120, iBGP: 200 };
+export const AD = { C: 0, L: 0, S: 1, eBGP: 20, D: 90, O: 110, R: 120, DEX: 170, iBGP: 200 };
 const RIP_INFINITY = 16;
 
 const prefixKey = (net, mask) => `${net}/${mask}`;
@@ -124,6 +124,7 @@ export function computeRouting(doc, topo = buildTopology(doc)) {
 
   computeOspf(routers, issue);
   computeRip(routers, issue);
+  computeEigrp(routers, issue);
 
   // Table « IGP » : connecté, statique, OSPF, RIP (sert à BGP)
   const pick = (rib, route) => {
@@ -133,7 +134,7 @@ export function computeRouting(doc, topo = buildTopology(doc)) {
   };
   for (const r of routers.values()) {
     r.rib = new Map();
-    for (const route of [...r.connected.values(), ...r.statics, ...r.ospf.routes, ...r.rip.routes]) pick(r.rib, route);
+    for (const route of [...r.connected.values(), ...r.statics, ...r.ospf.routes, ...r.rip.routes, ...r.eigrp.routes]) pick(r.rib, route);
   }
 
   computeBgp(routers, issue, doc, topo);
@@ -440,6 +441,118 @@ function computeRip(routers, issue) {
     r.rip.routes = [...r.rip.table.values()]
       .filter((e) => e.metric > 0 && !r.connected.has(prefixKey(e.net, e.mask)))
       .map((e) => ({ net: e.net, mask: e.mask, proto: e.mask === 0 ? 'R*' : 'R', ad: AD.R, metric: e.metric, ...e.via }));
+  }
+}
+
+// === EIGRP ===================================================================================
+// config.eigrp = { asn, networks: [{ network, wildcard? }] (sans wildcard : réseau par classe), passive: [],
+//                  routerId?, redistribute: { static } } ; interface : bandwidth (kbit/s), delay (dizaines de µs).
+// Métrique composite par défaut (K1 = K3 = 1) : 256 × (10⁷ / bande passante minimale + somme des délais),
+// calculée comme EIGRP le fait : chaque routeur annonce sa meilleure distance, le voisin y ajoute son interface.
+// AD 90 (interne, D), 170 (redistribuée, D EX). Une route statique redistribuée prend la métrique de son interface.
+const EIGRP_DELAY = { G: 1, Fa: 10, Se: 2000, Lo: 500, Vlan: 1, Eth: 100, ether: 10, sfp: 1, lo: 500 };
+export function eigrpBandwidth(iface) {
+  if (iface.bandwidth) return Number(iface.bandwidth);
+  if (iface.loopback) return 8000000;
+  return bandwidth(iface.name, iface);
+}
+export function eigrpDelay(iface) {
+  if (iface.delay) return Number(iface.delay);
+  if (iface.loopback) return 500;
+  const k = Object.keys(EIGRP_DELAY).find((p) => iface.name.startsWith(p));
+  return k ? EIGRP_DELAY[k] : 1;
+}
+export const eigrpMetric = (bw, delay) => 256 * (Math.floor(1e7 / bw) + delay);
+
+function eigrpCovers(c, ip) {
+  return (c.networks ?? []).some((n) => {
+    if (!isValidIp(n.network)) return false;
+    if (!n.wildcard) {
+      const cl = classful(n.network);
+      return networkOf(ip, cl.mask) === cl.net;
+    }
+    const cidr = wildcardToCidr(n.wildcard);
+    return cidr !== null && networkOf(ip, cidr) === networkOf(n.network, cidr);
+  });
+}
+
+function computeEigrp(routers, issue) {
+  for (const r of routers.values()) {
+    const c = r.cfg.eigrp;
+    r.eigrp = { enabled: Boolean(c?.asn), routes: [], ifaces: [], neighbors: [], table: new Map() };
+    if (!r.eigrp.enabled) continue;
+    if (isMikrotik(r.dev)) {
+      r.eigrp.enabled = false;
+      issue(r, `${r.label} : EIGRP est un protocole Cisco, RouterOS ne le gère pas.`);
+      continue;
+    }
+    r.eigrp.asn = Number(c.asn);
+    r.eigrp.routerId = routerId(r, c.routerId);
+    const passive = new Set(c.passive ?? []);
+    for (const i of r.ifaces) if (eigrpCovers(c, i.ip)) r.eigrp.ifaces.push({ iface: i, passive: passive.has(i.name) || i.loopback });
+    if (!r.eigrp.ifaces.length) issue(r, `${r.label} : EIGRP ${c.asn} est activé mais aucune interface n'est couverte par une commande « network ».`);
+    // Ce que le routeur annonce : ses réseaux couverts (même passifs), et les statiques redistribuées
+    for (const { iface } of r.eigrp.ifaces) {
+      const mask = iface.loopback ? 32 : iface.mask;
+      const net = networkOf(iface.ip, mask);
+      r.eigrp.table.set(prefixKey(net, mask), { net, mask, bw: eigrpBandwidth(iface), delay: eigrpDelay(iface), external: false, via: null, local: true });
+    }
+    if (c.redistribute?.static) {
+      for (const st of r.statics) {
+        const out = r.ifaces.find((i) => i.name === st.iface);
+        if (!out) continue;
+        r.eigrp.table.set(prefixKey(st.net, st.mask), { net: st.net, mask: st.mask, bw: eigrpBandwidth(out), delay: eigrpDelay(out), external: true, via: null, local: true });
+      }
+    }
+  }
+
+  // Adjacences : même AS, interfaces couvertes et non passives, même réseau
+  const links = [];
+  for (const a of routers.values()) {
+    if (!a.eigrp.enabled) continue;
+    for (const { iface, peer, peerIface, p2p } of a.peers) {
+      const mine = a.eigrp.ifaces.find((x) => x.iface.name === iface.name);
+      if (!mine) continue;
+      const fail = (why) => issue(a, `EIGRP : pas de voisin ${a.label} ${iface.name} ↔ ${peer.label} ${peerIface.name} : ${why}.`);
+      if (!peer.eigrp?.enabled) { fail(`${peer.label} n'a pas EIGRP`); continue; }
+      if (peer.eigrp.asn !== a.eigrp.asn) { fail(`numéros d'AS différents (${a.eigrp.asn} et ${peer.eigrp.asn})`); continue; }
+      const theirs = peer.eigrp.ifaces.find((x) => x.iface.name === peerIface.name);
+      if (!theirs) { fail(`${peerIface.name} de ${peer.label} n'est couverte par aucune commande « network »`); continue; }
+      if (mine.passive) { fail(`${iface.name} est passive (passive-interface)`); continue; }
+      if (theirs.passive) { fail(`${peerIface.name} de ${peer.label} est passive (passive-interface)`); continue; }
+      if (!sameSubnet(iface.ip, peerIface.ip, Math.min(iface.mask, peerIface.mask))) { fail('les deux interfaces ne sont pas dans le même réseau'); continue; }
+      a.eigrp.neighbors.push({ peer, iface, peerIface, p2p });
+      links.push({ a, b: peer, aIface: iface, bIface: peerIface });
+    }
+  }
+
+  // Vecteur de distance : B reçoit ce que A annonce, et ajoute son interface vers A
+  for (let round = 0; round < 64; round++) {
+    let changed = false;
+    for (const { a, b, aIface, bIface } of links) {
+      for (const [k, e] of a.eigrp.table) {
+        if (e.via?.iface === aIface.name) continue; // split horizon
+        const cand = { bw: Math.min(e.bw, eigrpBandwidth(bIface)), delay: e.delay + eigrpDelay(bIface) };
+        const metric = eigrpMetric(cand.bw, cand.delay);
+        const cur = b.eigrp.table.get(k);
+        if (cur?.local) continue;
+        const curMetric = cur && eigrpMetric(cur.bw, cur.delay);
+        if (!cur || metric < curMetric || (metric === curMetric && byIp(aIface.ip, cur.via.nextHop) < 0)) {
+          b.eigrp.table.set(k, { net: e.net, mask: e.mask, ...cand, external: e.external, rd: eigrpMetric(e.bw, e.delay), via: { nextHop: aIface.ip, iface: bIface.name, link: bIface.link } });
+          changed = true;
+        }
+      }
+    }
+    if (!changed) break;
+  }
+  for (const r of routers.values()) {
+    if (!r.eigrp.enabled) continue;
+    r.eigrp.routes = [...r.eigrp.table.values()]
+      .filter((e) => !e.local && !r.connected.has(prefixKey(e.net, e.mask)))
+      .map((e) => ({
+        net: e.net, mask: e.mask, proto: e.external ? 'D EX' : 'D', ad: e.external ? AD.DEX : AD.D,
+        metric: eigrpMetric(e.bw, e.delay), rd: e.rd, ...e.via,
+      }));
   }
 }
 
