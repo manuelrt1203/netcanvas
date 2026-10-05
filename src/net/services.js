@@ -9,6 +9,7 @@ import { withLeases } from './dhcp.js';
 import { buildTopology } from './topology.js';
 import { computeRouting } from './routing.js';
 import { isValidIp, parseIp } from './ip.js';
+import { isMikrotik } from './catalog.js';
 
 const norm = (name) => String(name ?? '').trim().toLowerCase().replace(/\.$/, '');
 // Nom d'hôte (« www.exemple.fr », point final accepté : forme absolue)
@@ -20,6 +21,14 @@ export function dnsServerOf(dev) {
   if (dev?.type === 'router' || dev?.type === 'switch') return c.nameServer ?? null;
   return c.lease?.dns ?? c.dns ?? null;
 }
+
+// Le routeur sert aussi de serveur DNS : « ip dns server » (Cisco), « allow-remote-requests=yes » (MikroTik).
+// Il répond avec sa table locale (ip host, /ip dns static) et relaie le reste à son propre serveur.
+export function serviceEnabled(dev, svc) {
+  return Boolean(dev?.config?.services?.[svc]?.enabled || (svc === 'dns' && dev?.config?.dnsServer));
+}
+const recordsOf = (dev) => (dev.config?.services?.dns?.enabled ? dev.config.services.dns.records ?? [] : dev.config?.hosts ?? []);
+const MAX_FORWARD = 3;
 
 // Équipement qui possède une adresse IP
 function ownerOf(topo, ip) {
@@ -34,7 +43,7 @@ const prepare = (rawDoc, ctx) => {
 };
 
 // Résout un nom depuis srcId : { ok, ip, server, log: [{ phase, text, level, device }], query (résultat de simulation) }
-export function resolveName(rawDoc, srcId, name, ctx = null) {
+export function resolveName(rawDoc, srcId, name, ctx = null, depth = 0) {
   const { doc, topo, routing } = prepare(rawDoc, ctx);
   const dev = topo.devices.get(srcId);
   const label = (id) => topo.devices.get(id)?.label ?? id;
@@ -45,19 +54,21 @@ export function resolveName(rawDoc, srcId, name, ctx = null) {
 
   // Routeur : table locale « ip host » d'abord
   const local = (dev.config?.hosts ?? []).find((h) => norm(h.name) === norm(name));
-  if (local) return { ok: true, ip: local.ip, server: null, log: [{ phase: 'dns', text: `${label(srcId)} : ${name} est dans sa table locale (ip host) : ${local.ip}.`, level: 'ok', device: srcId }] };
+  if (local) return { ok: true, ip: local.ip, server: null, log: [{ phase: 'dns', text: `${label(srcId)} : ${name} est dans sa table locale (${isMikrotik(dev) ? '/ip dns static' : 'ip host'}) : ${local.ip}.`, level: 'ok', device: srcId }] };
 
   const server = dnsServerOf(dev);
   if (!server) {
     return fail(dev.type === 'router' || dev.type === 'switch'
-      ? `${label(srcId)} : aucun serveur DNS (« ip name-server ») ni entrée « ip host » pour ${name}.`
+      ? (isMikrotik(dev)
+        ? `${label(srcId)} : aucun serveur DNS (/ip dns set servers=) ni entrée statique (/ip dns static) pour ${name}.`
+        : `${label(srcId)} : aucun serveur DNS (« ip name-server ») ni entrée « ip host » pour ${name}.`)
       : `${label(srcId)} : aucun serveur DNS configuré, impossible de résoudre ${name}.`);
   }
   if (!isValidIp(server)) return fail(`${label(srcId)} : serveur DNS « ${server} » invalide.`);
 
   // Réponse préparée d'après le serveur visé (affichée dans la simulation pas à pas)
   const target = ownerOf(topo, server);
-  const record = (target?.config?.services?.dns?.records ?? []).find((r) => norm(r.name) === norm(name));
+  const record = (target ? recordsOf(target) : []).find((r) => norm(r.name) === norm(name));
   const app = {
     name: 'DNS',
     request: [['Question', `${norm(name)} (type A)`], ['ID', '0x1a2b']],
@@ -69,7 +80,19 @@ export function resolveName(rawDoc, srcId, name, ctx = null) {
     const err = query.log.findLast((l) => l.level === 'error');
     return { ...fail(`Résolution de ${name} impossible : la requête DNS n'aboutit pas. ${err?.text ?? ''}`.trim(), err?.device ?? srcId), query };
   }
-  if (!record) return { ...fail(`Le serveur DNS ${server} (${label(target.id)}) ne connaît pas ${name} (NXDOMAIN) : ajoute un enregistrement A.`, target.id), query };
+  // Relais : le routeur pose la question à son propre serveur DNS
+  if (!record && !target.config?.services?.dns?.enabled && dnsServerOf(target) && depth < MAX_FORWARD) {
+    log.push({ phase: 'dns', text: `${label(target.id)} n'a pas ${name} dans sa table locale : il relaie la question à ${dnsServerOf(target)}.`, level: 'info', device: target.id });
+    const up = resolveName(doc, target.id, name, { topo, routing }, depth + 1);
+    const res = { ...up, log: [...log, ...up.log], query };
+    if (!up.ok) return { ...res, server };
+    res.log.push({ phase: 'dns', text: `${label(target.id)} transmet la réponse : ${name} = ${up.ip}.`, level: 'ok', device: target.id });
+    return { ...res, server };
+  }
+  if (!record) {
+    const fix = target.config?.services?.dns?.enabled ? 'ajoute un enregistrement A' : 'ajoute une entrée statique ou un serveur DNS à relayer';
+    return { ...fail(`Le serveur DNS ${server} (${label(target.id)}) ne connaît pas ${name} (NXDOMAIN) : ${fix}.`, target.id), query };
+  }
   if (!isValidIp(record.ip)) return { ...fail(`Le serveur DNS ${label(target.id)} a pour ${name} une adresse invalide (« ${record.ip} »).`, target.id), query };
   log.push({ phase: 'dns', text: `${label(target.id)} répond : ${name} = ${record.ip}.`, level: 'ok', device: target.id });
   return { ok: true, ip: record.ip, server, log, query };

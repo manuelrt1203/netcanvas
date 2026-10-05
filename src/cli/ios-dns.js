@@ -35,6 +35,15 @@ export function dnsConfigCommands(remove = false) {
         },
       })],
     }),
+    kw('dns', 'Configure DNS server for a zone', {
+      children: [kw('server', 'Enable DNS server', {
+        run: (c) => {
+          if (remove) delete c.dev.config.dnsServer;
+          else c.dev.config.dnsServer = true;
+          c.changed = true;
+        },
+      })],
+    }),
     kw('host', 'Add an entry to the ip hostname table', {
       children: [arg('name', 'WORD', 'Name of host', isHostname, {
         ...(remove ? { run: removeHost } : {}),

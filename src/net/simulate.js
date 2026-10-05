@@ -17,6 +17,7 @@ import { NAT_ICMP_TIMEOUT, activeNat, runtimeOf } from './runtime.js';
 import { macCisco, macOf } from './mac.js';
 import { flood } from './l2.js';
 import { computeRouting, lookup } from './routing.js';
+import { serviceEnabled } from './services.js';
 
 const MAX_TTL = 64;
 
@@ -85,7 +86,7 @@ export function simulatePing(rawDoc, sourceId, dstIp, options = {}) {
       // Le paquet est arrivé : encore faut-il qu'un service écoute sur ce port
       const target = topo.devices.get(req.arrivedAt);
       const proto = ctx.l4.proto.toUpperCase();
-      if (!svc || !target.config?.services?.[svc]?.enabled) {
+      if (!svc || !serviceEnabled(target, svc)) {
         const service = svc ? ` (serveur ${SERVICE_PORTS[svc].label})` : '';
         throw new SimError(`${name(req.arrivedAt)} reçoit le paquet mais aucun service n'écoute sur ${proto} ${ctx.l4.dport}${service} : il répond ${ctx.l4.proto === 'tcp' ? '« connexion refusée » (TCP RST)' : '« port injoignable » (ICMP)'}.`, req.arrivedAt);
       }

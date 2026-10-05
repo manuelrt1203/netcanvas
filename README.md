@@ -186,13 +186,15 @@ Démo : « STP (triangle de switches) ».
 
 ## DNS et services (`src/net/services.js`)
 
-Un serveur peut faire **serveur DNS** (UDP 53, enregistrements A) et **serveur web** (TCP 80, titre et contenu de la page) : section « Services » de ses propriétés. Un PC reçoit son serveur DNS à la main (champ « Serveur DNS ») ou par son bail DHCP ; un routeur Cisco par `ip name-server`, avec sa table locale `ip host`.
+Un serveur peut faire **serveur DNS** (UDP 53, enregistrements A) et **serveur web** (TCP 80, titre et contenu de la page) : section « Services » de ses propriétés. Un PC reçoit son serveur DNS à la main (champ « Serveur DNS ») ou par son bail DHCP ; un routeur par la section « DNS » de ses propriétés ou son terminal, avec sa table locale.
 
 La requête DNS ou HTTP est un vrai paquet UDP / TCP qui suit le même chemin qu'un ping (ARP, routage, NAT, STP) et passe par les **ACL et le pare-feu avec les ports** (`permit tcp … eq www`, `dst-port=80`). Si elle échoue, la raison est donnée : pas de serveur DNS, requête bloquée par telle ligne d'ACL, aucun service sur le port (« port injoignable » en UDP, TCP RST), nom inconnu (NXDOMAIN).
 
 - panneau Simulation : type **Ping**, **Requête DNS** ou **Page web**, avec animation et pas à pas (en-têtes UDP/TCP et couche DNS/HTTP) ;
 - terminal PC : `nslookup <nom> [serveur]`, `curl http://<nom>`, `ping <nom>`, `tracert <nom>` ;
-- terminal IOS : `ip name-server`, `ip host`, `show hosts`, `ping <nom>`, `traceroute <nom>` (repris par `show running-config`, l'export Cisco et l'import) ;
+- terminal IOS : `ip name-server`, `ip host`, `ip dns server`, `show hosts`, `ping <nom>`, `traceroute <nom>` (repris par `show running-config`, l'export Cisco et l'import) ;
+- terminal MikroTik : `/ip dns set servers= allow-remote-requests=`, `/ip dns static add|print|remove`, `/ping <nom>` (repris par `/export` et l'import) ;
+- **routeur serveur DNS** (`ip dns server`, `allow-remote-requests=yes`, ou case « Répondre aux PC ») : il répond avec ses entrées statiques et relaie les autres noms à son propre serveur, étape par étape dans le journal ;
 - contrôles en direct : serveur DNS qui n'a pas de service DNS actif, enregistrements invalides ou en double.
 
 ## Matériel et câblage (`src/net/catalog.js`, `src/net/cabling.js`)
@@ -306,5 +308,5 @@ npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : éditi
 
 ## Prochaines étapes
 
-1. Simulation : IPv6 ; DNS côté MikroTik (`/ip dns`) et dans l'export Containerlab.
+1. Simulation : IPv6 ; DNS dans l'export Containerlab.
 2. Partage : historique des versions, expiration des liens, comptes utilisateurs (« Mes schémas »).

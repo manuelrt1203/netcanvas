@@ -7,7 +7,7 @@ import { useLinkStatus } from './SimContext.js';
 import { LoopbacksForm, RoutingForm, SubInterfaces } from './RoutingForm.jsx';
 import { InterfaceSecurity, SecurityForm } from './SecurityForm.jsx';
 import { DhcpClientStatus, DhcpServerForm } from './DhcpForm.jsx';
-import { ServicesForm } from './ServicesForm.jsx';
+import { RouterDnsForm, ServicesForm } from './ServicesForm.jsx';
 
 const otherEnd = (e, id) => (e.source === id ? e.target : e.source);
 // Côté DCE d'une liaison série : l'équipement source, sauf indication contraire
@@ -179,6 +179,7 @@ function RouterForm({ node, edges, labels, update, routing, issues }) {
       <RoutingForm node={node} update={update} ports={ports} state={routing} />
       <SecurityForm node={node} update={update} issues={issues} ifaceNames={ports.map((p) => p.name)} />
       <DhcpServerForm node={node} update={update} />
+      <RouterDnsForm node={node} update={update} />
     </>
   );
 }
@@ -324,6 +325,7 @@ function SwitchForm({ node, edges, labels, update, routing }) {
         <>
           <StaticRoutes routes={node.data.routes ?? []} update={update} />
           <DhcpServerForm node={node} update={update} />
+          <RouterDnsForm node={node} update={update} />
           <RoutingForm node={node} update={update} state={routing}
             ports={Object.keys(node.data.ifaces ?? {}).filter((n) => /^Vlan\d+$/.test(n)).map((name) => ({ name }))} />
         </>

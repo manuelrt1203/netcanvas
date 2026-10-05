@@ -153,3 +153,60 @@ test('panneau de simulation : DNS puis HTTP mis bout à bout', async () => {
   assert.equal(none.failedAt, 'pc1');
   assert.equal(none.hops.length, 0);
 });
+
+test('routeur serveur DNS (ip dns server) : table locale, sinon relais vers son serveur', () => {
+  const doc = structuredClone(SERVICES_DEMO);
+  dev(doc, 'pc1').config.dns = '192.168.10.1';
+  // R1 sans service DNS : port injoignable, et le contrôle le signale
+  assert.match(lastError(resolveName(doc, 'pc1', 'www.entreprise.lan')), /aucun service n'écoute sur UDP 53/);
+  Object.assign(dev(doc, 'r1').config, { dnsServer: true, hosts: [{ name: 'imprimante.lan', ip: '192.168.10.50' }] });
+  // Entrée statique : réponse directe
+  const local = resolveName(doc, 'pc1', 'imprimante.lan');
+  assert.equal(local.ip, '192.168.10.50');
+  // Pas de serveur à relayer : NXDOMAIN avec la solution
+  assert.match(lastError(resolveName(doc, 'pc1', 'www.entreprise.lan')), /ne connaît pas www\.entreprise\.lan \(NXDOMAIN\) : ajoute une entrée statique ou un serveur DNS à relayer/);
+  // Relais vers le serveur web
+  dev(doc, 'r1').config.nameServer = '172.16.0.10';
+  const fwd = resolveName(doc, 'pc1', 'www.entreprise.lan');
+  assert.equal(fwd.ok, true);
+  assert.equal(fwd.ip, '172.16.0.10');
+  assert.ok(fwd.log.some((l) => /R1 n'a pas www\.entreprise\.lan dans sa table locale : il relaie la question à 172\.16\.0\.10/.test(l.text)));
+  assert.match(fwd.log.at(-1).text, /R1 transmet la réponse : www\.entreprise\.lan = 172\.16\.0\.10/);
+});
+
+test('MikroTik : /ip dns set, /ip dns static, ping par nom, export et import', async () => {
+  const { runLine, shellFor } = await import('../cli/index.js');
+  const { importConfig } = await import('../cli/import.js');
+  const { OSPF_DEMO } = await import('../examples.js');
+  let doc = structuredClone(OSPF_DEMO);
+  const shell = shellFor(dev(doc, 'r3'));
+  const s = shell.newSession();
+  const run = (line) => {
+    const r = runLine(shell, s, line, dev(doc, 'r3'), doc);
+    if (r.device) doc = { ...doc, devices: doc.devices.map((d) => (d.id === 'r3' ? r.device : d)) };
+    return r.output.join('\n');
+  };
+  assert.match(run('/ping r2.lan'), /could not get answer[\s\S]*aucun serveur DNS \(\/ip dns set servers=\) ni entrée statique/);
+  run('/ip dns static add name=r2.lan address=10.0.23.1');
+  assert.match(run('/ip dns static add name=R2.lan address=10.0.23.1'), /already exists/);
+  run('/ip dns set servers=172.16.0.10 allow-remote-requests=yes');
+  const c = dev(doc, 'r3').config;
+  assert.deepEqual(c.hosts, [{ name: 'r2.lan', ip: '10.0.23.1' }]);
+  assert.equal(c.nameServer, '172.16.0.10');
+  assert.equal(c.dnsServer, true);
+  assert.match(run('/ping r2.lan count=2'), /10\.0\.23\.1[\s\S]*received=2/);
+  assert.match(run('/ip dns print'), /servers: 172\.16\.0\.10\n\s+allow-remote-requests: yes/);
+  assert.match(run('/ip dns static print'), /0  r2\.lan\s+10\.0\.23\.1/);
+  const exported = run('/export');
+  assert.match(exported, /\/ip dns\nset allow-remote-requests=yes servers=172\.16\.0\.10\n\/ip dns static\nadd address=10\.0\.23\.1 name=r2\.lan/);
+  const fresh = structuredClone(OSPF_DEMO);
+  const back = importConfig(dev(fresh, 'r3'), fresh, exported);
+  assert.deepEqual(back.ignored.filter((l) => /dns|name=r2/.test(l.text)), []);
+  assert.deepEqual(back.device.config.hosts, c.hosts);
+  assert.equal(back.device.config.dnsServer, true);
+  run('/ip dns static remove 0');
+  run('/ip dns set servers="" allow-remote-requests=no');
+  assert.equal(dev(doc, 'r3').config.hosts, undefined);
+  assert.equal(dev(doc, 'r3').config.nameServer, undefined);
+  assert.equal(dev(doc, 'r3').config.dnsServer, undefined);
+});

@@ -439,6 +439,21 @@ await page.click('role=button[name="Résoudre le nom"]');
 await page.waitForSelector('button:has-text("Résoudre le nom"):not([disabled])', { timeout: 15000 });
 assert.match(await page.locator('.sim-verdict').textContent(), /mail\.entreprise\.lan = 172\.16\.0\.10/);
 await page.screenshot({ path: 'e2e/dns-web.png' });
+// R1 comme serveur DNS du VLAN 10 : réglé dans les formulaires, il relaie au serveur
+await page.getByTestId('rf__node-pc1').click();
+await page.click('role=tab[name=/Propriétés/]');
+await page.getByLabel('Serveur DNS').fill('192.168.10.1');
+await page.getByTestId('rf__node-r1').click();
+await page.locator('summary', { hasText: /^DNS/ }).click();
+await page.getByLabel('Serveur DNS (ip name-server)').fill('172.16.0.10');
+await page.getByLabel('Répondre aux PC (ip dns server)').check();
+await page.click('role=tab[name="Simulation"]');
+await page.selectOption('#sim-src', { label: 'PC Compta' });
+await page.fill('#sim-name', 'www.entreprise.lan');
+await page.click('role=button[name="Résoudre le nom"]');
+await page.waitForSelector('button:has-text("Résoudre le nom"):not([disabled])', { timeout: 15000 });
+assert.match(await page.locator('.sim-verdict').textContent(), /www\.entreprise\.lan = 172\.16\.0\.10/);
+assert.ok(await page.getByText(/R1 n'a pas www\.entreprise\.lan dans sa table locale : il relaie/).isVisible());
 
 step('TP : objectifs en direct, indices, ajout d\'un objectif');
 await openDemo('TP : inter-VLAN en panne (3 pannes)');

@@ -3,7 +3,7 @@ import { isBroadcastAddress, isNetworkAddress, isValidCidr, isValidIp, networkLa
 import { buildTopology, isHost } from './topology.js';
 import { computeRouting } from './routing.js';
 import { withLeases } from './dhcp.js';
-import { dnsServerOf, isHostname } from './services.js';
+import { dnsServerOf, isHostname, serviceEnabled } from './services.js';
 
 // ctx : topologie et routage déjà calculés par l'éditeur (évite de tout refaire)
 export function validate(rawDoc, ctx = {}) {
@@ -115,8 +115,8 @@ export function validate(rawDoc, ctx = {}) {
     if (!isValidIp(server)) return add(d.id, 'error', `${where} : serveur DNS « ${server} » invalide.`);
     const target = ownerOfIp(server);
     // Adresse hors du schéma (8.8.8.8…) : rien à vérifier
-    if (target && !target.config?.services?.dns?.enabled) {
-      add(d.id, 'warning', `${where} : le serveur DNS ${server} est ${target.label}, qui n'a pas de service DNS actif : les noms ne seront pas résolus.`);
+    if (target && !serviceEnabled(target, 'dns')) {
+      add(d.id, 'warning', `${where} : le serveur DNS ${server} est ${target.label}, qui n'a pas de service DNS actif${target.type === 'router' ? ' (ip dns server / allow-remote-requests=yes)' : ''} : les noms ne seront pas résolus.`);
     }
   };
   for (const d of topo.devices.values()) {

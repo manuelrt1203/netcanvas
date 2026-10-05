@@ -367,6 +367,7 @@ export function iosDnsLines(cfg) {
   return [
     ...(cfg.hosts ?? []).map((h) => `ip host ${h.name} ${h.ip}`),
     ...(cfg.nameServer ? [`ip name-server ${cfg.nameServer}`] : []),
+    ...(cfg.dnsServer ? ['ip dns server'] : []),
   ];
 }
 

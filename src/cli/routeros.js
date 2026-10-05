@@ -1,13 +1,14 @@
 // Terminal MikroTik RouterOS simulé : menus (/ip address, /ip route…), arguments clé=valeur,
 // abréviations, « ? » et Tab. Même config que les formulaires.
 import { tokenize } from './engine.js';
-import { dataPorts, ensureEntry, getEntry, linkOf, pad, ping } from './device.js';
+import { dataPorts, ensureEntry, getEntry, linkOf, pad, ping, withDevice } from './device.js';
 import { buildTopology } from '../net/topology.js';
 import { formatIp, isBroadcastAddress, isNetworkAddress, isValidCidr, isValidIp, networkOf, sameSubnet, splitCidr } from '../net/ip.js';
 import { modelOf } from '../net/catalog.js';
 import { traceroute } from '../net/traceroute.js';
 import { macColon, macOf } from '../net/mac.js';
 import { ROUTING_MENUS, routeTable, routingScript, runRouting } from './routeros-routing.js';
+import { isHostname, resolveName } from '../net/services.js';
 
 // Menus : sous-menus et commandes de chaque chemin
 const MENUS = {
@@ -16,7 +17,9 @@ const MENUS = {
   interface: { menus: ['ethernet', 'vlan'], commands: ['print', 'enable', 'disable', 'export'] },
   'interface vlan': { menus: [], commands: ['add', 'print', 'remove', 'export'] },
   'interface ethernet': { menus: [], commands: ['print', 'enable', 'disable', 'export'] },
-  ip: { menus: ['address', 'route', 'firewall', 'pool', 'dhcp-server', 'arp'], commands: ['export'] },
+  ip: { menus: ['address', 'route', 'firewall', 'pool', 'dhcp-server', 'arp', 'dns'], commands: ['export'] },
+  'ip dns': { menus: ['static'], commands: ['set', 'print', 'export'] },
+  'ip dns static': { menus: [], commands: ['add', 'print', 'remove', 'export'] },
   'ip address': { menus: [], commands: ['add', 'print', 'remove', 'export'] },
   'ip route': { menus: [], commands: ['add', 'print', 'remove', 'export'] },
   system: { menus: ['identity'], commands: ['reboot'] },
@@ -123,6 +126,9 @@ export function routerosScript(dev) {
     for (const r of routes) lines.push(`add dst-address=${r.network}/${r.mask} gateway=${r.nextHop}`);
   }
   lines.push(...routingScript(dev));
+  const c = dev.config ?? {};
+  if (c.nameServer || c.dnsServer) lines.push('/ip dns', `set${c.dnsServer ? ' allow-remote-requests=yes' : ''}${c.nameServer ? ` servers=${c.nameServer}` : ''}`);
+  if (c.hosts?.length) lines.push('/ip dns static', ...c.hosts.map((h) => `add address=${h.ip} name=${h.name}`));
   lines.push('/system identity', `set name="${dev.label.replace(/"/g, '\\"')}"`);
   return lines;
 }
@@ -131,6 +137,68 @@ const index = (n, items) => {
   const i = Number(n);
   return Number.isInteger(i) && i >= 0 && i < items.length ? i : null;
 };
+
+// Destination par nom (ping, traceroute) : résolue d'abord ; null si échec (message affiché)
+function resolveTarget(ctx, target) {
+  if (isValidIp(target) || !isHostname(target)) return target;
+  const r = resolveName(withDevice(ctx.doc, ctx.dev), ctx.dev.id, target);
+  if (r.query) ctx.effects.push({ type: 'ping', source: ctx.dev.id, target: ctx.dev.config.nameServer, options: { proto: 'udp', dport: 53 } });
+  if (r.ok) return r.ip;
+  ctx.out.push('invalid value for argument address:', `    while resolving ip-address: could not get answer from dns server`, `NetCanvas : ${r.log.at(-1).text}`, '');
+  return null;
+}
+
+function runDns(ctx, p) {
+  const { dev, out } = ctx;
+  const c = (dev.config ??= {});
+  const norm = (n) => n.toLowerCase().replace(/\.$/, '');
+  switch (`${p.path.join(' ')}|${p.command}`) {
+    case 'ip dns|set': {
+      const { servers, 'allow-remote-requests': remote } = p.named;
+      if (servers === undefined && remote === undefined) return out.push('expected end of command', ''), true;
+      if (servers !== undefined) {
+        const first = servers.split(',')[0];
+        if (first && !isValidIp(first)) return out.push('invalid value for argument servers', ''), true;
+        if (first) c.nameServer = first;
+        else delete c.nameServer;
+      }
+      if (remote !== undefined) {
+        if (!['yes', 'no'].includes(remote)) return out.push('invalid value for argument allow-remote-requests', ''), true;
+        if (remote === 'yes') c.dnsServer = true;
+        else delete c.dnsServer;
+      }
+      ctx.changed = true;
+      return true;
+    }
+    case 'ip dns|print':
+      out.push(`                servers: ${c.nameServer ?? ''}`, `  allow-remote-requests: ${c.dnsServer ? 'yes' : 'no'}`, '');
+      return true;
+    case 'ip dns static|add': {
+      const { name, address } = p.named;
+      if (!name || !isHostname(name)) return out.push('invalid value for argument name', ''), true;
+      if (!isValidIp(address)) return out.push('invalid value for argument address', ''), true;
+      if ((c.hosts ?? []).some((h) => norm(h.name) === norm(name))) return out.push('failure: entry already exists', ''), true;
+      c.hosts = [...(c.hosts ?? []), { name: norm(name), ip: address }];
+      ctx.changed = true;
+      return true;
+    }
+    case 'ip dns static|print':
+      out.push(`Columns: NAME, ADDRESS, TTL`, `#  ${pad('NAME', 24)}${pad('ADDRESS', 16)}TTL`);
+      (c.hosts ?? []).forEach((h, i) => out.push(`${pad(i, 3)}${pad(h.name, 24)}${pad(h.ip, 16)}1d`));
+      out.push('');
+      return true;
+    case 'ip dns static|remove': {
+      const i = index(p.unnamed[0] ?? p.named.numbers, c.hosts ?? []);
+      if (i === null) return out.push('no such item', ''), true;
+      c.hosts = c.hosts.filter((_, j) => j !== i);
+      if (!c.hosts.length) delete c.hosts;
+      ctx.changed = true;
+      return true;
+    }
+    default:
+      return false;
+  }
+}
 
 function run(ctx, p) {
   const { dev, doc, out, s } = ctx;
@@ -258,7 +326,8 @@ function run(ctx, p) {
     case 'system|reboot':
       return out.push('NetCanvas : le redémarrage n\'est pas simulé.', '');
     case '|ping': {
-      const target = p.named.address ?? p.unnamed[0];
+      const target = resolveTarget(ctx, p.named.address ?? p.unnamed[0]);
+      if (target === null) return;
       if (!isValidIp(target)) return out.push('invalid value for argument address', '');
       const count = Math.min(Number(p.named.count) || 4, 10);
       const r = ping(doc, dev.id, target);
@@ -273,7 +342,8 @@ function run(ctx, p) {
       return out.push('');
     }
     case 'tool|traceroute': {
-      const target = p.named.address ?? p.unnamed[0];
+      const target = resolveTarget(ctx, p.named.address ?? p.unnamed[0]);
+      if (target === null) return;
       if (!isValidIp(target)) return out.push('invalid value for argument address', '');
       const t = traceroute(doc, dev.id, target);
       ctx.effects.push({ type: 'ping', source: dev.id, target });
@@ -290,12 +360,14 @@ function run(ctx, p) {
     case 'interface ethernet|export':
     case 'interface vlan|export':
     case 'system identity|export':
+    case 'ip dns|export':
+    case 'ip dns static|export':
       return out.push(...routerosScript(dev), '');
     case '|quit':
       s.path = [];
       return out.push('interrupted', '');
     default:
-      if (runRouting(ctx, p)) return;
+      if (runDns(ctx, p) || runRouting(ctx, p)) return;
       return out.push(...err('expected command name', 1));
   }
 }
@@ -336,7 +408,7 @@ export const routeros = {
     if (p.error) return p.error;
     const menu = MENUS[p.path.join(' ')];
     if (p.command) {
-      const ARGS = { 'ip address|add': 'address= interface=', 'ip route|add': 'dst-address= gateway=', '|ping': 'address count=', 'system identity|set': 'name=' };
+      const ARGS = { 'ip address|add': 'address= interface=', 'ip route|add': 'dst-address= gateway=', '|ping': 'address count=', 'system identity|set': 'name=', 'ip dns|set': 'servers= allow-remote-requests=', 'ip dns static|add': 'name= address=' };
       return [`${p.command} ${ARGS[`${p.path.join(' ')}|${p.command}`] ?? ''}`.trim(), ''];
     }
     return [...menu.menus.map((m) => `  ${pad(m, 12)} --`), ...menu.commands.map((c) => `  ${c}`), ''];
