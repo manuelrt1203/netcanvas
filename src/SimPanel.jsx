@@ -2,7 +2,12 @@ import { useMemo } from 'react';
 import { buildTopology, isHost } from './net/topology.js';
 
 const CUSTOM = '__custom__';
-const KIND = { 'arp-request': 'ARP', 'arp-reply': 'ARP', icmp: 'ICMP', done: 'Fin', drop: 'Perdu' };
+const KINDS = {
+  ping: { label: 'Ping (ICMP)', run: 'Lancer le ping', ok: () => 'Ping réussi', fail: 'Échec du ping' },
+  dns: { label: 'Requête DNS (nslookup)', run: 'Résoudre le nom', ok: (s) => `${s.name} = ${s.ip}`, fail: 'Nom non résolu' },
+  web: { label: 'Page web (HTTP)', run: 'Ouvrir la page', ok: (s) => `Page reçue de ${s.ip}`, fail: 'Page inaccessible' },
+};
+const KIND = { 'arp-request': 'ARP', 'arp-reply': 'ARP', icmp: 'ICMP', udp: 'UDP', tcp: 'TCP', done: 'Fin', drop: 'Perdu' };
 
 // Simulation pas à pas : liste des trames, en-têtes de la trame choisie, décisions de l'équipement
 function Stepper({ frames, step, onStep, labels }) {
@@ -66,30 +71,44 @@ export default function SimPanel({ doc, form, setForm, result, playing, onRun, o
     return { sources, targets };
   }, [doc]);
 
-  const { source, target, custom } = form;
+  const { source, target, custom, kind = 'ping', name = '' } = form;
   const setSource = (v) => setForm((f) => ({ ...f, source: v }));
   const setTarget = (v) => setForm((f) => ({ ...f, target: v }));
   const setCustom = (v) => setForm((f) => ({ ...f, custom: v }));
+  const setKind = (v) => setForm((f) => ({ ...f, kind: v }));
+  const setName = (v) => setForm((f) => ({ ...f, name: v }));
+
+  // Noms connus des serveurs DNS du schéma (suggestions)
+  const names = useMemo(() => [...new Set(doc.devices.flatMap((d) => (d.config?.services?.dns?.records ?? []).map((r) => r.name).filter(Boolean)))], [doc]);
 
   const src = sources.some((s) => s.id === source) ? source : sources[0]?.id ?? '';
   const tgt = target === CUSTOM || targets.some((t) => t.ip === target) ? target : targets.find((t) => t.device !== src)?.ip ?? CUSTOM;
-  const dstIp = tgt === CUSTOM ? custom.trim() : tgt;
+  const service = kind !== 'ping';
+  const dstIp = service ? name.trim() : tgt === CUSTOM ? custom.trim() : tgt;
+  const what = KINDS[result?.service?.kind ?? 'ping'];
 
   const phases = [
-    ['request', 'Echo request'],
-    ['reply', 'Echo reply'],
+    ['dns', 'Résolution DNS'],
+    ['request', result?.service ? 'Requête' : 'Echo request'],
+    ['reply', result?.service ? 'Réponse' : 'Echo reply'],
   ];
 
   return (
     <>
-      <h2>Simuler un ping</h2>
-      <p className="hint">Le paquet ICMP suit les masques, passerelles, VLAN et routes que tu as configurés.</p>
+      <h2>Simuler un échange</h2>
+      <p className="hint">Le paquet suit les masques, passerelles, VLAN, routes, ACL et NAT que tu as configurés.</p>
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          onRun(src, dstIp);
+          onRun(src, dstIp, service ? kind : 'ping');
         }}
       >
+        <div className="field">
+          <label htmlFor="sim-kind">Type</label>
+          <select id="sim-kind" value={kind} onChange={(e) => setKind(e.target.value)}>
+            {Object.entries(KINDS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+          </select>
+        </div>
         <div className="field">
           <label htmlFor="sim-src">Depuis</label>
           <select id="sim-src" value={src} onChange={(e) => setSource(e.target.value)}>
@@ -99,6 +118,13 @@ export default function SimPanel({ doc, form, setForm, result, playing, onRun, o
             ))}
           </select>
         </div>
+        {service ? (
+          <div className="field">
+            <label htmlFor="sim-name">{kind === 'web' ? 'Adresse du site (nom ou IP)' : 'Nom à résoudre'}</label>
+            <input id="sim-name" list="sim-names" placeholder="www.exemple.lan" spellCheck="false" autoCapitalize="none" value={name} onChange={(e) => setName(e.target.value)} />
+            <datalist id="sim-names">{names.map((n) => <option key={n} value={n} />)}</datalist>
+          </div>
+        ) : (<>
         <div className="field">
           <label htmlFor="sim-dst">Vers</label>
           <select id="sim-dst" value={tgt} onChange={(e) => setTarget(e.target.value)}>
@@ -114,10 +140,11 @@ export default function SimPanel({ doc, form, setForm, result, playing, onRun, o
             <input id="sim-ip" placeholder="8.8.8.8" inputMode="decimal" value={custom} onChange={(e) => setCustom(e.target.value)} />
           </div>
         )}
+        </>)}
         <div className="row">
-          <button type="submit" disabled={!src || !dstIp || playing}>{playing ? 'Simulation…' : 'Lancer le ping'}</button>
-          <button type="button" className="ghost" disabled={!src || !dstIp || playing} onClick={() => onRun(src, dstIp, 'step')}>Pas à pas</button>
-          <button type="button" className="ghost" disabled={!src || !dstIp || playing} onClick={() => onRun(src, dstIp, 'trace')}>Traceroute</button>
+          <button type="submit" disabled={!src || !dstIp || playing}>{playing ? 'Simulation…' : KINDS[kind].run}</button>
+          <button type="button" className="ghost" disabled={!src || !dstIp || playing} onClick={() => onRun(src, dstIp, service ? kind : 'ping', true)}>Pas à pas</button>
+          {!service && <button type="button" className="ghost" disabled={!src || !dstIp || playing} onClick={() => onRun(src, dstIp, 'trace')}>Traceroute</button>}
           {result && (
             <>
               <button type="button" className="ghost" onClick={onReplay} disabled={playing}>Rejouer</button>
@@ -130,8 +157,14 @@ export default function SimPanel({ doc, form, setForm, result, playing, onRun, o
       {result && (
         <div className="sim-result" aria-live="polite">
           <p className={`sim-verdict ${result.ok ? 'ok' : 'fail'}`}>
-            {result.ok ? 'Ping réussi' : 'Échec du ping'}
+            {result.ok ? what.ok(result.service) : what.fail}
           </p>
+          {result.ok && result.service?.page && (
+            <div className="web-page" aria-label="Page reçue">
+              <p className="web-title">{result.service.page.title}</p>
+              {result.service.page.body && <p>{result.service.page.body}</p>}
+            </div>
+          )}
           {result.trace && (
             <section>
               <h3>Traceroute</h3>

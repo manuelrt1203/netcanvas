@@ -406,6 +406,40 @@ assert.match(await page.locator('.frame-summary').textContent(), /Ping réussi/)
 await page.locator('.frame-row').nth(9).click();
 await page.screenshot({ path: 'e2e/pas-a-pas.png' });
 
+step('DNS et web : page par nom, ACL par port, enregistrement ajouté dans le formulaire');
+await openDemo('DNS et web (ACL par port)');
+await page.click('role=tab[name="Simulation"]');
+await page.selectOption('#sim-kind', 'web');
+await page.selectOption('#sim-src', { label: 'PC Atelier' });
+await page.fill('#sim-name', 'www.entreprise.lan');
+await page.click('role=button[name="Ouvrir la page"]');
+await page.waitForSelector('button:has-text("Ouvrir la page"):not([disabled])', { timeout: 20000 });
+assert.match(await page.locator('.sim-verdict').textContent(), /Page reçue de 172\.16\.0\.10/);
+assert.match(await page.locator('.web-page').textContent(), /Intranet de l'entreprise/);
+assert.ok(await page.locator('h3.phase-dns').isVisible(), 'étape DNS affichée');
+// Ping depuis le VLAN 20 : refusé par l'ACL (le web, lui, passe)
+await page.selectOption('#sim-kind', 'ping');
+await page.selectOption('#sim-dst', { label: 'Serveur Web · 172.16.0.10' });
+await page.click('text=Lancer le ping');
+await page.waitForSelector('button:has-text("Lancer le ping"):not([disabled])', { timeout: 15000 });
+assert.ok(await page.getByText(/refusé en sortie de G0\/0 par l'ACL 110, ligne 30/).first().isVisible());
+// Nom inconnu, puis ajouté dans le formulaire du serveur
+await page.selectOption('#sim-kind', 'dns');
+await page.fill('#sim-name', 'mail.entreprise.lan');
+await page.click('role=button[name="Résoudre le nom"]');
+await page.waitForSelector('button:has-text("Résoudre le nom"):not([disabled])', { timeout: 15000 });
+assert.ok(await page.getByText(/ne connaît pas mail\.entreprise\.lan \(NXDOMAIN\)/).isVisible());
+await page.getByTestId('rf__node-srv').click();
+await page.click('role=tab[name=/Propriétés/]');
+await page.click('role=button[name="Ajouter un enregistrement"]');
+await page.getByLabel('Nom 3').fill('mail.entreprise.lan');
+await page.getByLabel('Adresse (A)').nth(2).fill('172.16.0.10');
+await page.click('role=tab[name="Simulation"]');
+await page.click('role=button[name="Résoudre le nom"]');
+await page.waitForSelector('button:has-text("Résoudre le nom"):not([disabled])', { timeout: 15000 });
+assert.match(await page.locator('.sim-verdict').textContent(), /mail\.entreprise\.lan = 172\.16\.0\.10/);
+await page.screenshot({ path: 'e2e/dns-web.png' });
+
 step('TP : objectifs en direct, indices, ajout d\'un objectif');
 await openDemo('TP : inter-VLAN en panne (3 pannes)');
 await page.click('role=tab[name=/^TP/]');

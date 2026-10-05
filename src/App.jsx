@@ -24,6 +24,7 @@ import { DEMOS } from './examples.js';
 import { toJSON, fromJSON, freePorts, linksOfNode, deviceToData } from './serialize.js';
 import { simulatePing } from './net/simulate.js';
 import { traceroute } from './net/traceroute.js';
+import { runService } from './net/services.js';
 import { validate } from './net/validate.js';
 import { HOST_TYPES, buildTopology } from './net/topology.js';
 import { computeRouting } from './net/routing.js';
@@ -488,20 +489,22 @@ function Editor() {
   };
 
   // Un ping tapé dans un terminal s'anime aussi sur le plan
-  const pingFromTerminal = (src, dst) => {
-    const result = simulatePing(live, src, dst, { topo, routing });
+  const pingFromTerminal = (src, dst, options = {}) => {
+    const result = simulatePing(live, src, dst, { topo, routing, ...options });
     keepNat(result);
     setSim({ result, sig: configSig(doc), playing: false, view: EMPTY_SIM });
     play(result);
   };
 
   // Ping ou traceroute (la trace réutilise l'animation du ping)
-  const runSim = (src, dst, mode = 'ping') => {
-    const result = simulatePing(live, src, dst, { topo, routing });
+  // mode : 'ping' | 'trace' | 'dns' | 'web' ; stepwise : pas à pas
+  const runSim = (src, dst, mode = 'ping', stepwise = false) => {
+    const service = mode === 'dns' || mode === 'web';
+    const result = service ? runService(live, src, mode, dst, { topo, routing }) : simulatePing(live, src, dst, { topo, routing });
     keepNat(result);
     if (mode === 'trace') result.trace = traceroute(live, src, dst);
     setSim({ result, sig: configSig(doc), playing: false, view: EMPTY_SIM, step: null });
-    if (mode === 'step') showFrame(result, 0);
+    if (stepwise && result.frames?.length) showFrame(result, 0);
     else play(result);
   };
 
@@ -521,7 +524,7 @@ function Editor() {
       view: {
         hop: null,
         hops: frame.hops.map((h, k) => ({ ...h, phase: kindClass(frame), key: `${i}-${k}` })),
-        edges: new Map(before.filter((f) => f.kind === 'icmp').flatMap((f) => f.hops.map((h) => [h.edge, f.phase]))),
+        edges: new Map(before.filter((f) => ['icmp', 'udp', 'tcp'].includes(f.kind)).flatMap((f) => f.hops.map((h) => [h.edge, f.phase]))),
         nodes: new Set([...before, frame].flatMap((f) => f.hops.flatMap((h) => [h.from, h.to]))),
         failedAt: frame.kind === 'drop' ? result.failedAt : null,
       },

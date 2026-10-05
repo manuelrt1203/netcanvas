@@ -323,6 +323,36 @@ DHCP_DEMO.devices.find((d) => d.id === 'srv').config.dhcp = {
   pools: [{ name: 'ELEVES', network: '192.168.20.0', mask: 24, defaultRouter: '192.168.20.1', dns: '8.8.8.8' }],
 };
 
+// Services : le serveur fait DNS et web, les PC l'utilisent comme serveur DNS ; une ACL laisse passer le web
+// vers le serveur mais bloque le reste (dont le ping) depuis le VLAN 20
+export const SERVICES_DEMO = (() => {
+  const doc = structuredClone(DEMO);
+  doc.name = 'Démo : DNS et web';
+  const dev = (id) => doc.devices.find((d) => d.id === id);
+  Object.assign(dev('srv').config, {
+    services: {
+      dns: { enabled: true, records: [{ name: 'www.entreprise.lan', ip: '172.16.0.10' }, { name: 'intranet.entreprise.lan', ip: '172.16.0.10' }] },
+      http: { enabled: true, title: 'Intranet de l\'entreprise', body: 'Bienvenue sur le serveur web interne.' },
+    },
+  });
+  for (const id of ['pc1', 'pc2', 'pc3']) dev(id).config.dns = '172.16.0.10';
+  // R2 : depuis le VLAN 20, seulement DNS et web vers le serveur
+  const r2 = dev('r2').config;
+  r2.acls = {
+    110: {
+      type: 'extended',
+      rules: [
+        { action: 'permit', protocol: 'udp', src: { ip: '192.168.20.0', wildcard: '0.0.0.255' }, dst: { ip: '172.16.0.10', wildcard: '0.0.0.0' }, dstPort: 'eq domain' },
+        { action: 'permit', protocol: 'tcp', src: { ip: '192.168.20.0', wildcard: '0.0.0.255' }, dst: { ip: '172.16.0.10', wildcard: '0.0.0.0' }, dstPort: 'eq www' },
+        { action: 'deny', protocol: 'ip', src: { ip: '192.168.20.0', wildcard: '0.0.0.255' }, dst: { any: true } },
+        { action: 'permit', protocol: 'ip', src: { any: true }, dst: { any: true } },
+      ],
+    },
+  };
+  r2.interfaces.find((i) => i.name === 'G0/0').aclOut = '110';
+  return doc;
+})();
+
 // Triangle de switches : STP bloque un port pour casser la boucle (SW Cœur est root bridge)
 const trunk = (name) => ({ name, mode: 'trunk' });
 export const STP_DEMO = {
@@ -401,6 +431,7 @@ export const DEMOS = [
   { id: 'nat', label: 'NAT / PAT (box, FAI, serveur publié)', doc: NAT_DEMO },
   { id: 'dhcp', label: 'DHCP (serveur et relais)', doc: DHCP_DEMO },
   { id: 'stp', label: 'STP (triangle de switches)', doc: STP_DEMO },
+  { id: 'services', label: 'DNS et web (ACL par port)', doc: SERVICES_DEMO },
   { id: 'tp-vlan', label: 'TP : inter-VLAN en panne (3 pannes)', doc: TP_INTERVLAN },
   { id: 'tp-ospf', label: 'TP : OSPF ne monte pas (3 pannes)', doc: TP_OSPF },
   { id: 'ospf', label: 'OSPF 2 zones (Cisco + MikroTik)', doc: OSPF_DEMO },

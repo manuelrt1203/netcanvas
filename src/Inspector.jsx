@@ -7,6 +7,7 @@ import { useLinkStatus } from './SimContext.js';
 import { LoopbacksForm, RoutingForm, SubInterfaces } from './RoutingForm.jsx';
 import { InterfaceSecurity, SecurityForm } from './SecurityForm.jsx';
 import { DhcpClientStatus, DhcpServerForm } from './DhcpForm.jsx';
+import { ServicesForm } from './ServicesForm.jsx';
 
 const otherEnd = (e, id) => (e.source === id ? e.target : e.source);
 // Côté DCE d'une liaison série : l'équipement source, sauf indication contraire
@@ -71,7 +72,7 @@ function HostForm({ node, update, live, labels }) {
           onChange={(e) => update((x) => {
             const { dhcp, ...rest } = x;
             // Un serveur DHCP (Server-PT) garde ses pools en adressage statique
-            if (e.target.value === 'dhcp') return { ...rest, dhcp: true, ip: '', mask: '', gateway: '' };
+            if (e.target.value === 'dhcp') return { ...rest, dhcp: true, ip: '', mask: '', gateway: '', dns: undefined };
             return dhcp && dhcp !== true ? x : rest;
           })}>
           <option value="static">Statique</option>
@@ -91,9 +92,22 @@ function HostForm({ node, update, live, labels }) {
             inputMode="decimal"
             onChange={(e) => update((x) => ({ ...x, gateway: e.target.value.trim() }))}
           />
+          <Field
+            label="Serveur DNS"
+            placeholder="192.168.1.10"
+            value={d.dns ?? ''}
+            error={ipError(d.dns)}
+            inputMode="decimal"
+            onChange={(e) => update((x) => {
+              const { dns, ...rest } = x;
+              const v = e.target.value.trim();
+              return v ? { ...rest, dns: v } : rest;
+            })}
+          />
         </>
       )}
       {node.type === 'server' && !isClient && <DhcpServerForm node={node} update={update} />}
+      {node.type === 'server' && <ServicesForm node={node} update={update} />}
     </>
   );
 }

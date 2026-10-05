@@ -102,7 +102,7 @@ function configuredPorts(n, edges, table) {
 const IFACE_EXTRAS = ['shutdown', 'description', 'bandwidth', 'ospfCost', 'parent', 'vlan', 'native', 'aclIn', 'aclOut', 'natInside', 'natOutside', 'helperAddress', 'portfast', 'stpCost', 'stpPriority'];
 const extras = (p) => Object.fromEntries(IFACE_EXTRAS.filter((k) => p[k] !== undefined && p[k] !== null && p[k] !== '' && p[k] !== false).map((k) => [k, p[k]]));
 // Routage dynamique d'un routeur : copié sans transformation
-const ROUTING_KEYS = ['ospf', 'rip', 'bgp', 'addressLists', 'acls', 'firewall', 'nat', 'natRules', 'dhcp', 'stp'];
+const ROUTING_KEYS = ['ospf', 'rip', 'bgp', 'addressLists', 'acls', 'firewall', 'nat', 'natRules', 'dhcp', 'stp', 'nameServer', 'hosts'];
 const routing = (src) => Object.fromEntries(ROUTING_KEYS.filter((k) => src?.[k]).map((k) => [k, structuredClone(src[k])]));
 
 // Switch : interfaces VLAN (SVI), routage IP, passerelle par défaut, routes et protocoles (niveau 3)
@@ -122,7 +122,14 @@ function switchL3(d) {
 function deviceConfig(n, edges) {
   const d = n.data;
   // dhcp : true = client DHCP ; objet = serveur DHCP (Server-PT)
-  if (HOST_TYPES.has(n.type)) return { ip: nul(d.ip), mask: nul(d.mask), gateway: nul(d.gateway), ...(d.dhcp ? { dhcp: structuredClone(d.dhcp) } : {}) };
+  if (HOST_TYPES.has(n.type)) {
+    return {
+      ip: nul(d.ip), mask: nul(d.mask), gateway: nul(d.gateway),
+      ...(d.dns ? { dns: d.dns } : {}),
+      ...(d.dhcp ? { dhcp: structuredClone(d.dhcp) } : {}),
+      ...(d.services ? { services: structuredClone(d.services) } : {}),
+    };
+  }
   if (n.type === 'router') {
     return {
       interfaces: configuredPorts(n, edges, d.ifaces)
@@ -196,7 +203,14 @@ export function deviceToData(d, links = []) {
   const keyOf = (entry) => (entry.link && portOfLink.get(entry.link)) || entry.name;
 
   const data = { label: d.label, model: d.model };
-  if (HOST_TYPES.has(d.type)) Object.assign(data, { ip: blank(c.ip), mask: blank(c.mask), gateway: blank(c.gateway), ...(c.dhcp ? { dhcp: structuredClone(c.dhcp) } : {}) });
+  if (HOST_TYPES.has(d.type)) {
+    Object.assign(data, {
+      ip: blank(c.ip), mask: blank(c.mask), gateway: blank(c.gateway),
+      ...(c.dns ? { dns: c.dns } : {}),
+      ...(c.dhcp ? { dhcp: structuredClone(c.dhcp) } : {}),
+      ...(c.services ? { services: structuredClone(c.services) } : {}),
+    });
+  }
   if (d.type === 'router') {
     data.modules = { ...d.modules };
     data.ifaces = Object.fromEntries((c.interfaces ?? []).map((i) => [

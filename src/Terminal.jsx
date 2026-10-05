@@ -43,7 +43,7 @@ export default function Terminal({ device, doc, sessions, onChange, onPing, onRu
     } else print([echo, ...r.output]);
     if (r.device) onChange(r.device);
     for (const e of r.effects) {
-      if (e.type === 'ping') onPing(e.source, e.target);
+      if (e.type === 'ping') onPing(e.source, e.target, e.options);
       if (e.type === 'runtime') onRuntime(e.update);
     }
     setInput('');

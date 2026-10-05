@@ -213,6 +213,10 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .phase::before { content: ""; width: 10px; height: 10px; border-radius: 50%; }
 .phase-request::before { background: var(--request); }
 .phase-reply::before { background: var(--reply); }
+.phase-dns::before { background: var(--warn); }
+.web-page { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; background: var(--bg); font-size: .9rem; }
+.web-page p { margin: 0; }
+.web-title { font-weight: 700; margin-bottom: 4px !important; }
 .sim-log { margin: 0; padding-left: 20px; font-size: .85rem; line-height: 1.45; display: grid; gap: 6px; }
 .log-error { color: var(--danger); font-weight: 600; }
 .log-ok { color: var(--ok); }

@@ -20,6 +20,18 @@ import { computeRouting, lookup } from './routing.js';
 
 const MAX_TTL = 64;
 
+// Services d'un serveur (config.services = { dns: { enabled, records }, http: { enabled, title, body } })
+// et le port sur lequel ils écoutent
+export const SERVICE_PORTS = { dns: { proto: 'udp', port: 53, label: 'DNS' }, http: { proto: 'tcp', port: 80, label: 'HTTP' } };
+const serviceAt = (proto, port) => Object.entries(SERVICE_PORTS).find(([, s]) => s.proto === proto && s.port === port)?.[0] ?? null;
+const EPHEMERAL_PORT = 49152;
+// En-têtes de transport du paquet selon le sens (la réponse inverse les ports)
+function l4(ctx, phase) {
+  const { proto, sport, dport } = ctx.l4;
+  if (proto === 'icmp') return { proto };
+  return phase === 'request' ? { proto, sport, dport } : { proto, sport: dport, dport: sport };
+}
+
 class SimError extends Error {
   constructor(text, device) {
     super(text);
@@ -28,7 +40,9 @@ class SimError extends Error {
 }
 
 // options : topo et routing déjà calculés (BGP vérifie ses sessions avec ce ping), srcIp imposée,
-//           oneWay : seulement l'aller (réponse ICMP d'un routeur pour traceroute)
+//           oneWay : seulement l'aller (réponse ICMP d'un routeur pour traceroute),
+//           proto / dport : requête UDP ou TCP vers un service au lieu d'un ping ; app : couche applicative
+//           (pas à pas) { name, request: [[champ, valeur]], reply: [[champ, valeur]] }
 export function simulatePing(rawDoc, sourceId, dstIp, options = {}) {
   // Sans topologie fournie, on part du document effectif (clients DHCP avec leur bail)
   const doc = options.topo ? rawDoc : withLeases(rawDoc);
@@ -42,7 +56,12 @@ export function simulatePing(rawDoc, sourceId, dstIp, options = {}) {
     learned: { arp: [], mac: [] }, // entrées ARP / MAC apprises pendant ce ping
     frames: [], // trames une par une, avec leurs en-têtes (simulation pas à pas)
     cursor: 0, // journal déjà rattaché à une trame
+    l4: { proto: options.proto ?? 'icmp', sport: EPHEMERAL_PORT, dport: options.dport ?? null },
+    app: options.app ?? null,
   };
+  const svc = ctx.l4.proto === 'icmp' ? null : serviceAt(ctx.l4.proto, ctx.l4.dport);
+  const what = svc ? `une requête ${SERVICE_PORTS[svc].label} (${ctx.l4.proto.toUpperCase()} ${ctx.l4.dport})`
+    : ctx.l4.proto === 'icmp' ? 'un ping' : `un paquet ${ctx.l4.proto.toUpperCase()} ${ctx.l4.dport}`;
   // path : équipements atteints et adresse d'entrée (sert à traceroute)
   const result = { ok: false, hops: [], path: [], log: [], failedAt: null, srcIp: null };
   result.natAdded = ctx.natAdded; // traductions créées, à enregistrer dans la table persistante
@@ -55,20 +74,30 @@ export function simulatePing(rawDoc, sourceId, dstIp, options = {}) {
     if (!topo.devices.has(sourceId)) throw new SimError("Choisis l'équipement source.");
     if (!isValidIp(dstIp)) throw new SimError(`« ${dstIp} » n'est pas une adresse IPv4 valide.`);
 
-    log('request', `${name(sourceId)} envoie un ping vers ${dstIp}.`);
+    log('request', `${name(sourceId)} envoie ${what} vers ${dstIp}.`);
     const req = forward(ctx, sourceId, dstIp, 'request', result, log, name, options.srcIp);
     result.srcIp = req.srcIp;
     if (options.oneWay) {
       result.ok = true;
       return result;
     }
-    log('request', `${name(req.arrivedAt)} reçoit l'echo request et répond.`, 'ok', req.arrivedAt);
+    if (ctx.l4.proto !== 'icmp') {
+      // Le paquet est arrivé : encore faut-il qu'un service écoute sur ce port
+      const target = topo.devices.get(req.arrivedAt);
+      const proto = ctx.l4.proto.toUpperCase();
+      if (!svc || !target.config?.services?.[svc]?.enabled) {
+        const service = svc ? ` (serveur ${SERVICE_PORTS[svc].label})` : '';
+        throw new SimError(`${name(req.arrivedAt)} reçoit le paquet mais aucun service n'écoute sur ${proto} ${ctx.l4.dport}${service} : il répond ${ctx.l4.proto === 'tcp' ? '« connexion refusée » (TCP RST)' : '« port injoignable » (ICMP)'}.`, req.arrivedAt);
+      }
+      log('request', `${name(req.arrivedAt)} reçoit la requête sur ${proto} ${ctx.l4.dport} (service ${SERVICE_PORTS[svc].label}) et répond.`, 'ok', req.arrivedAt);
+    } else log('request', `${name(req.arrivedAt)} reçoit l'echo request et répond.`, 'ok', req.arrivedAt);
 
     const rep = forward(ctx, req.arrivedAt, req.srcIp, 'reply', result, log, name);
-    log('reply', `${name(rep.arrivedAt)} reçoit l'echo reply : ping réussi (TTL ${rep.ttl}).`, 'ok', rep.arrivedAt);
+    log('reply', svc ? `${name(rep.arrivedAt)} reçoit la réponse ${SERVICE_PORTS[svc].label} : échange réussi.`
+      : `${name(rep.arrivedAt)} reçoit l'echo reply : ping réussi (TTL ${rep.ttl}).`, 'ok', rep.arrivedAt);
     result.ok = true;
     result.ttl = rep.ttl;
-    endFrame(ctx, result, { kind: 'done', phase: 'reply', at: rep.arrivedAt, summary: 'Ping réussi' });
+    endFrame(ctx, result, { kind: 'done', phase: 'reply', at: rep.arrivedAt, summary: svc ? `Réponse ${SERVICE_PORTS[svc].label} reçue` : 'Ping réussi' });
   } catch (err) {
     if (!(err instanceof SimError)) throw err;
     const phase = result.log.at(-1)?.phase ?? 'request';
@@ -92,10 +121,11 @@ function forward(ctx, startId, target, phase, result, log, name, fixedSrc = null
     const dev = topo.devices.get(current);
     const ownIp = (ip) => topo.l3Ifaces(current).find((i) => parseIp(i.ip) === parseIp(ip));
     // Filtrage en entrée (ACL « in », pare-feu MikroTik chain=input) ; pas sur le trafic émis par l'équipement
-    if (current !== startId && isRouting(dev) && arrived) filterIn(dev, arrived, { src: srcIp, dst: dstIp }, Boolean(ownIp(dstIp)), log, phase, name);
+    const pkt = () => ({ src: srcIp, dst: dstIp, ...l4(ctx, phase) });
+    if (current !== startId && isRouting(dev) && arrived) filterIn(dev, arrived, pkt(), Boolean(ownIp(dstIp)), log, phase, name);
     // NAT de destination à l'entrée (statique, dst-nat, ou retour d'une traduction)
     if (current !== startId && isRouting(dev) && arrived) {
-      const t = destNat(dev, arrived, { src: srcIp, dst: dstIp }, ctx.natTable, phase === 'reply');
+      const t = destNat(dev, arrived, pkt(), ctx.natTable, phase === 'reply');
       if (t) {
         log(phase, `${name(current)} : NAT, destination ${dstIp} traduite en ${t.dst} (${t.how}).`, 'info', current);
         dstIp = t.dst;
@@ -123,12 +153,12 @@ function forward(ctx, startId, target, phase, result, log, name, fixedSrc = null
     log(phase, step.text, 'info', current);
     // NAT de source (inside -> outside, masquerade) puis filtrage en sortie, comme sur IOS
     if (current !== startId && isRouting(dev)) {
-      const t = sourceNat(dev, arrived, step.iface.name, step.iface.ip, { src: srcIp, dst: dstIp });
+      const t = sourceNat(dev, arrived, step.iface.name, step.iface.ip, pkt());
       if (t) {
         // Identifiant ICMP (le « port » du PAT) : suivant libre pour ce routeur
         const id = 1 + Math.max(0, ...ctx.natTable.filter((e) => e.router === current).map((e) => e.id ?? 0));
         const entry = {
-          router: current, proto: 'icmp', insideLocal: srcIp, insideGlobal: t.src, outsideLocal: dstIp, outsideGlobal: dstIp,
+          router: current, proto: ctx.l4.proto, insideLocal: srcIp, insideGlobal: t.src, outsideLocal: dstIp, outsideGlobal: dstIp,
           dynamic: t.dynamic, id, created: ctx.now, expires: ctx.now + NAT_ICMP_TIMEOUT,
         };
         ctx.natTable.push(entry);
@@ -138,7 +168,7 @@ function forward(ctx, startId, target, phase, result, log, name, fixedSrc = null
       }
     }
     // Filtrage en sortie (ACL « out », pare-feu MikroTik chain=forward)
-    if (current !== startId && isRouting(dev)) filterOut(dev, arrived, step.iface.name, { src: srcIp, dst: dstIp }, log, phase, name);
+    if (current !== startId && isRouting(dev)) filterOut(dev, arrived, step.iface.name, pkt(), log, phase, name);
 
     // Sous-interface 802.1Q : la trame part étiquetée sur le trunk
     const tag = step.iface.sub && !step.iface.native ? Number(step.iface.vlan) : null;
@@ -210,15 +240,24 @@ function addFrames(ctx, result, { dev, step, l2, phase, serial, cached, packet }
       });
     }
   }
-  const ip = { name: 'IPv4', fields: [['Source', packet.src], ['Destination', packet.dst], ['TTL', String(packet.ttl)], ['Protocole', '1 (ICMP)']] };
-  const icmp = { name: 'ICMP', fields: [['Type', phase === 'request' ? '8 (echo request)' : '0 (echo reply)'], ['Code', '0'], ['Identifiant', '1'], ['Séquence', '1']] };
+  const t = l4(ctx, phase);
+  const PROTO_NUM = { icmp: '1 (ICMP)', tcp: '6 (TCP)', udp: '17 (UDP)' };
+  const ip = { name: 'IPv4', fields: [['Source', packet.src], ['Destination', packet.dst], ['TTL', String(packet.ttl)], ['Protocole', PROTO_NUM[t.proto]]] };
+  const upper = t.proto === 'icmp'
+    ? [{ name: 'ICMP', fields: [['Type', phase === 'request' ? '8 (echo request)' : '0 (echo reply)'], ['Code', '0'], ['Identifiant', '1'], ['Séquence', '1']] }]
+    : [
+      { name: t.proto.toUpperCase(), fields: [['Port source', String(t.sport)], ['Port destination', String(t.dport)], ...(t.proto === 'tcp' ? [['Drapeaux', 'PSH, ACK']] : [])] },
+      ...(ctx.app ? [{ name: ctx.app.name, fields: phase === 'request' ? ctx.app.request : ctx.app.reply }] : []),
+    ];
+  const svcName = t.proto === 'icmp' ? null : SERVICE_PORTS[serviceAt(ctx.l4.proto, ctx.l4.dport)]?.label ?? t.proto.toUpperCase();
   for (const h of l2.hops) {
     frames.push({
-      kind: 'icmp', phase, hops: [h], at: h.to,
-      summary: `ICMP echo ${phase === 'request' ? 'request' : 'reply'} ${packet.src} → ${packet.dst}`,
+      kind: t.proto, phase, hops: [h], at: h.to,
+      summary: t.proto === 'icmp' ? `ICMP echo ${phase === 'request' ? 'request' : 'reply'} ${packet.src} → ${packet.dst}`
+        : `${svcName} ${phase === 'request' ? 'requête' : 'réponse'} ${packet.src}:${t.sport} → ${packet.dst}:${t.dport}`,
       layers: serial
-        ? [{ name: 'HDLC', fields: [['Adresse', '0x0F'], ['Protocole', ETHERTYPE_IP]] }, ip, icmp]
-        : [...ethLayers(senderMac, targetMac, ETHERTYPE_IP, h.tag), ip, icmp],
+        ? [{ name: 'HDLC', fields: [['Adresse', '0x0F'], ['Protocole', ETHERTYPE_IP]] }, ip, ...upper]
+        : [...ethLayers(senderMac, targetMac, ETHERTYPE_IP, h.tag), ip, ...upper],
     });
   }
   // Ce que l'émetteur a décidé est affiché avec sa première trame
@@ -250,7 +289,7 @@ function learn(ctx, dev, step, l2) {
 }
 
 const ifaceCfg = (dev, name) => (dev.config?.interfaces ?? []).find((i) => i.name === name);
-const packetText = (p) => `${p.src} → ${p.dst} (ICMP)`;
+const packetText = (p) => (p.proto && p.proto !== 'icmp' ? `${p.src} → ${p.dst}:${p.dport} (${p.proto.toUpperCase()})` : `${p.src} → ${p.dst} (ICMP)`);
 
 function checkAcl(dev, ifName, dir, packet, log, phase, name) {
   const aclName = ifaceCfg(dev, ifName)?.[dir === 'in' ? 'aclIn' : 'aclOut'];

@@ -1,4 +1,5 @@
-// Listes de contrôle d'accès (ACL) Cisco et pare-feu MikroTik, appliqués aux paquets ICMP du simulateur.
+// Listes de contrôle d'accès (ACL) Cisco et pare-feu MikroTik, appliqués aux paquets du simulateur :
+// packet = { src, dst, proto: 'icmp' | 'udp' | 'tcp' (icmp par défaut), sport, dport }
 //
 // Cisco : config.acls = { [nom]: { type: 'standard' | 'extended', rules: [règle] } },
 //         interface : aclIn / aclOut (nom de l'ACL). Première ligne qui correspond, sinon refus implicite.
@@ -30,7 +31,28 @@ function readSpec(tokens, i, optionalWildcard) {
   return { spec: { ip: tokens[i], wildcard: '0.0.0.0' }, next: i + 1 };
 }
 
-// « eq 80 », « eq www »… (TCP/UDP : gardé, ne correspond jamais à un ping)
+// Noms de ports reconnus par IOS (« eq www », « eq domain »…)
+export const PORT_NAMES = {
+  ftp: 21, ssh: 22, telnet: 23, smtp: 25, domain: 53, bootps: 67, bootpc: 68, tftp: 69, www: 80, http: 80,
+  pop3: 110, ntp: 123, snmp: 161, https: 443, 443: 443,
+};
+const portNum = (t) => (/^\d+$/.test(t) ? Number(t) : PORT_NAMES[t?.toLowerCase()] ?? null);
+
+// Le port correspond-il à « eq 80 », « gt 1023 », « range 20 21 »… ? (pas de condition : oui)
+export function matchPort(spec, port) {
+  if (!spec) return true;
+  if (port == null) return false;
+  const [op, a, b] = spec.split(/\s+/);
+  const x = portNum(a);
+  if (op === 'eq') return port === x;
+  if (op === 'neq') return port !== x;
+  if (op === 'gt') return port > x;
+  if (op === 'lt') return port < x;
+  if (op === 'range') return port >= x && port <= portNum(b);
+  return false;
+}
+
+// « eq 80 », « eq www »… (TCP/UDP)
 function readPort(tokens, i) {
   if (['eq', 'neq', 'gt', 'lt'].includes(tokens[i]?.toLowerCase()) && tokens[i + 1]) return { port: `${tokens[i]} ${tokens[i + 1]}`, next: i + 2 };
   if (tokens[i]?.toLowerCase() === 'range' && tokens[i + 2]) return { port: `range ${tokens[i + 1]} ${tokens[i + 2]}`, next: i + 3 };
@@ -88,14 +110,16 @@ export function matchSpec(spec, ip) {
   return ((parseIp(ip) & ~w) >>> 0) === ((parseIp(spec.ip) & ~w) >>> 0);
 }
 
-// Verdict d'une ACL pour un ping (protocole ICMP) : { permit, line (n° IOS : 10, 20…) | null, text }
+// Verdict d'une ACL pour un paquet : { permit, line (n° IOS : 10, 20…) | null, text }
 export function evaluateAcl(acl, packet) {
+  const pproto = packet.proto ?? 'icmp';
   let seq = 0;
   for (const rule of acl.rules ?? []) {
     if (rule.remark !== undefined) continue;
     seq += 10;
-    const proto = acl.type === 'standard' || rule.protocol === 'ip' || rule.protocol === 'icmp';
-    const hit = proto && matchSpec(rule.src, packet.src) && (acl.type === 'standard' || matchSpec(rule.dst, packet.dst));
+    const proto = acl.type === 'standard' || rule.protocol === 'ip' || rule.protocol === pproto;
+    const ports = acl.type === 'standard' || (matchPort(rule.srcPort, packet.sport) && matchPort(rule.dstPort, packet.dport));
+    const hit = proto && ports && matchSpec(rule.src, packet.src) && (acl.type === 'standard' || matchSpec(rule.dst, packet.dst));
     if (hit) return { permit: rule.action === 'permit', line: seq, text: ruleText(rule, acl.type) };
   }
   return { permit: false, line: null, text: 'deny any (refus implicite)' };
@@ -112,7 +136,7 @@ const inCidr = (cidr, ip) => {
 export function firewallRuleText(r) {
   return [
     `chain=${r.chain}`, `action=${r.action}`, r.protocol && `protocol=${r.protocol}`,
-    r.src && `src-address=${r.src}`, r.dst && `dst-address=${r.dst}`,
+    r.src && `src-address=${r.src}`, r.dst && `dst-address=${r.dst}`, r.dstPort && `dst-port=${r.dstPort}`,
     r.inIface && `in-interface=${r.inIface}`, r.outIface && `out-interface=${r.outIface}`,
   ].filter(Boolean).join(' ');
 }
@@ -123,7 +147,9 @@ export function parseFirewallRule(text) {
   const rule = {
     chain: named.chain, action: named.action ?? 'accept', protocol: named.protocol,
     src: named['src-address'], dst: named['dst-address'], inIface: named['in-interface'], outIface: named['out-interface'],
+    dstPort: named['dst-port'],
   };
+  if (rule.dstPort && !/^\d+(-\d+)?(,\d+(-\d+)?)*$/.test(rule.dstPort)) return { error: 'dst-port invalide (ex. 80, 80,443 ou 1000-2000)' };
   if (!['forward', 'input'].includes(rule.chain)) return { error: 'chain=forward ou chain=input attendu' };
   if (!['accept', 'drop', 'reject'].includes(rule.action)) return { error: 'action=accept, drop ou reject attendu' };
   for (const k of ['src', 'dst']) {
@@ -138,7 +164,11 @@ export function evaluateFirewall(rules, chain, packet, inIface, outIface) {
   for (const r of rules ?? []) {
     n++;
     if (r.chain !== chain) continue;
-    if (r.protocol && r.protocol !== 'icmp') continue;
+    if (r.protocol && r.protocol !== (packet.proto ?? 'icmp')) continue;
+    if (r.dstPort && !r.dstPort.split(',').some((part) => {
+      const [a, b = a] = part.split('-').map(Number);
+      return packet.dport >= a && packet.dport <= b;
+    })) continue;
     if (!inCidr(r.src, packet.src) || !inCidr(r.dst, packet.dst)) continue;
     if (r.inIface && r.inIface !== inIface) continue;
     if (r.outIface && r.outIface !== outIface) continue;

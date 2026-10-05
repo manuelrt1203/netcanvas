@@ -3,6 +3,7 @@ import { isBroadcastAddress, isNetworkAddress, isValidCidr, isValidIp, networkLa
 import { buildTopology, isHost } from './topology.js';
 import { computeRouting } from './routing.js';
 import { withLeases } from './dhcp.js';
+import { dnsServerOf, isHostname } from './services.js';
 
 // ctx : topologie et routage déjà calculés par l'éditeur (évite de tout refaire)
 export function validate(rawDoc, ctx = {}) {
@@ -105,6 +106,35 @@ export function validate(rawDoc, ctx = {}) {
       if (!d.config.acls?.[r.acl]) add(d.id, 'warning', `${d.label} : la règle NAT utilise l'ACL ${r.acl}, qui n'existe pas : rien n'est traduit.`);
       if (r.pool && !nat.pools?.[r.pool]) add(d.id, 'warning', `${d.label} : le pool NAT ${r.pool} n'existe pas.`);
       if (r.iface && !ifs.find((i) => i.name === r.iface)?.natOutside) add(d.id, 'warning', `${d.label} : la règle NAT sort par ${r.iface}, qui n'est pas « ip nat outside ».`);
+    }
+  }
+
+  // DNS : serveur indiqué aux clients (PC, ip name-server, pools DHCP) et enregistrements des serveurs
+  const ownerOfIp = (ip) => [...topo.devices.values()].find((x) => topo.l3Ifaces(x.id).some((i) => i.ip === ip));
+  const checkDnsServer = (d, server, where) => {
+    if (!isValidIp(server)) return add(d.id, 'error', `${where} : serveur DNS « ${server} » invalide.`);
+    const target = ownerOfIp(server);
+    // Adresse hors du schéma (8.8.8.8…) : rien à vérifier
+    if (target && !target.config?.services?.dns?.enabled) {
+      add(d.id, 'warning', `${where} : le serveur DNS ${server} est ${target.label}, qui n'a pas de service DNS actif : les noms ne seront pas résolus.`);
+    }
+  };
+  for (const d of topo.devices.values()) {
+    const server = dnsServerOf(d);
+    if (server && !(d.config?.lease?.dns)) checkDnsServer(d, server, d.label);
+    for (const p of d.config?.dhcp?.pools ?? []) if (p.dns) checkDnsServer(d, p.dns, `${d.label}, pool DHCP ${p.name ?? p.network}`);
+    for (const h of d.config?.hosts ?? []) if (!isValidIp(h.ip)) add(d.id, 'error', `${d.label} : « ip host ${h.name} » a une adresse invalide.`);
+    const dns = d.config?.services?.dns;
+    if (!dns?.enabled) continue;
+    if (!dns.records?.length) add(d.id, 'warning', `${d.label} : service DNS actif sans aucun enregistrement : il répondra « nom inconnu » à tout.`);
+    const seen = new Set();
+    for (const r of dns.records ?? []) {
+      if (!r.name && !r.ip) continue;
+      if (!isHostname(r.name)) add(d.id, 'error', `${d.label} : enregistrement DNS « ${r.name ?? ''} » : nom invalide.`);
+      else if (!isValidIp(r.ip)) add(d.id, 'error', `${d.label} : enregistrement DNS ${r.name} : adresse « ${r.ip ?? ''} » invalide.`);
+      const key = String(r.name).toLowerCase().replace(/\.$/, '');
+      if (seen.has(key)) add(d.id, 'warning', `${d.label} : ${r.name} est enregistré deux fois, seule la première adresse est donnée.`);
+      seen.add(key);
     }
   }
 

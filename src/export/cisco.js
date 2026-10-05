@@ -117,6 +117,7 @@ function routerConfig(d, rows, { target, table, topo }) {
   lines.push(...iosAclLines(cfg).filter((l) => l !== '!'));
   lines.push(...iosNatLines(cfg, (n) => renamed.get(n) ?? iosLongName(n)));
   lines.push(...iosDhcpLines(cfg).map((l) => (l === '!' ? ' exit' : l)));
+  lines.push(...iosDnsLines(cfg));
   return { lines, warnings };
 }
 
@@ -152,6 +153,7 @@ function switchConfig(d, rows) {
   }
   lines.push(...iosRoutingLines(c).map((l) => (l === '!' ? ' exit' : l)));
   lines.push(...iosAclLines(c).filter((l) => l !== '!'));
+  lines.push(...iosDnsLines(c));
   return { lines, warnings };
 }
 
@@ -358,6 +360,14 @@ export function iosNatLines(cfg, ifName = iosLongName) {
   }
   for (const st of nat.statics ?? []) out.push(`ip nat inside source static ${st.local} ${st.global}`);
   return out;
+}
+
+// --- DNS côté équipement (partagé avec le terminal) : ip name-server, ip host ---------------------
+export function iosDnsLines(cfg) {
+  return [
+    ...(cfg.hosts ?? []).map((h) => `ip host ${h.name} ${h.ip}`),
+    ...(cfg.nameServer ? [`ip name-server ${cfg.nameServer}`] : []),
+  ];
 }
 
 // --- DHCP (partagé avec le terminal) -------------------------------------------------------------

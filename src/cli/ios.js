@@ -4,12 +4,13 @@ import { dataPorts, ensureEntry, getEntry, linkOf, maskToCidr, pad, ping, withDe
 import { buildTopology, isLoopbackName } from '../net/topology.js';
 import { cidrToMask, formatIp, isBroadcastAddress, isNetworkAddress, isValidIp, networkOf, parseIp, sameSubnet } from '../net/ip.js';
 import { isSviName, modelOf } from '../net/catalog.js';
-import { hostname as iosHostname, iosStpLines, iosStpPortLines, iosAclLines, iosInterfaceExtras, iosDhcpLines, iosLongName, iosNatLines, iosRoutingLines } from '../export/cisco.js';
+import { hostname as iosHostname, iosStpLines, iosStpPortLines, iosAclLines, iosInterfaceExtras, iosDhcpLines, iosDnsLines, iosLongName, iosNatLines, iosRoutingLines } from '../export/cisco.js';
 import { traceroute } from '../net/traceroute.js';
 import { ipArpShow, tableClears, tableShows } from './ios-tables.js';
 import { stpConfigCommand, stpInterfaceCommands, stpNoConfigCommand, stpShowCommand } from './ios-stp.js';
 import { clearDhcpCommand, dhcpConfigCommand, dhcpTree, helperCommands, showDhcp } from './ios-dhcp.js';
 import { clearNatCommand, natConfigCommand, natInterfaceCommands, showNatTranslations } from './ios-nat.js';
+import { dnsConfigCommands, isTarget, resolveTarget, showHostsCommand } from './ios-dns.js';
 import { accessGroupCommands, aclConfigCommands, aclShows, aclTree, showAccessLists } from './ios-acl.js';
 import { bgpTree, interfaceRoutingCommands, ospfTree, ripTree, routeFilters, routerCommands, routingShows, showIpRoute } from './ios-routing.js';
 
@@ -122,7 +123,7 @@ function runningConfig(dev) {
     for (const r of c.routes ?? []) {
       if (isValidIp(r.network) && r.mask != null && isValidIp(r.nextHop)) lines.push(`ip route ${r.network} ${cidrToMask(r.mask)} ${r.nextHop}`);
     }
-    lines.push(...iosDhcpLines(c), ...iosRoutingLines(c), ...iosAclLines(c), '!');
+    lines.push(...iosDhcpLines(c), ...iosRoutingLines(c), ...iosAclLines(c), ...iosDnsLines(c), '!');
   } else {
     for (const p of allInterfaces(dev)) {
       const e = getEntry(dev, p.name);
@@ -139,6 +140,7 @@ function runningConfig(dev) {
     lines.push(...iosDhcpLines(dev.config ?? {}));
     lines.push(...iosNatLines(dev.config ?? {}));
     lines.push(...iosAclLines(dev.config ?? {}));
+    lines.push(...iosDnsLines(dev.config ?? {}));
     lines.push('ip classless');
     for (const r of dev.config?.routes ?? []) {
       if (isValidIp(r.network) && r.mask != null && isValidIp(r.nextHop)) lines.push(`ip route ${r.network} ${cidrToMask(r.mask)} ${r.nextHop}`);
@@ -217,6 +219,7 @@ function showVersion(dev) {
 }
 
 function doPing(ctx, ip) {
+  if (!ip) return;
   const { dev, doc, out, effects } = ctx;
   out.push('Type escape sequence to abort.', `Sending 5, 100-byte ICMP Echos to ${ip}, timeout is 2 seconds:`);
   const r = ping(doc, dev.id, ip);
@@ -226,6 +229,7 @@ function doPing(ctx, ip) {
 }
 
 function doTraceroute(ctx, ip) {
+  if (!ip) return;
   const { dev, doc, out, effects } = ctx;
   out.push('Type escape sequence to abort.', `Tracing the route to ${ip}`, '');
   const t = traceroute(doc, dev.id, ip);
@@ -332,6 +336,7 @@ function showTree(dev) {
       ],
     }),
     ...aclShows(),
+    showHostsCommand(),
     kw('cdp', 'CDP information', { children: [kw('neighbors', 'CDP neighbor entries', { run: (c) => c.out.push(...showCdp(c.dev, c.doc)) })] }),
     kw('version', 'System hardware and software status', { run: (c) => c.out.push(...showVersion(c.dev)) }),
   ];
@@ -344,7 +349,7 @@ function showTree(dev) {
 }
 
 const pingCmd = () => kw('ping', 'Send echo messages', {
-  children: [arg('ip', 'WORD', 'Ping destination address', isIp, { run: (c) => doPing(c, c.args.ip) })],
+  children: [arg('ip', 'WORD', 'Ping destination address or hostname', isTarget, { run: (c) => doPing(c, resolveTarget(c, c.args.ip)) })],
 });
 
 function execTree(dev, privileged) {
@@ -359,7 +364,7 @@ function execTree(dev, privileged) {
         ...tableClears(dev),
       ],
     })] : []),
-    kw('traceroute', 'Trace route to destination', { children: [arg('ip', 'WORD', 'Trace route to destination address', isIp, { run: (c) => doTraceroute(c, c.args.ip) })] }),
+    kw('traceroute', 'Trace route to destination', { children: [arg('ip', 'WORD', 'Trace route to destination address or hostname', isTarget, { run: (c) => doTraceroute(c, resolveTarget(c, c.args.ip)) })] }),
     showTree(dev),
   ];
   if (privileged) {
@@ -439,6 +444,7 @@ function configTree(dev) {
         ...(!isSwitch || modelOf(dev).l3 ? [kw('route', 'Establish static routes', { children: [routeArgs(addRoute)] })] : []),
         kw('domain-lookup', 'Enable IP Domain Name System hostname translation', { run() {} }),
         accept('domain-name', 'Define the default domain name'),
+        ...dnsConfigCommands(),
         kw('classless', 'Follow classless routing forwarding rules', { run() {} }),
         ...(!isSwitch || modelOf(dev).l3 ? [dhcpConfigCommand()] : []),
         kw('routing', 'Enable IP routing', { run: (c) => setIpRouting(c, true) }),
@@ -460,6 +466,7 @@ function configTree(dev) {
             kw('route', 'Establish static routes', { children: [routeArgs(removeRoute, true)] }),
             kw('domain-lookup', 'Enable IP Domain Name System hostname translation', { run() {} }),
             aclConfigCommands().noIpNamed,
+            ...dnsConfigCommands(true),
             natConfigCommand(true),
             dhcpConfigCommand(true),
           ],
@@ -469,6 +476,7 @@ function configTree(dev) {
             children: [
               kw('domain-lookup', '', { run() {} }),
               aclConfigCommands().noIpNamed,
+              ...dnsConfigCommands(true),
               kw('routing', 'Enable IP routing', { run: (c) => setIpRouting(c, false) }),
               kw('default-gateway', 'Specify default gateway', { run: (c) => { delete c.dev.config.defaultGateway; c.changed = true; } }),
               ...(modelOf(dev).l3 ? [kw('route', 'Establish static routes', { children: [routeArgs(removeRoute, true)] })] : []),

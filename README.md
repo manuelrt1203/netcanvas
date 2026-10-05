@@ -15,6 +15,7 @@ Menu **Démos** :
 - **Switch niveau 3** : un 3560 route 3 VLAN par ses interfaces VLAN (SVI) et sort vers Internet par R1 ;
 - **NAT / PAT** : une box en PAT, un serveur web local publié en NAT statique, un FAI qui ne connaît aucune adresse privée ;
 - **DHCP** : R1 distribue le VLAN 10, le VLAN 20 obtient ses adresses d'un serveur du VLAN 30 par relais (`ip helper-address`) ;
+- **DNS et web** : le serveur résout `www.entreprise.lan` et sert l'intranet ; une ACL étendue laisse passer DNS et web depuis le VLAN 20, mais pas le ping ;
 - **OSPF 2 zones** : R1 en zone 1, R2 en ABR, un MikroTik en zone 0 qui annonce la route par défaut vers Internet ;
 - **BGP eBGP + iBGP** : AS 65001 (iBGP entre loopbacks, OSPF comme IGP) et un MikroTik dans l'AS 65002.
 
@@ -183,6 +184,17 @@ Export Containerlab : s'il y a une boucle, le bridge Linux active STP avec la MA
 
 Démo : « STP (triangle de switches) ».
 
+## DNS et services (`src/net/services.js`)
+
+Un serveur peut faire **serveur DNS** (UDP 53, enregistrements A) et **serveur web** (TCP 80, titre et contenu de la page) : section « Services » de ses propriétés. Un PC reçoit son serveur DNS à la main (champ « Serveur DNS ») ou par son bail DHCP ; un routeur Cisco par `ip name-server`, avec sa table locale `ip host`.
+
+La requête DNS ou HTTP est un vrai paquet UDP / TCP qui suit le même chemin qu'un ping (ARP, routage, NAT, STP) et passe par les **ACL et le pare-feu avec les ports** (`permit tcp … eq www`, `dst-port=80`). Si elle échoue, la raison est donnée : pas de serveur DNS, requête bloquée par telle ligne d'ACL, aucun service sur le port (« port injoignable » en UDP, TCP RST), nom inconnu (NXDOMAIN).
+
+- panneau Simulation : type **Ping**, **Requête DNS** ou **Page web**, avec animation et pas à pas (en-têtes UDP/TCP et couche DNS/HTTP) ;
+- terminal PC : `nslookup <nom> [serveur]`, `curl http://<nom>`, `ping <nom>`, `tracert <nom>` ;
+- terminal IOS : `ip name-server`, `ip host`, `show hosts`, `ping <nom>`, `traceroute <nom>` (repris par `show running-config`, l'export Cisco et l'import) ;
+- contrôles en direct : serveur DNS qui n'a pas de service DNS actif, enregistrements invalides ou en double.
+
 ## Matériel et câblage (`src/net/catalog.js`, `src/net/cabling.js`)
 
 | Catégorie | Modèles |
@@ -294,5 +306,5 @@ npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : éditi
 
 ## Prochaines étapes
 
-1. Simulation : DNS et services, IPv6.
+1. Simulation : IPv6 ; DNS côté MikroTik (`/ip dns`) et dans l'export Containerlab.
 2. Partage : historique des versions, expiration des liens, comptes utilisateurs (« Mes schémas »).
