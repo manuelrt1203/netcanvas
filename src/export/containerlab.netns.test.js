@@ -257,3 +257,14 @@ test('containerlab : ACL IPv6 (ip6tables) et piège NDP du « deny ipv6 any any 
     ['pc3', '2001:db8:acad:30::10', true], // VLAN 20 : autre interface, pas d'ACL
   ]);
 });
+
+test('containerlab : PC en DHCPv6 stateful (adresse du pool installée) sur un vrai réseau', { skip }, () => {
+  const doc = structuredClone(IPV6_DEMO);
+  const r1 = doc.devices.find((d) => d.id === 'r1').config;
+  r1.dhcp6Pools = { VLAN10: { prefix: '2001:db8:acad:10::', len: 64 } };
+  Object.assign(r1.interfaces.find((i) => i.name === 'G0/0'), { ndManaged: true, dhcp6Server: 'VLAN10' });
+  assertMatchesSimulator(doc, [
+    ['pc1', '2001:db8:acad:30::10', true],
+    ['srv', '2001:db8:acad:10::2', true], // l'adresse attribuée par DHCPv6 répond
+  ]);
+});

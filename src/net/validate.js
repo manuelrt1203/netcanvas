@@ -112,9 +112,9 @@ export function validate(rawDoc, ctx = {}) {
   }
 
   // DNS : serveur indiqué aux clients (PC, ip name-server, pools DHCP) et enregistrements des serveurs
-  const ownerOfIp = (ip) => [...topo.devices.values()].find((x) => topo.l3Ifaces(x.id).some((i) => i.ip === ip));
+  const ownerOfIp = (ip) => [...topo.devices.values()].find((x) => (isValidIp6(ip) ? topo.l3Ifaces6(x.id).some((i) => i.ip === normIp6(ip)) : topo.l3Ifaces(x.id).some((i) => i.ip === ip)));
   const checkDnsServer = (d, server, where) => {
-    if (!isValidIp(server)) return add(d.id, 'error', `${where} : serveur DNS « ${server} » invalide.`);
+    if (!isValidIp(server) && !isValidIp6(server)) return add(d.id, 'error', `${where} : serveur DNS « ${server} » invalide.`);
     const target = ownerOfIp(server);
     // Adresse hors du schéma (8.8.8.8…) : rien à vérifier
     if (target && !serviceEnabled(target, 'dns')) {
@@ -160,6 +160,7 @@ export function validate(rawDoc, ctx = {}) {
     if (isHost(d)) {
       if (c.slaac) {
         if (c.slaacError) add(d.id, 'error', `${d.label} n'obtient pas d'adresse IPv6 automatique : ${c.slaacError}.`);
+        else if (c.slaac6?.dnsError) add(d.id, 'warning', `${d.label} n'obtient pas de serveur DNS par DHCPv6 : ${c.slaac6.dnsError}.`);
       } else if (c.ipv6 && checkV6(d, `${d.label} (IPv6)`, c.ipv6, c.prefix6) && c.gateway6) {
         if (!isValidIp6(c.gateway6)) add(d.id, 'error', `${d.label} : passerelle IPv6 « ${c.gateway6} » invalide.`);
         else if (!isLinkLocal6(c.gateway6) && !sameSubnet6(c.ipv6, c.gateway6, c.prefix6)) {
@@ -187,6 +188,16 @@ export function validate(rawDoc, ctx = {}) {
       const active = ok.filter((v) => !v.loopback);
       if (active.length > 1 && !v6Forwarding(d)) {
         add(d.id, 'warning', `${d.label} a des adresses IPv6 sur ${active.length} interfaces mais le routage IPv6 n'est pas activé (« ipv6 unicast-routing ») : il ne route pas IPv6 et n'envoie pas d'annonces RA.`);
+      }
+      // DHCPv6 : pools valides, interface qui sert un pool inexistant, drapeaux sans serveur
+      for (const [name, p] of Object.entries(c.dhcp6Pools ?? {})) {
+        if (p.prefix && (!isValidIp6(p.prefix) || !isValidPrefix6(p.len))) add(d.id, 'error', `${d.label} : le pool DHCPv6 ${name} a un préfixe invalide.`);
+        if (p.dns && !isValidIp6(p.dns)) add(d.id, 'error', `${d.label} : le pool DHCPv6 ${name} a un serveur DNS invalide (« ${p.dns} »).`);
+      }
+      for (const e of c.interfaces ?? []) {
+        if (e.dhcp6Server && !c.dhcp6Pools?.[e.dhcp6Server]) add(d.id, 'warning', `${d.label} ${e.name} : « ipv6 dhcp server ${e.dhcp6Server} » : ce pool n'existe pas.`);
+        else if (e.ndManaged && e.dhcp6Server && !c.dhcp6Pools[e.dhcp6Server].prefix) add(d.id, 'warning', `${d.label} ${e.name} : M=1 mais le pool ${e.dhcp6Server} n'a pas de « address prefix » : les PC n'auront pas d'adresse.`);
+        if ((e.ndManaged || e.ndOther) && !e.dhcp6Server) add(d.id, 'warning', `${d.label} ${e.name} : le drapeau ${e.ndManaged ? 'M' : 'O'} est annoncé mais aucun serveur DHCPv6 (« ipv6 dhcp server ») ne tourne sur l'interface.`);
       }
       // ACL IPv6 appliquées : existence, et « deny ipv6 any any » explicite en entrée qui bloque NDP
       for (const e of c.interfaces ?? []) {

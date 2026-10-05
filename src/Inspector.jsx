@@ -161,7 +161,7 @@ function RouterForm({ node, edges, labels, update, routing, issues, live6 }) {
               {p.name} <span className="muted">vers {labels.get(otherEnd(p.edge, node.id))}{serial ? ` · série ${dce ? 'DCE' : 'DTE'}` : ''}</span>
             </legend>
             <IpCidrFields ip={p.ip} mask={p.mask} onChange={(patch) => patchIface(p, patch)} />
-            <Ipv6IfaceFields entry={node.data.ifaces?.[p.name]} patch={(patch) => patchIface(p, patch)} v6={live6?.get(p.name)} />
+            <Ipv6IfaceFields entry={node.data.ifaces?.[p.name]} patch={(patch) => patchIface(p, patch)} v6={live6?.get(p.name)} pools={Object.keys(node.data.dhcp6Pools ?? {})} />
             <InterfaceSecurity node={node} name={p.name} patch={(patch) => patchIface(p, patch)} />
             {!serial && !MODELS[modelId({ type: node.type, model: node.data.model })].vendor && (
               <Field label="Relais DHCP (ip helper-address)" placeholder="adresse du serveur DHCP" value={p.helperAddress ?? ''} error={ipError(p.helperAddress)}

@@ -36,7 +36,7 @@ function AddressPrefix({ label = 'Adresse IPv6', ip, prefix, onChange, eui64 }) 
 }
 
 // Interface de routeur, sous-interface, SVI ou loopback
-export function Ipv6IfaceFields({ entry = {}, patch, loopback = false, v6 }) {
+export function Ipv6IfaceFields({ entry = {}, patch, loopback = false, v6, pools = [] }) {
   const set = (p) => patch({
     ...('ip' in p ? { ipv6: p.ip } : {}),
     ...('prefix' in p ? { prefix6: p.prefix } : {}),
@@ -56,6 +56,17 @@ export function Ipv6IfaceFields({ entry = {}, patch, loopback = false, v6 }) {
           <Input label="Link-local (vide = automatique fe80:: + EUI-64)" placeholder="fe80::1" value={entry.linkLocal ?? ''}
             error={entry.linkLocal && (!isValidIp6(entry.linkLocal) || !isLinkLocal6(entry.linkLocal)) ? 'Adresse fe80::/10 attendue' : null}
             onChange={(e) => patch({ linkLocal: e.target.value.trim() || undefined })} />
+          {entry.ipv6 && (
+            <div className="checks">
+              <label className="check">
+                <input type="checkbox" checked={Boolean(entry.ndManaged)} onChange={(e) => patch({ ndManaged: e.target.checked || undefined })} /> M : adresse par DHCPv6 (managed-config-flag)
+              </label>
+              <label className="check">
+                <input type="checkbox" checked={Boolean(entry.ndOther)} onChange={(e) => patch({ ndOther: e.target.checked || undefined })} /> O : DNS par DHCPv6 (other-config-flag)
+              </label>
+            </div>
+          )}
+          {entry.ipv6 && pools.length > 0 && <PoolSelect value={entry.dhcp6Server} pools={pools} onChange={(dhcp6Server) => patch({ dhcp6Server })} />}
           {!entry.ipv6 && !entry.linkLocal && (
             <label className="check">
               <input type="checkbox" checked={Boolean(entry.ipv6Enable)} onChange={(e) => patch({ ipv6Enable: e.target.checked || undefined })} /> IPv6 actif sans adresse globale (ipv6 enable)
@@ -64,6 +75,47 @@ export function Ipv6IfaceFields({ entry = {}, patch, loopback = false, v6 }) {
         </>
       )}
     </details>
+  );
+}
+
+function PoolSelect({ value, pools, onChange }) {
+  const id = useId();
+  return (
+    <div className="field">
+      <label htmlFor={id}>Serveur DHCPv6 sur cette interface (ipv6 dhcp server)</label>
+      <select id={id} value={value ?? ''} onChange={(e) => onChange(e.target.value || undefined)}>
+        <option value="">Aucun</option>
+        {pools.map((p) => <option key={p} value={p}>{p}</option>)}
+      </select>
+    </div>
+  );
+}
+
+// Pools DHCPv6 du routeur : préfixe d'adresses (stateful) et serveur DNS
+function Dhcp6Pools({ node, update }) {
+  const pools = node.data.dhcp6Pools ?? {};
+  const set = (fn) => update((x) => {
+    const next = fn({ ...(x.dhcp6Pools ?? {}) });
+    const { dhcp6Pools, ...rest } = x;
+    return Object.keys(next).length ? { ...rest, dhcp6Pools: next } : rest;
+  });
+  const patch = (n, p) => set((all) => ({ ...all, [n]: { ...all[n], ...p } }));
+  return (
+    <fieldset className="iface">
+      <legend>Pools DHCPv6</legend>
+      {Object.entries(pools).map(([n, p]) => (
+        <div key={n}>
+          <p className="label">{n}</p>
+          <AddressPrefix label="Préfixe d'adresses (address prefix, M=1)" ip={p.prefix} prefix={p.len}
+            onChange={(v) => patch(n, { ...('ip' in v ? { prefix: v.ip } : {}), ...('prefix' in v ? { len: v.prefix } : {}) })} />
+          <Input label="Serveur DNS (dns-server)" placeholder="2001:db8:acad:30::10" value={p.dns ?? ''} error={v6Error(p.dns)}
+            onChange={(e) => patch(n, { dns: e.target.value.trim() || undefined })} />
+          <button type="button" className="ghost small" onClick={() => set((all) => { delete all[n]; return all; })}>Retirer le pool {n}</button>
+        </div>
+      ))}
+      <button type="button" className="ghost small" onClick={() => set((all) => ({ ...all, [`POOL6-${Object.keys(all).length + 1}`]: { len: 64 } }))}>Ajouter un pool DHCPv6</button>
+      <p className="hint">Puis, sur l'interface : choisis le pool et coche M (adresse) ou O (DNS seulement).</p>
+    </fieldset>
   );
 }
 
@@ -86,7 +138,7 @@ export function HostIpv6Form({ node, update, v6 }) {
         <select id={id} value={mode} onChange={(e) => setMode(e.target.value)}>
           <option value="off">Link-local seulement</option>
           <option value="static">Statique</option>
-          <option value="slaac">Automatique (SLAAC)</option>
+          <option value="slaac">Automatique (SLAAC / DHCPv6)</option>
         </select>
       </div>
       {mode === 'static' && (
@@ -96,10 +148,15 @@ export function HostIpv6Form({ node, update, v6 }) {
             onChange={(e) => update((x) => ({ ...x, gateway6: e.target.value.trim() || undefined }))} />
         </>
       )}
+      {mode === 'slaac' && v6?.dnsError && <p className="field-hint">DNS non reçu : {v6.dnsError}.</p>}
       {mode === 'slaac' && v6 && (
         v6.slaacError
           ? <p className="field-error">Pas d'adresse automatique : {v6.slaacError}.</p>
-          : v6.ip && <p className="ok-text">Annonce reçue : {v6.ip}/{v6.prefix}, passerelle {v6.gateway}.</p>
+          : v6.ip && (
+            <p className="ok-text">
+              {v6.how === 'dhcp6' ? `Adresse DHCPv6 (M=1) : ${v6.ip}` : `Annonce reçue (SLAAC) : ${v6.ip}/${v6.prefix}`}, passerelle {v6.gateway}{v6.dns ? `, DNS ${v6.dns} (DHCPv6)` : ''}.
+            </p>
+          )
       )}
       {v6?.linkLocal && <p className="hint">Link-local : {v6.linkLocal}</p>}
     </details>
@@ -144,6 +201,7 @@ export function Ipv6RoutingForm({ node, update }) {
       <button type="button" className="ghost small" onClick={() => setRoutes([...routes, { network: '', prefix: 64 }])}>Ajouter une route IPv6</button>
       <p className="hint">Route par défaut : ::/0. Un saut suivant link-local (fe80::) exige l'interface de sortie.</p>
       <Ospf6Fields node={node} update={update} />
+      {!mk && <Dhcp6Pools node={node} update={update} />}
     </details>
   );
 }

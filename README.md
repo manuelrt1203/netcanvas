@@ -208,6 +208,7 @@ Chaque interface peut avoir, en plus de son IPv4, une adresse IPv6 globale (ou u
 - **Pannes expliquées** : routage IPv6 désactivé, pas d'annonce RA (ou préfixe autre que /64), link-local comme adresse globale, passerelle hors réseau, préfixes qui se chevauchent, route link-local sans interface, boucle (Hop Limit), adjacence OSPFv3 impossible…
 - **Terminaux** : IOS (`ipv6 address … [eui-64|link-local]`, `ipv6 enable`, `ipv6 unicast-routing`, `ipv6 route`, `ipv6 router ospf`, `ipv6 ospf 1 area 0`, `show ipv6 interface brief|route|neighbors|ospf neighbor`, `ping`/`traceroute ipv6`), PC (`ipconfig`, `ipv6config`, `ping`, `tracert`), RouterOS (`/ipv6 address|route|settings|neighbor`, `/routing ospf instance … version=3`). Repris par les exports et l'import.
 - **DNS** : enregistrements AAAA à côté des A ; un PC qui a une IPv6 globale préfère l'adresse IPv6.
+- **DHCPv6** (Cisco) : pools `ipv6 dhcp pool` (`address prefix`, `dns-server`), `ipv6 dhcp server` sur l'interface, drapeaux `ipv6 nd managed-config-flag` (M : adresse du pool, stateful) et `other-config-flag` (O : SLAAC + DNS, stateless). Un PC en « automatique » suit les drapeaux de l'annonce ; `show ipv6 dhcp pool|binding`. Le DNS reçu sert aux requêtes DNS (en IPv6). Pas encore : DHCPv6 MikroTik, relais DHCPv6.
 - **ACL IPv6** (Cisco : `ipv6 access-list NOM`, `ipv6 traffic-filter NOM in|out`, `show ipv6 access-list`) et **pare-feu IPv6** MikroTik (`/ipv6 firewall filter`, `protocol=icmpv6`) : formulaires et terminaux. Fin implicite d'IOS respectée (NDP autorisé, puis refus) ; un « deny ipv6 any any » écrit en entrée passe avant et bloque NDP : la simulation et les contrôles l'expliquent. Traduits en ip6tables pour Containerlab et vérifiés sur un vrai réseau.
 - **Containerlab** : adresses et link-local de NetCanvas (nodad), routes IPv6 calculées (OSPFv3 compris) ; vérifié par des ping6 réels dans des namespaces Linux.
 - **OSPFv3 vérifié contre FRRouting** (`npm run test:frr`, Docker requis) : chaque routeur devient un conteneur FRR (ospf6d) configuré d'après NetCanvas ; les routes de FRR et de NetCanvas sont comparées (préfixe, métrique, voisin, interface) dans 4 scénarios : la démo, zones différentes, interface passive, coût modifié avec route par défaut « always ». Seule différence de valeur par défaut : FRR annonce la route par défaut en métrique 10, IOS en métrique 1 (le script impose 1).
@@ -323,5 +324,5 @@ npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : éditi
 
 ## Prochaines étapes
 
-1. Simulation : DHCPv6 ; DNS dans l'export Containerlab.
+1. Simulation : DHCPv6 sur MikroTik et relais DHCPv6 ; DNS dans l'export Containerlab.
 2. Partage : historique des versions, expiration des liens, comptes utilisateurs (« Mes schémas »).

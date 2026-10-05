@@ -387,6 +387,9 @@ export function iosIpv6IfaceLines(e, cfg = {}) {
     ...(e.ipv6 ? [` ipv6 address ${UP6(normIp6(e.ipv6) ?? e.ipv6)}/${e.prefix6 ?? 64}${e.eui64 ? ' eui-64' : ''}`] : []),
     ...(e.ipv6Enable ? [' ipv6 enable'] : []),
     ...(o6 ? [` ipv6 ospf ${cfg.ospf6.processId ?? 1} area ${o6.area}`] : []),
+    ...(e.ndManaged ? [' ipv6 nd managed-config-flag'] : []),
+    ...(e.ndOther ? [' ipv6 nd other-config-flag'] : []),
+    ...(e.dhcp6Server ? [` ipv6 dhcp server ${e.dhcp6Server}`] : []),
     ...(e.aclIn6 ? [` ipv6 traffic-filter ${e.aclIn6} in`] : []),
     ...(e.aclOut6 ? [` ipv6 traffic-filter ${e.aclOut6} out`] : []),
   ];
@@ -400,7 +403,9 @@ export function iosIpv6GlobalLines(cfg, ifName = iosLongName) {
     ...(o.defaultOriginate ? [` default-information originate${o.defaultOriginate === 'always' ? ' always' : ''}`] : []), '!',
   ] : [];
   const acls = Object.entries(cfg.acls6 ?? {}).flatMap(([name, acl]) => [`ipv6 access-list ${name}`, ...(acl.rules ?? []).map((r) => ` ${upperV6(rule6Text(r))}`)]);
-  return [...ospf, ...acls, ...(cfg.routes6 ?? []).filter((r) => isValidIp6(r.network) && r.prefix != null).map((r) => [
+  const pools = Object.entries(cfg.dhcp6Pools ?? {}).flatMap(([name, p]) => [`ipv6 dhcp pool ${name}`,
+    ...(p.prefix ? [` address prefix ${UP6(p.prefix)}/${p.len}`] : []), ...(p.dns ? [` dns-server ${UP6(p.dns)}`] : []), '!']);
+  return [...pools, ...ospf, ...acls, ...(cfg.routes6 ?? []).filter((r) => isValidIp6(r.network) && r.prefix != null).map((r) => [
     'ipv6 route', `${UP6(normIp6(r.network))}/${r.prefix}`, r.iface && ifName(r.iface), r.nextHop && UP6(r.nextHop),
   ].filter(Boolean).join(' '))];
 }

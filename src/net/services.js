@@ -20,7 +20,8 @@ export const isHostname = (t) => /^(?=.{1,254}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.
 export function dnsServerOf(dev) {
   const c = dev?.config ?? {};
   if (dev?.type === 'router' || dev?.type === 'switch') return c.nameServer ?? null;
-  return c.lease?.dns ?? c.dns ?? null;
+  // DNS donné par DHCP (IPv4), saisi, ou reçu par DHCPv6 (drapeau O ou M de l'annonce)
+  return c.lease?.dns ?? c.dns ?? c.slaac6?.dns ?? null;
 }
 
 // Le routeur sert aussi de serveur DNS : « ip dns server » (Cisco), « allow-remote-requests=yes » (MikroTik).
@@ -42,6 +43,11 @@ function pick(records, name, topo, srcId) {
 
 // Équipement qui possède une adresse IP
 function ownerOf(topo, ip) {
+  if (isValidIp6(ip)) {
+    const n = normIp6(ip);
+    for (const d of topo.devices.values()) if (topo.l3Ifaces6(d.id).some((i) => i.ip === n)) return d;
+    return null;
+  }
   for (const d of topo.devices.values()) if (topo.l3Ifaces(d.id).some((i) => parseIp(i.ip) === parseIp(ip))) return d;
   return null;
 }
@@ -75,7 +81,7 @@ export function resolveName(rawDoc, srcId, name, ctx = null, depth = 0) {
         : `${label(srcId)} : aucun serveur DNS (« ip name-server ») ni entrée « ip host » pour ${name}.`)
       : `${label(srcId)} : aucun serveur DNS configuré, impossible de résoudre ${name}.`);
   }
-  if (!isValidIp(server)) return fail(`${label(srcId)} : serveur DNS « ${server} » invalide.`);
+  if (!isAddr(server)) return fail(`${label(srcId)} : serveur DNS « ${server} » invalide.`);
 
   // Réponse préparée d'après le serveur visé (affichée dans la simulation pas à pas)
   const target = ownerOf(topo, server);

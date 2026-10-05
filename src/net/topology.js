@@ -182,6 +182,7 @@ export function buildTopology(doc) {
       return {
         ...i, ip: auto ? c.slaac6?.ip ?? null : normIp6(c.ipv6), prefix: auto ? c.slaac6?.prefix ?? null : c.prefix6 ?? null,
         gateway: auto ? c.slaac6?.gateway ?? null : normIp6(c.gateway6), slaac: auto, slaacError: c.slaacError ?? null, linkLocal: linkLocalOf(mac),
+        how: auto ? c.slaac6?.how ?? null : 'static', dns: c.slaac6?.dns ?? null, dnsError: c.slaac6?.dnsError ?? null,
       };
     }
     if (!i.ipv6 && !i.ipv6Enable && !i.linkLocal) return null;

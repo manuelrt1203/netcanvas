@@ -436,3 +436,49 @@ test('ACL IPv6 au terminal IOS, pare-feu IPv6 MikroTik, exports', async () => {
   const { SERVICES_DEMO } = await import('../examples.js');
   assert.ok(clabCommands(SERVICES_DEMO).get('r2').includes('iptables -A acl-110 -p tcp -s 192.168.20.0/24 --dport 80 -d 172.16.0.10/32 -j RETURN'));
 });
+
+test('DHCPv6 : stateful (M), stateless (O), erreurs expliquées, terminal IOS', async () => {
+  const { withLeases } = await import('./dhcp.js');
+  const { resolveName } = await import('./services.js');
+  const doc = structuredClone(IPV6_DEMO);
+  const r1 = dev(doc, 'r1').config;
+  r1.dhcp6Pools = { VLAN10: { prefix: '2001:db8:acad:10::', len: 64, dns: '2001:db8:acad:30::10' }, VLAN20: { dns: '2001:db8:acad:30::10' } };
+  Object.assign(r1.interfaces.find((i) => i.name === 'G0/0'), { ndManaged: true, dhcp6Server: 'VLAN10' });
+  Object.assign(r1.interfaces.find((i) => i.name === 'G0/1'), { ndOther: true, dhcp6Server: 'VLAN20' });
+  Object.assign(dev(doc, 'srv').config, { services: { dns: { enabled: true, records: [{ name: 'www.lan', ip: '2001:db8:acad:30::10' }] } } });
+  const live = withLeases(doc);
+  const pc1 = dev(live, 'pc1').config.slaac6;
+  // M=1 : première adresse libre du pool (::1 est déjà celle de R1)
+  assert.deepEqual([pc1.how, pc1.ip, pc1.gateway, pc1.dns], ['dhcp6', '2001:db8:acad:10::2', 'fe80::1', '2001:db8:acad:30::10']);
+  // O=1 : SLAAC + DNS
+  const pc3 = dev(live, 'pc3').config.slaac6;
+  assert.equal(pc3.how, 'slaac');
+  assert.match(pc3.ip, /^2001:db8:acad:20:2e0:f7ff:fe/);
+  assert.equal(pc3.dns, '2001:db8:acad:30::10');
+  // Le DNS reçu par DHCPv6 sert vraiment (requête DNS en IPv6)
+  const r = resolveName(doc, 'pc3', 'www.lan');
+  assert.equal(r.ok, true);
+  assert.ok(r.query.frames.some((f) => f.layers.some((l) => l.name === 'IPv6')));
+  assert.deepEqual(validate(doc).filter((i) => /DHCPv6|DNS/.test(i.text)), []);
+  // M=1 sans serveur : pas d'adresse, raison donnée ; contrôle côté routeur
+  const bad = structuredClone(doc);
+  delete dev(bad, 'r1').config.interfaces.find((i) => i.name === 'G0/0').dhcp6Server;
+  assert.match(dev(withLeases(bad), 'pc1').config.slaacError, /R1 G0\/0 annonce M=1 \(adresse par DHCPv6\) mais n'a pas de serveur DHCPv6/);
+  assert.ok(validate(bad).some((i) => /R1 G0\/0 : le drapeau M est annoncé mais aucun serveur DHCPv6/.test(i.text)));
+  // Terminal IOS : même config, show ipv6 dhcp binding
+  const blank = structuredClone(IPV6_DEMO);
+  const t = await terminal(blank, 'r1');
+  t.run('enable', 'configure terminal', 'ipv6 dhcp pool VLAN10', 'address prefix 2001:db8:acad:10::/64 lifetime 172800 86400', 'dns-server 2001:db8:acad:30::10', 'exit',
+    'interface g0/0', 'ipv6 nd managed-config-flag', 'ipv6 dhcp server VLAN10', 'end');
+  assert.deepEqual(dev(t.doc, 'r1').config.dhcp6Pools, { VLAN10: r1.dhcp6Pools.VLAN10 });
+  assert.match(t.run('show ipv6 dhcp binding'), /Client: PC Compta\n  Interface : GigabitEthernet0\/0[\s\S]*Address: 2001:DB8:ACAD:10::2/);
+  assert.match(t.run('show ipv6 dhcp pool'), /DHCPv6 pool: VLAN10\n  Address allocation prefix: 2001:DB8:ACAD:10::\/64[^\n]*\(1 in use/);
+  const run = t.run('show running-config');
+  assert.match(run, /ipv6 dhcp pool VLAN10\n address prefix 2001:DB8:ACAD:10::\/64\n dns-server 2001:DB8:ACAD:30::10/);
+  assert.match(run, / ipv6 nd managed-config-flag\n ipv6 dhcp server VLAN10/);
+  const { importConfig } = await import('../cli/import.js');
+  const fresh = structuredClone(IPV6_DEMO);
+  const back = importConfig(dev(fresh, 'r1'), fresh, run).device.config;
+  assert.deepEqual(back.dhcp6Pools, dev(t.doc, 'r1').config.dhcp6Pools);
+  assert.equal(back.interfaces.find((i) => i.name === 'G0/0').dhcp6Server, 'VLAN10');
+});

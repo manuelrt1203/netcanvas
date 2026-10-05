@@ -46,7 +46,7 @@ function ipconfig(c, all = false, v6 = null) {
     const gws = [v6?.gateway && UP(v6.gateway), isValidIp(c.gateway) ? c.gateway : '0.0.0.0'].filter(Boolean);
     lines.push(`   Default Gateway.................: ${gws[0]}`, ...gws.slice(1).map((g) => `                                     ${g}`));
     if (all || c.lease) lines.push(`   DHCP Enabled....................: ${c.dhcp ? 'Yes' : 'No'}`);
-    const dns = c.lease?.dns ?? c.dns;
+    const dns = c.lease?.dns ?? c.dns ?? c.slaac6?.dns;
     if (dns) lines.push(`   DNS Servers.....................: ${dns}`);
   }
   return [...lines, ''];

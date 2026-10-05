@@ -459,7 +459,7 @@ step('IPv6 : SLAAC affiché, ping et pas à pas NDP, panne du routage IPv6 dans 
 await openDemo('Double pile IPv4 / IPv6');
 await page.getByTestId('rf__node-pc1').click();
 await page.click('role=tab[name=/Propriétés/]');
-assert.match(await page.locator('.proto', { hasText: 'IPv6' }).locator('.ok-text').textContent(), /Annonce reçue : 2001:db8:acad:10:2e0:f7ff:fe[0-9a-f:]+\/64, passerelle fe80::1/);
+assert.match(await page.locator('.proto', { hasText: 'IPv6' }).locator('.ok-text').textContent(), /Annonce reçue \(SLAAC\) : 2001:db8:acad:10:2e0:f7ff:fe[0-9a-f:]+\/64, passerelle fe80::1/);
 await page.click('role=tab[name="Simulation"]');
 await page.selectOption('#sim-kind', 'ping');
 await page.selectOption('#sim-src', { label: 'PC Compta' });
