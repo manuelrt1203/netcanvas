@@ -3,6 +3,7 @@
 const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { setupUpdates } = require('./updater.cjs');
 
 const SITE = 'https://netcanvas.vercel.app';
 const EXT = 'netcanvas';
@@ -10,6 +11,7 @@ const FILTERS = [{ name: 'Schéma NetCanvas', extensions: [EXT, 'json'] }];
 const RECENT_MAX = 8;
 
 let win = null;
+let updates = null;
 let dirty = false;
 let closing = false;
 let rendererReady = false;
@@ -90,6 +92,7 @@ function buildMenu(recent = []) {
     {
       label: 'Aide',
       submenu: [
+        { label: 'Rechercher des mises à jour…', click: () => updates?.check() },
         { label: 'Site de NetCanvas', click: () => shell.openExternal(SITE) },
         { label: `À propos de NetCanvas ${app.getVersion()}`, click: () => dialog.showMessageBox(win, {
           type: 'info', title: 'À propos', message: `NetCanvas ${app.getVersion()}`,
@@ -176,10 +179,14 @@ ipcMain.on('close-now', () => {
   closing = true;
   win?.close();
 });
+ipcMain.on('install-update', () => updates?.install());
 ipcMain.on('ready', () => {
   rendererReady = true;
   while (pending.length) win.webContents.send('open-path', pending.shift());
 });
+
+// Profil isolé (tests automatiques) : fichiers récents et brouillon hors du vrai profil
+if (process.env.NETCANVAS_USER_DATA) app.setPath('userData', process.env.NETCANVAS_USER_DATA);
 
 // --- Cycle de vie ------------------------------------------------------------------------------------
 // Une seule instance : un double-clic sur un autre fichier l'ouvre dans la fenêtre existante
@@ -201,6 +208,7 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(async () => {
     buildMenu(await readRecent());
     createWindow();
+    updates = setupUpdates(() => win);
     sendOpen(fileArg(process.argv));
     app.on('activate', () => {
       if (!BrowserWindow.getAllWindows().length) createWindow();

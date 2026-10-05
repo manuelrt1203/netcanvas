@@ -17,10 +17,9 @@ const step = (name) => console.log(`- ${name}`);
 const exe = process.env.NETCANVAS_EXE;
 const app = await electron.launch({
   ...(exe ? { executablePath: exe, args: [file, '--no-sandbox'] } : { args: ['.', file, '--no-sandbox'] }),
-  env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
+  // Profil isolé : fichiers récents et brouillon dans un dossier temporaire
+  env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1', NETCANVAS_USER_DATA: join(dir, 'profil') },
 });
-// Profil isolé : fichiers récents dans un dossier temporaire
-await app.evaluate(({ app: a }, d) => a.setPath('userData', d), dir);
 const page = await app.firstWindow();
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));

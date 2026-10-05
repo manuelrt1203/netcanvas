@@ -19,4 +19,6 @@ contextBridge.exposeInMainWorld('netcanvas', {
   ready: () => ipcRenderer.send('ready'),
   onMenu: (fn) => listen('menu', fn),
   onOpenPath: (fn) => listen('open-path', fn),
+  onUpdate: (fn) => listen('update', fn),
+  installUpdate: () => ipcRenderer.send('install-update'),
 });

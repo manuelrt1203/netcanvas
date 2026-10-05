@@ -21,6 +21,8 @@ npm run desktop    # application de bureau (Electron) sur la version construite
 npm run dist       # installeurs dans release/ (pour le système courant)
 ```
 
+Mises à jour : l'application installée vérifie les Releases au démarrage (puis toutes les 6 h, et par Aide > Rechercher des mises à jour). Windows et Linux téléchargent la nouvelle version en arrière-plan et proposent de redémarrer (sinon elle s'installe à la fermeture) ; sur macOS, l'app non signée ne peut pas se remplacer : elle annonce la version et ouvre la page de téléchargement.
+
 Publier une version : mettre à jour `version` dans `package.json`, puis `git tag v1.0.0 && git push origin v1.0.0` ; GitHub Actions construit les installeurs Windows, macOS et Linux et les publie dans les Releases.
 
 Partage par lien (facultatif) : copier `.env.example` en `.env` avec l'URL du projet Supabase et sa clé « publishable » (en CI : secrets `VITE_SUPABASE_URL` et `VITE_SUPABASE_KEY`).

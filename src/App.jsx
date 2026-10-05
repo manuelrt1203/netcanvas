@@ -87,6 +87,25 @@ const fileSig = (doc) => JSON.stringify([doc.name, doc.devices, doc.links, doc.e
 const VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '';
 const EMPTY_DOC = { format: 'netcanvas', version: 3, name: 'Nouveau réseau', devices: [], links: [] };
 
+// Bannière de mise à jour (application de bureau) : en tête de l'éditeur et dans l'écran d'accueil
+function UpdateBanner({ update, onClose }) {
+  return (
+    <div className="update-banner" role="status">
+      {update.state === 'downloading' && <>NetCanvas {update.version} est disponible : téléchargement en arrière-plan ({update.percent ?? 0} %).</>}
+      {update.state === 'ready' && (<>
+        NetCanvas {update.version} est prêt.
+        <button type="button" className="small-btn" onClick={() => desktop.installUpdate()}>Redémarrer et mettre à jour</button>
+        <span className="muted">(sinon, installé à la fermeture)</span>
+      </>)}
+      {update.state === 'manual' && (<>
+        NetCanvas {update.version} est disponible.
+        <button type="button" className="small-btn" onClick={() => desktop.installUpdate()}>Télécharger</button>
+      </>)}
+      <button type="button" className="ghost small-btn" onClick={onClose} aria-label="Masquer">✕</button>
+    </div>
+  );
+}
+
 function Editor() {
   // Brouillon enregistré automatiquement. Navigateur : rouvert tel quel. Application de bureau (fichiers) :
   // l'éditeur démarre vide, le brouillon n'est proposé qu'en récupération depuis l'accueil.
@@ -117,6 +136,8 @@ function Editor() {
   // Accueil au lancement, sauf lien de partage
   const [welcome, setWelcome] = useState(() => !parseShareLocation());
   const [recents, setRecents] = useState([]);
+  // Mise à jour de l'application de bureau : { state: downloading | ready | manual | error, version, percent, url }
+  const [update, setUpdate] = useState(null);
   const [simForm, setSimForm] = useState({ source: '', target: '', custom: '' });
   const [sim, setSim] = useState({ result: null, sig: null, playing: false, view: EMPTY_SIM });
   const { screenToFlowPosition, setCenter, fitView, setViewport } = useReactFlow();
@@ -655,8 +676,9 @@ function Editor() {
       else if (cmd === 'save-and-close') { if (await a.saveProject(false)) desktop.closeNow(); }
     });
     const offOpen = desktop.onOpenPath((path) => fileActions.current.openPath(path));
+    const offUpdate = desktop.onUpdate((u) => setUpdate((cur) => (u.state === 'error' ? null : { ...cur, ...u })));
     desktop.ready();
-    return () => { offMenu(); offOpen(); };
+    return () => { offMenu(); offOpen(); offUpdate(); };
   }, []);
   // Navigateur : Ctrl+O, Ctrl+S, Ctrl+Maj+S (l'application de bureau passe par ses menus)
   useEffect(() => {
@@ -730,6 +752,7 @@ function Editor() {
           </header>
           <div className="notices">
           {error && <p className="error" role="alert">{error}</p>}
+          {update && <UpdateBanner update={update} onClose={() => setUpdate(null)} />}
           {shared && !shared.embed && (
             <div className={`share-banner${readOnly ? ' ro' : ''}`} role="status">
               {shared.status === 'loading' ? 'Ouverture du schéma partagé…'
@@ -975,7 +998,8 @@ function Editor() {
                 if (desktop) replaceDoc(draft);
                 setWelcome(false);
               }}
-              onExample={openExample} onClose={() => setWelcome(false)} />
+              onExample={openExample} onClose={() => setWelcome(false)}
+              notice={update && <UpdateBanner update={update} onClose={() => setUpdate(null)} />} />
           )}
         </div>
       </SimContext.Provider>

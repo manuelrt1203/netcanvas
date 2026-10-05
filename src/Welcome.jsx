@@ -1,7 +1,7 @@
 // Écran d'accueil : nouveau projet, ouvrir un fichier, reprendre le brouillon ou un fichier récent, exemples.
 import { DEMOS } from './examples.js';
 
-export default function Welcome({ version, draft, recents = [], onNew, onOpen, onResume, onRecent, onExample, onClose }) {
+export default function Welcome({ version, draft, recents = [], onNew, onOpen, onResume, onRecent, onExample, onClose, notice = null }) {
   const groups = [['Exemples', DEMOS.filter((d) => d.kind !== 'tp')], ['TP (exercices corrigés en direct)', DEMOS.filter((d) => d.kind === 'tp')]];
   return (
     <div className="welcome" role="dialog" aria-modal="true" aria-labelledby="welcome-title">
@@ -17,6 +17,7 @@ export default function Welcome({ version, draft, recents = [], onNew, onOpen, o
           </div>
           {onClose && <button type="button" className="ghost icon welcome-close" onClick={onClose} aria-label="Fermer l'accueil">✕</button>}
         </header>
+        {notice}
 
         <div className="welcome-actions">
           <button type="button" onClick={onNew}>Nouveau projet</button>
