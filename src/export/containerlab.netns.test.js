@@ -4,11 +4,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { BGP_DEMO, DEMO, DHCP_DEMO, IPV6_DEMO, L3_DEMO, NAT_DEMO, OSPF_DEMO, ROAS_DEMO, STP_DEMO } from '../examples.js';
+import { BGP_DEMO, DEMO, DHCP_DEMO, IPV6_DEMO, OSPF6_DEMO, L3_DEMO, NAT_DEMO, OSPF_DEMO, ROAS_DEMO, STP_DEMO } from '../examples.js';
 import { buildTopology } from '../net/topology.js';
 import { isRouting, v6Forwarding } from '../net/topology.js';
 import { simulatePing } from '../net/simulate.js';
 import { clabCommands } from './containerlab.js';
+import { withLeases } from '../net/dhcp.js';
 import { interfaceTable } from './common.js';
 
 const sh = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -221,5 +222,16 @@ test('containerlab : routage IPv6 coupé sur R2 = ping IPv6 perdu, IPv4 intact',
   assertMatchesSimulator(doc, [
     ['pc2', '2001:db8:acad:30::10', false],
     ['pc2', '172.16.0.10', true],
+  ]);
+});
+
+test('containerlab : OSPFv3 (routes calculées, sauts suivants link-local) sur un vrai réseau', { skip }, () => {
+  const doc = structuredClone(OSPF6_DEMO);
+  const srv = withLeases(doc).devices.find((d) => d.id === 'srv').config.slaac6.ip;
+  assertMatchesSimulator(doc, [
+    ['pc1', srv, true], // zone 1 -> ABR -> zone 0 (MikroTik)
+    ['pc1', '2001:db8:f::2', true], // route par défaut annoncée par OSPFv3 (O*E2)
+    ['pc1', '2001:db8:ffff::3', true], // loopback /128 du MikroTik
+    ['pc1', '192.168.1.1', true], // IPv4 toujours là
   ]);
 });

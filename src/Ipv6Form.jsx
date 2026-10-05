@@ -118,7 +118,7 @@ export function Ipv6RoutingForm({ node, update }) {
   });
   const patchRoute = (i, p) => setRoutes(routes.map((r, j) => (j === i ? { ...r, ...p } : r)));
   return (
-    <details className="proto" open={Boolean((!mk && forwarding) || routes.length)}>
+    <details className="proto" open={Boolean((!mk && forwarding) || routes.length || d.ospf6)}>
       <summary>Routage IPv6 {forwarding && <span className="badge-on">actif</span>}</summary>
       <label className="check">
         <input type="checkbox" checked={forwarding} onChange={(e) => update((x) => {
@@ -143,6 +143,61 @@ export function Ipv6RoutingForm({ node, update }) {
       ))}
       <button type="button" className="ghost small" onClick={() => setRoutes([...routes, { network: '', prefix: 64 }])}>Ajouter une route IPv6</button>
       <p className="hint">Route par défaut : ::/0. Un saut suivant link-local (fe80::) exige l'interface de sortie.</p>
+      <Ospf6Fields node={node} update={update} />
     </details>
+  );
+}
+
+// OSPFv3 : activé par interface (zone), router-id au format IPv4, interfaces passives, route par défaut
+function Ospf6Fields({ node, update }) {
+  const d = node.data;
+  const o = d.ospf6;
+  const names = Object.entries(d.ifaces ?? {}).filter(([, i]) => i.ipv6 || i.ipv6Enable || i.linkLocal).map(([n]) => n)
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const set = (fn) => update((x) => ({ ...x, ospf6: fn(x.ospf6 ?? { processId: 1, interfaces: [] }) }));
+  const id = useId();
+  return (
+    <fieldset className="iface">
+      <legend>OSPFv3</legend>
+      <label className="check">
+        <input type="checkbox" checked={Boolean(o)} onChange={(e) => update((x) => {
+          const { ospf6, ...rest } = x;
+          return e.target.checked ? { ...rest, ospf6: { processId: 1, interfaces: [] } } : rest;
+        })} /> Activer OSPFv3
+      </label>
+      {o && (
+        <>
+          <Input label="Router-ID (format IPv4, vide = d'après les adresses IPv4)" placeholder="1.1.1.1" value={o.routerId ?? ''}
+            onChange={(e) => set((x) => ({ ...x, routerId: e.target.value.trim() || undefined }))} />
+          {!names.length && <p className="hint">Active d'abord IPv6 sur une interface (adresse, link-local ou « ipv6 enable »).</p>}
+          {names.map((n) => {
+            const cur = (o.interfaces ?? []).find((x) => x.name === n);
+            return (
+              <div key={n} className="field-row">
+                <Input label={`${n} : zone (vide = hors OSPFv3)`} type="number" min="0" className="cidr" value={cur?.area ?? ''}
+                  onChange={(e) => set((x) => ({
+                    ...x,
+                    interfaces: [...(x.interfaces ?? []).filter((y) => y.name !== n), ...(e.target.value === '' ? [] : [{ name: n, area: Number(e.target.value) }])],
+                  }))} />
+                <label className="check">
+                  <input type="checkbox" checked={(o.passive ?? []).includes(n)} onChange={(e) => set((x) => ({
+                    ...x, passive: e.target.checked ? [...new Set([...(x.passive ?? []), n])] : (x.passive ?? []).filter((y) => y !== n),
+                  }))} /> passive
+                </label>
+              </div>
+            );
+          })}
+          <div className="field">
+            <label htmlFor={id}>Route par défaut annoncée (default-information originate)</label>
+            <select id={id} value={o.defaultOriginate === 'always' ? 'always' : o.defaultOriginate ? 'yes' : ''}
+              onChange={(e) => set((x) => ({ ...x, defaultOriginate: e.target.value === 'always' ? 'always' : e.target.value === 'yes' ? true : undefined }))}>
+              <option value="">Non</option>
+              <option value="yes">Si le routeur a une route ::/0</option>
+              <option value="always">Toujours (always)</option>
+            </select>
+          </div>
+        </>
+      )}
+    </fieldset>
   );
 }

@@ -132,10 +132,12 @@ export function validate(rawDoc, ctx = {}) {
     for (const r of dns.records ?? []) {
       if (!r.name && !r.ip) continue;
       if (!isHostname(r.name)) add(d.id, 'error', `${d.label} : enregistrement DNS « ${r.name ?? ''} » : nom invalide.`);
-      else if (!isValidIp(r.ip)) add(d.id, 'error', `${d.label} : enregistrement DNS ${r.name} : adresse « ${r.ip ?? ''} » invalide.`);
+      else if (!isValidIp(r.ip) && !isValidIp6(r.ip)) add(d.id, 'error', `${d.label} : enregistrement DNS ${r.name} : adresse « ${r.ip ?? ''} » invalide.`);
       const key = String(r.name).toLowerCase().replace(/\.$/, '');
-      if (seen.has(key)) add(d.id, 'warning', `${d.label} : ${r.name} est enregistré deux fois, seule la première adresse est donnée.`);
-      seen.add(key);
+      // Un A et un AAAA pour le même nom sont normaux ; deux du même type, non
+      const typed = `${key}|${isValidIp6(r.ip) ? 'AAAA' : 'A'}`;
+      if (seen.has(typed)) add(d.id, 'warning', `${d.label} : ${r.name} a deux enregistrements ${isValidIp6(r.ip) ? 'AAAA' : 'A'}, seul le premier est donné.`);
+      seen.add(typed);
     }
   }
 

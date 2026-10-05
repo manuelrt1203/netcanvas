@@ -15,6 +15,8 @@ Menu **Démos** :
 - **Switch niveau 3** : un 3560 route 3 VLAN par ses interfaces VLAN (SVI) et sort vers Internet par R1 ;
 - **NAT / PAT** : une box en PAT, un serveur web local publié en NAT statique, un FAI qui ne connaît aucune adresse privée ;
 - **DHCP** : R1 distribue le VLAN 10, le VLAN 20 obtient ses adresses d'un serveur du VLAN 30 par relais (`ip helper-address`) ;
+- **Double pile IPv4 / IPv6** : SLAAC sur les VLAN de R1, passerelles link-local fe80::1, routes statiques IPv6 ;
+- **OSPFv3 2 zones** : la démo OSPF en IPv6, liens entre routeurs en link-local seulement, route par défaut annoncée par le MikroTik ;
 - **DNS et web** : le serveur résout `www.entreprise.lan` et sert l'intranet ; une ACL étendue laisse passer DNS et web depuis le VLAN 20, mais pas le ping ;
 - **OSPF 2 zones** : R1 en zone 1, R2 en ABR, un MikroTik en zone 0 qui annonce la route par défaut vers Internet ;
 - **BGP eBGP + iBGP** : AS 65001 (iBGP entre loopbacks, OSPF comme IGP) et un MikroTik dans l'AS 65002.
@@ -197,6 +199,17 @@ La requête DNS ou HTTP est un vrai paquet UDP / TCP qui suit le même chemin qu
 - **routeur serveur DNS** (`ip dns server`, `allow-remote-requests=yes`, ou case « Répondre aux PC ») : il répond avec ses entrées statiques et relaie les autres noms à son propre serveur, étape par étape dans le journal ;
 - contrôles en direct : serveur DNS qui n'a pas de service DNS actif, enregistrements invalides ou en double.
 
+## IPv6 (`src/net/ip6.js`, `routing6.js`, `ndp.js`)
+
+Chaque interface peut avoir, en plus de son IPv4, une adresse IPv6 globale (ou un préfixe complété en **EUI-64**) et une **link-local** (manuelle, sinon fe80:: + EUI-64 de sa MAC). Un PC est en IPv6 statique ou en **SLAAC** : il prend le préfixe /64 annoncé (RA) par le routeur IPv6 de son réseau et sa link-local comme passerelle.
+
+- **Simulation** : NDP (Neighbor Solicitation au multicast nœud sollicité, Neighbor Advertisement) à la place d'ARP, Hop Limit, ICMPv6 128/129, en-têtes IPv6 (0x86DD) dans le pas à pas ; ping et traceroute IPv6 ; les ACL et le NAT IPv4 ne touchent pas l'IPv6.
+- **Routage** : réseaux connectés (C/L), routes statiques (saut suivant global, ou link-local + interface), **OSPFv3** (zones, inter-zones, route par défaut, sauts suivants link-local, router-id IPv4 obligatoire). « ipv6 unicast-routing » est exigé chez Cisco ; un MikroTik route l'IPv6 par défaut (`/ipv6 settings forward=yes`).
+- **Pannes expliquées** : routage IPv6 désactivé, pas d'annonce RA (ou préfixe autre que /64), link-local comme adresse globale, passerelle hors réseau, préfixes qui se chevauchent, route link-local sans interface, boucle (Hop Limit), adjacence OSPFv3 impossible…
+- **Terminaux** : IOS (`ipv6 address … [eui-64|link-local]`, `ipv6 enable`, `ipv6 unicast-routing`, `ipv6 route`, `ipv6 router ospf`, `ipv6 ospf 1 area 0`, `show ipv6 interface brief|route|neighbors|ospf neighbor`, `ping`/`traceroute ipv6`), PC (`ipconfig`, `ipv6config`, `ping`, `tracert`), RouterOS (`/ipv6 address|route|settings|neighbor`, `/routing ospf instance … version=3`). Repris par les exports et l'import.
+- **DNS** : enregistrements AAAA à côté des A ; un PC qui a une IPv6 globale préfère l'adresse IPv6.
+- **Containerlab** : adresses et link-local de NetCanvas (nodad), routes IPv6 calculées (OSPFv3 compris) ; vérifié par des ping6 réels dans des namespaces Linux.
+
 ## Matériel et câblage (`src/net/catalog.js`, `src/net/cabling.js`)
 
 | Catégorie | Modèles |
@@ -308,5 +321,5 @@ npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : éditi
 
 ## Prochaines étapes
 
-1. Simulation : IPv6 ; DNS dans l'export Containerlab.
+1. Simulation : DHCPv6, ACL IPv6 (ipv6 traffic-filter) ; DNS dans l'export Containerlab.
 2. Partage : historique des versions, expiration des liens, comptes utilisateurs (« Mes schémas »).

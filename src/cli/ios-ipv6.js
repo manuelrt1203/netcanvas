@@ -10,6 +10,7 @@ import { routeText6 } from '../net/routing6.js';
 import { ndRows } from '../net/tables.js';
 import { macCisco } from '../net/mac.js';
 import { iosLongName } from '../export/cisco.js';
+import { ospf6InterfaceCommand, ospf6RouterCommand, showOspf6Neighbor } from './ios-routing.js';
 
 const shortName = (n) => n.replace(/^G(?=\d)/, 'Gi');
 
@@ -58,6 +59,7 @@ export function ipv6InterfaceCommands(forIfaces, guard = (run) => run) {
         ],
       }),
       kw('enable', 'Enable IPv6 on interface', { run: guard((c) => forIfaces(c, (e) => { if (!e.ipv6 && !e.linkLocal) e.ipv6Enable = true; })) }),
+      ospf6InterfaceCommand(forIfaces),
     ],
   });
   const remove = kw('ipv6', 'IPv6 interface subcommands', {
@@ -75,6 +77,7 @@ export function ipv6InterfaceCommands(forIfaces, guard = (run) => run) {
         ],
       }),
       kw('enable', 'Enable IPv6 on interface', { run: guard((c) => forIfaces(c, (e) => { delete e.ipv6Enable; })) }),
+      ospf6InterfaceCommand(forIfaces, true),
     ],
   });
   return { add, remove };
@@ -101,6 +104,7 @@ export function ipv6GlobalCommands(parseIface) {
   const add = kw('ipv6', 'Global IPv6 configuration commands', {
     children: [
       kw('unicast-routing', 'Enable unicast routing', { run: (c) => { c.dev.config.ipv6Routing = true; c.changed = true; } }),
+      kw('router', 'Enable an IPV6 routing process', { children: [ospf6RouterCommand()] }),
       kw('route', 'Configure static routes', {
         children: [rest('spec', 'X:X:X:X::X/<0-128>', 'IPv6 prefix', (c) => {
           const r = parseRoute(c.args.spec, parseIface(c));
@@ -115,6 +119,7 @@ export function ipv6GlobalCommands(parseIface) {
   const remove = kw('ipv6', 'Global IPv6 configuration commands', {
     children: [
       kw('unicast-routing', 'Enable unicast routing', { run: (c) => { delete c.dev.config.ipv6Routing; c.changed = true; } }),
+      kw('router', 'Enable an IPV6 routing process', { children: [ospf6RouterCommand(true)] }),
       kw('route', 'Configure static routes', {
         children: [rest('spec', 'X:X:X:X::X/<0-128>', 'IPv6 prefix', (c) => {
           const r = parseRoute(c.args.spec, parseIface(c));
@@ -158,7 +163,7 @@ function showRoute(c) {
   const routes = [...rib.values()].sort((a, b) => (a.net < b.net ? -1 : a.net > b.net ? 1 : a.prefix - b.prefix));
   const out = [`IPv6 Routing Table - default - ${routes.length + 1} entries`, ...CODES];
   for (const r of routes) {
-    const code = r.proto === 'S*' ? 'S' : r.proto;
+    const code = { 'S*': 'S', 'O IA': 'OI', 'O E2': 'OE2', 'O*E2': 'OE2' }[r.proto] ?? r.proto;
     out.push(`${pad(code, 4)}${UP(routeText6(r))} [${r.ad}/${r.metric}]`);
     if (r.proto === 'C') out.push(`     via ${iosLongName(r.iface)}, directly connected`);
     else if (r.proto === 'L') out.push(`     via ${iosLongName(r.iface)}, receive`);
@@ -186,6 +191,7 @@ export function ipv6ShowCommand(names, state) {
       }),
       kw('route', 'Show IPv6 route table entries', { run: (c) => c.out.push(...showRoute(c)) }),
       kw('neighbors', 'Show IPv6 neighbor cache entries', { run: (c) => c.out.push(...showNeighbors(c)) }),
+      kw('ospf', 'OSPF information', { children: [kw('neighbor', 'Neighbor list', { run: (c) => c.out.push(...showOspf6Neighbor(c.dev, liveDoc(c))) })] }),
     ],
   });
 }

@@ -54,8 +54,11 @@ export const ROUTING_MENUS = {
 const areaId = (n) => formatIp(Number(n) >>> 0);
 const areaFromId = (id) => (isValidIp(id) ? id.split('.').reduce((a, b) => a * 256 + Number(b), 0) : Number(id));
 // Nom d'une zone : celui donné par « /routing ospf area add », sinon un nom par défaut
-const areaName = (o, area) => Object.entries(o.areaNames ?? {}).find(([, a]) => Number(a) === Number(area))?.[0]
-  ?? (Number(area) === 0 ? 'backbone-v2' : `area${area}-v2`);
+const areaName = (o, area, v = 2) => Object.entries(o.areaNames ?? {}).find(([, a]) => Number(a) === Number(area))?.[0]
+  ?? (Number(area) === 0 ? `backbone-v${v}` : `area${area}-v${v}`);
+// OSPFv3 (IPv6) : instance version=3, zones et modèles qui la référencent -> config.ospf6
+const isV3Instance = (cfg, name) => name !== undefined && name === (cfg.ospf6?.instance ?? 'default-v3') && Boolean(cfg.ospf6);
+const isV3Area = (cfg, name) => Boolean(cfg.ospf6) && (name in (cfg.ospf6.areaNames ?? {}) || /-v3$/.test(name ?? ''));
 const yes = (v) => v === undefined || v === '' || v === 'yes' || v === 'true';
 
 // Réseaux annoncés en BGP = la liste d'adresses référencée par output.network
@@ -88,31 +91,38 @@ export function runRouting(ctx, p) {
     // --- OSPF -----------------------------------------------------------------
     case 'routing ospf instance|add':
     case 'routing ospf instance|set': {
-      const o = (cfg.ospf ??= { processId: 1, networks: [] });
+      const v3 = n.version === '3' || (where.endsWith('set') && isV3Instance(cfg, n.numbers ?? p.unnamed[0] ?? n.name));
+      const o = v3 ? (cfg.ospf6 ??= { processId: 1, interfaces: [] }) : (cfg.ospf ??= { processId: 1, networks: [] });
       if (n.name) o.instance = n.name;
       if (n['router-id']) {
         if (!isValidIp(n['router-id'])) return out.push('invalid value for argument router-id', ''), true;
         o.routerId = n['router-id'];
       }
       if (n['originate-default']) o.defaultOriginate = n['originate-default'] === 'always' ? 'always' : n['originate-default'] === 'never' ? undefined : true;
-      if (n.redistribute) o.redistribute = Object.fromEntries(n.redistribute.split(',').map((x) => [x, true]));
+      if (n.redistribute && !v3) o.redistribute = Object.fromEntries(n.redistribute.split(',').map((x) => [x, true]));
       changed();
       return true;
     }
     case 'routing ospf instance|print': {
       const o = cfg.ospf;
       out.push('Flags: X - disabled, I - inactive ');
-      if (o) out.push(` 0    name="${o.instance ?? 'default-v2'}" version=2 router-id=${o.routerId ?? 'main'}${o.defaultOriginate ? ` originate-default=${o.defaultOriginate === 'always' ? 'always' : 'if-installed'}` : ''}`);
+      [[o, 2], [cfg.ospf6, 3]].filter(([x]) => x).forEach(([x, v], i) => {
+        out.push(` ${i}    name="${x.instance ?? `default-v${v}`}" version=${v} router-id=${x.routerId ?? 'main'}${x.defaultOriginate ? ` originate-default=${x.defaultOriginate === 'always' ? 'always' : 'if-installed'}` : ''}`);
+      });
       return out.push(''), true;
     }
     case 'routing ospf instance|remove':
-      delete cfg.ospf;
+      // « remove 1 » ou par nom : l'instance OSPFv3 si c'est elle
+      if (isV3Instance(cfg, p.unnamed[0] ?? n.numbers) || (cfg.ospf6 && !cfg.ospf) || (cfg.ospf && cfg.ospf6 && String(p.unnamed[0] ?? n.numbers) === '1')) delete cfg.ospf6;
+      else delete cfg.ospf;
       changed();
       return true;
     case 'routing ospf area|add': {
-      if (!cfg.ospf) return out.push('input does not match any value of instance', ''), true;
+      const v3 = isV3Instance(cfg, n.instance);
+      const o = v3 ? cfg.ospf6 : cfg.ospf;
+      if (!o) return out.push('input does not match any value of instance', ''), true;
       if (!n.name) return out.push('expected end of command', ''), true;
-      (cfg.ospf.areaNames ??= {})[n.name] = areaFromId(n['area-id'] ?? '0.0.0.0');
+      (o.areaNames ??= {})[n.name] = areaFromId(n['area-id'] ?? '0.0.0.0');
       changed();
       return true;
     }
@@ -120,13 +130,16 @@ export function runRouting(ctx, p) {
       out.push('Flags: X - disabled, I - inactive, D - dynamic; T - transit-capable ');
       const areas = Object.entries(cfg.ospf?.areaNames ?? {});
       areas.forEach(([name, a], i) => out.push(` ${i}    name="${name}" instance=${cfg.ospf.instance ?? 'default-v2'} area-id=${areaId(a)} type=default`));
+      Object.entries(cfg.ospf6?.areaNames ?? {}).forEach(([name, a], i) => out.push(` ${areas.length + i}    name="${name}" instance=${cfg.ospf6.instance ?? 'default-v3'} area-id=${areaId(a)} type=default`));
       return out.push(''), true;
     }
     case 'routing ospf interface-template|add': {
-      const o = cfg.ospf;
+      const v3 = isV3Area(cfg, n.area);
+      const o = v3 ? cfg.ospf6 : cfg.ospf;
       if (!o) return out.push('input does not match any value of area', ''), true;
+      if (v3 && n.networks) return out.push('NetCanvas : en OSPFv3, choisis les interfaces (interfaces=ether1,ether2)', ''), true;
       const areaKey = n.area ?? 'backbone-v2';
-      const area = o.areaNames?.[areaKey] ?? (areaKey === 'backbone-v2' || areaKey === 'backbone' ? 0 : null);
+      const area = o.areaNames?.[areaKey] ?? (['backbone-v2', 'backbone-v3', 'backbone'].includes(areaKey) ? 0 : null);
       if (area === null || area === undefined) return out.push(`input does not match any value of area`, ''), true;
       const targets = [];
       for (const net of (n.networks ?? '').split(',').filter(Boolean)) {
@@ -156,24 +169,31 @@ export function runRouting(ctx, p) {
       let i = 0;
       for (const x of o?.networks ?? []) out.push(` ${i++}    area=${areaName(o, x.area)} networks=${x.network}/${wildcardToCidr(x.wildcard)}`);
       for (const x of o?.interfaces ?? []) out.push(` ${i++}    area=${areaName(o, x.area)} interfaces=${x.name}`);
+      for (const x of cfg.ospf6?.interfaces ?? []) out.push(` ${i++}    area=${areaName(cfg.ospf6, x.area, 3)} interfaces=${x.name}`);
       return out.push(''), true;
     }
     case 'routing ospf interface-template|remove': {
       const o = cfg.ospf;
-      const all = [...(o?.networks ?? []).map((x) => ['networks', x]), ...(o?.interfaces ?? []).map((x) => ['interfaces', x])];
+      const all = [...(o?.networks ?? []).map((x) => [o, 'networks', x]), ...(o?.interfaces ?? []).map((x) => [o, 'interfaces', x]),
+        ...(cfg.ospf6?.interfaces ?? []).map((x) => [cfg.ospf6, 'interfaces', x])];
       const k = Number(n.numbers ?? p.unnamed[0]);
       if (!Number.isInteger(k) || !all[k]) return out.push('no such item', ''), true;
-      o[all[k][0]] = o[all[k][0]].filter((x) => x !== all[k][1]);
+      const [owner, list, item] = all[k];
+      owner[list] = owner[list].filter((x) => x !== item);
       changed();
       return true;
     }
     case 'routing ospf neighbor|print': {
       const r = computeRouting(doc).routers.get(dev.id);
       out.push('Flags: V - virtual; D - dynamic ');
-      (r?.ospf.neighbors ?? []).forEach((x, i) => {
+      const n2 = r?.ospf.neighbors ?? [];
+      n2.forEach((x, i) => {
         out.push(` ${i}  D instance=${cfg.ospf.instance ?? 'default-v2'} area=${areaName(cfg.ospf, x.area)} address=${x.peerIface.ip} router-id=${x.peer.ospf.routerId} state="Full" state-changes=6`);
       });
-      for (const iss of r?.issues ?? []) if (/^OSPF/.test(iss.text)) out.push(`NetCanvas : ${iss.text}`);
+      (r?.ospf6.neighbors ?? []).forEach((x, i) => {
+        out.push(` ${n2.length + i}  D instance=${cfg.ospf6.instance ?? 'default-v3'} area=${areaName(cfg.ospf6, x.area, 3)} address=${x.peerIface.linkLocal}%${x.iface.name} router-id=${x.peer.ospf6.routerId} state="Full" state-changes=6`);
+      });
+      for (const iss of r?.issues ?? []) if (/OSPF/.test(iss.text)) out.push(`NetCanvas : ${iss.text}`);
       return out.push(''), true;
     }
 
@@ -486,6 +506,17 @@ export function routingScript(dev) {
     out.push('/routing rip interface-template');
     for (const name of r.interfaces ?? []) out.push(`add instance=${instance} interfaces=${name}${r.passive?.includes(name) ? ' passive' : ''}`);
     for (const net of r.networks ?? []) out.push(`# réseau RIP ${net} (Cisco) : ajoute les interfaces concernées`);
+  }
+  const o6 = cfg.ospf6;
+  if (o6) {
+    const instance = o6.instance ?? 'default-v3';
+    const extra = [o6.routerId ? `router-id=${o6.routerId}` : null,
+      o6.defaultOriginate ? `originate-default=${o6.defaultOriginate === 'always' ? 'always' : 'if-installed'}` : null].filter(Boolean).join(' ');
+    out.push('/routing ospf instance', `add name=${instance} version=3${extra ? ` ${extra}` : ''}`);
+    const areas = [...new Set((o6.interfaces ?? []).map((x) => Number(x.area)))];
+    out.push('/routing ospf area', ...areas.map((a) => `add area-id=${areaId(a)} instance=${instance} name=${areaName(o6, a, 3)}`));
+    const passive = new Set(o6.passive ?? []);
+    out.push('/routing ospf interface-template', ...(o6.interfaces ?? []).map((x) => `add area=${areaName(o6, x.area, 3)} interfaces=${x.name}${passive.has(x.name) ? ' passive' : ''}`));
   }
   const b = cfg.bgp;
   if (b?.asn) {

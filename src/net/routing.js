@@ -10,7 +10,8 @@
 //
 // Chaque refus (adjacence absente, session down, route non annoncée) est expliqué dans `issues`.
 import { buildRib6, connectedAndStatic6 } from './routing6.js';
-import { buildTopology, isRouting } from './topology.js';
+import { networkOf6 } from './ip6.js';
+import { buildTopology, isRouting, v6Forwarding } from './topology.js';
 import { flood } from './l2.js';
 import { formatIp, isValidCidr, isValidIp, maskBits, networkOf, parseIp, sameSubnet } from './ip.js';
 import { isMikrotik } from './catalog.js';
@@ -138,13 +139,32 @@ export function computeRouting(doc, topo = buildTopology(doc)) {
   computeBgp(routers, issue, doc, topo);
   for (const r of routers.values()) for (const route of r.bgp.routes) pick(r.rib, route);
 
-  // IPv6 : connecté et statique (OSPFv3 : à venir)
+  // IPv6 : connecté, statique, OSPFv3
   for (const r of routers.values()) {
     r.ifaces6 = topo.l3Ifaces6(r.id);
     const { connected, statics } = connectedAndStatic6(r.ifaces6, r.cfg);
     r.connected6 = connected;
     r.statics6 = statics;
-    r.rib6 = buildRib6([...connected.values(), ...statics]);
+  }
+  // Voisins IPv6 : routeurs joignables en niveau 2 par une interface où IPv6 est actif (link-local)
+  for (const r of routers.values()) {
+    r.peers6 = [];
+    for (const i of r.ifaces6) {
+      if (i.loopback || !i.linkLocal) continue;
+      const tag = i.sub && !i.native ? Number(i.vlan) : null;
+      const reach = i.svi ? flood(topo, r.id, null, null, i.vlan) : flood(topo, r.id, i.link, tag);
+      for (const e of reach.endpoints) {
+        const p = routers.get(e.device);
+        if (!p) continue;
+        const theirs = e.svi != null ? p.ifaces6.find((x) => x.svi && x.vlan === e.svi) : topo.l3IfaceOn6(p.id, e.inLink, e.tag);
+        const pi = theirs && p.ifaces6.find((x) => x.name === theirs.name);
+        if (pi?.linkLocal) r.peers6.push({ iface: i, peer: p, peerIface: pi, p2p: topo.links.get(i.link)?.cable === 'serial' });
+      }
+    }
+  }
+  computeOspf6(routers, issue);
+  for (const r of routers.values()) {
+    r.rib6 = buildRib6([...r.connected6.values(), ...r.statics6, ...r.ospf6.routes.map(({ mask, ...x }) => ({ ...x, prefix: mask }))]);
   }
 
   return {
@@ -243,29 +263,93 @@ function computeOspf(routers, issue) {
     }
   }
 
-  // SPF depuis chaque routeur. État = (routeur, zone, passé par une autre zone ?)
+  spf(routers, 'ospf', (n) => n.peerIface.ip, (src, x) => src.connected.has(prefixKey(x.net, x.mask)));
+}
+
+// === OSPFv3 (IPv6) ===========================================================================
+// config.ospf6 = { processId, routerId, interfaces: [{ name, area }], passive: [], defaultOriginate }
+// Activé par interface (« ipv6 ospf 1 area 0 ») ; voisins par leurs link-local ; router-id IPv4 (32 bits)
+// obligatoire : pris sur les adresses IPv4 si absent, sinon OSPFv3 ne démarre pas (comme IOS).
+function computeOspf6(routers, issue) {
+  for (const r of routers.values()) {
+    const o = r.cfg.ospf6;
+    r.ospf6 = { enabled: false, routes: [], neighbors: [], ifaces: [], areas: [], stubs: [], externals: [] };
+    if (!o) continue;
+    const rid = isValidIp(o.routerId) ? o.routerId : r.ifaces.length ? routerId(r, null) : null;
+    if (!rid) {
+      issue(r, `${r.label} : OSPFv3 ne démarre pas, aucun router-id (configure « router-id 1.1.1.1 » : il faut un identifiant au format IPv4, même en IPv6).`, 'error');
+      continue;
+    }
+    if (!v6Forwarding(r.dev)) issue(r, `${r.label} : OSPFv3 configuré mais le routage IPv6 n'est pas activé (« ipv6 unicast-routing »).`);
+    Object.assign(r.ospf6, { enabled: true, routerId: rid });
+    const passive = new Set(o.passive ?? []);
+    for (const i of r.ifaces6) {
+      const x = (o.interfaces ?? []).find((y) => y.name === i.name);
+      if (x) r.ospf6.ifaces.push({ iface: i, area: Number(x.area), cost: ospfCost(r.dev, i), passive: passive.has(i.name) || i.loopback });
+    }
+    r.ospf6.areas = [...new Set(r.ospf6.ifaces.map((x) => x.area))];
+    if (!r.ospf6.ifaces.length) issue(r, `${r.label} : OSPFv3 est configuré mais aucune interface n'a « ipv6 ospf ${o.processId ?? 1} area … ».`);
+  }
+  const ids = new Map();
+  for (const r of routers.values()) if (r.ospf6.enabled) ids.set(r.ospf6.routerId, [...(ids.get(r.ospf6.routerId) ?? []), r]);
+  for (const [rid, list] of ids) if (list.length > 1) for (const r of list) issue(r, `OSPFv3 : router-id ${rid} en double (${list.map((x) => x.label).join(', ')}).`, 'error');
+
+  for (const r of routers.values()) {
+    if (!r.ospf6.enabled) continue;
+    for (const { iface, peer, peerIface, p2p } of r.peers6) {
+      const mine = r.ospf6.ifaces.find((x) => x.iface.name === iface.name);
+      if (!mine) continue;
+      const fail = (why) => issue(r, `OSPFv3 : pas d'adjacence ${r.label} ${iface.name} ↔ ${peer.label} ${peerIface.name} : ${why}.`);
+      if (!peer.ospf6.enabled) { fail(`${peer.label} n'a pas OSPFv3`); continue; }
+      const theirs = peer.ospf6.ifaces.find((x) => x.iface.name === peerIface.name);
+      if (!theirs) { fail(`${peerIface.name} de ${peer.label} n'a pas « ipv6 ospf … area »`); continue; }
+      if (mine.passive) { fail(`${iface.name} est passive (passive-interface)`); continue; }
+      if (theirs.passive) { fail(`${peerIface.name} de ${peer.label} est passive (passive-interface)`); continue; }
+      if (mine.area !== theirs.area) { fail(`zones différentes (${mine.area} et ${theirs.area})`); continue; }
+      if (r.ospf6.routerId === peer.ospf6.routerId) { fail(`même router-id ${r.ospf6.routerId}`); continue; }
+      r.ospf6.neighbors.push({ peer, iface, peerIface, area: mine.area, cost: mine.cost, p2p });
+    }
+  }
+  for (const r of routers.values()) {
+    if (!r.ospf6.enabled) continue;
+    // Préfixes annoncés : adresses globales des interfaces OSPFv3 (loopback en /128)
+    r.ospf6.stubs = r.ospf6.ifaces.filter(({ iface }) => iface.ip && iface.prefix != null).map(({ iface, area, cost }) => {
+      const mask = iface.loopback ? 128 : iface.prefix;
+      return { net: networkOf6(iface.ip, mask), mask, area, cost };
+    });
+    const o = r.cfg.ospf6;
+    const hasDefault = r.statics6.some((x) => x.prefix === 0);
+    if (o.defaultOriginate === 'always' || (o.defaultOriginate && hasDefault)) r.ospf6.externals.push({ net: 0n, mask: 0, metric: 1 });
+    else if (o.defaultOriginate) issue(r, `${r.label} : OSPFv3 « default-information originate » sans route ::/0 : rien n'est annoncé (ajoute « always » ou une route ::/0).`);
+  }
+  spf(routers, 'ospf6', (n) => n.peerIface.linkLocal, (src, x) => [...src.connected6.values()].some((c) => c.net === x.net && c.prefix === x.mask));
+}
+
+// SPF depuis chaque routeur (OSPFv2 : key « ospf », OSPFv3 : « ospf6 »). État = (routeur, zone, passé par une
+// autre zone ?). hopOf : adresse du voisin (IPv4, ou link-local en OSPFv3) ; connected : préfixe déjà connecté.
+function spf(routers, key, hopOf, connected) {
+  const bySortKey = (h) => h?.sortKey ?? '';
   for (const src of routers.values()) {
-    if (!src.ospf.enabled) continue;
-    const dist = new Map();
+    if (!src[key].enabled) continue;
     const queue = [];
-    for (const area of src.ospf.areas) queue.push({ r: src, area, inter: false, d: 0, hop: null });
+    for (const area of src[key].areas) queue.push({ r: src, area, inter: false, d: 0, hop: null });
     const done = new Map();
     while (queue.length) {
-      queue.sort((a, b) => a.d - b.d || byIp(a.hop?.nextHop ?? '0.0.0.0', b.hop?.nextHop ?? '0.0.0.0'));
+      queue.sort((a, b) => a.d - b.d || (bySortKey(a.hop) < bySortKey(b.hop) ? -1 : bySortKey(a.hop) > bySortKey(b.hop) ? 1 : 0));
       const cur = queue.shift();
       const k = `${cur.r.id}|${cur.area}|${cur.inter}`;
       if (done.has(k)) continue;
       done.set(k, cur);
       // Changement de zone sur un ABR : seulement vers ou depuis la zone 0
-      for (const other of cur.r.ospf.areas) {
+      for (const other of cur.r[key].areas) {
         if (other !== cur.area && (other === 0 || cur.area === 0)) queue.push({ ...cur, area: other, inter: cur.inter || cur.r !== src });
       }
-      for (const n of cur.r.ospf.neighbors) {
+      for (const n of cur.r[key].neighbors) {
         if (n.area !== cur.area) continue;
-        const hop = cur.hop ?? { nextHop: n.peerIface.ip, iface: n.iface.name, link: n.iface.link };
+        const nextHop = hopOf(n);
+        const hop = cur.hop ?? { nextHop, iface: n.iface.name, link: n.iface.link, sortKey: key === 'ospf' ? String(ipNum(nextHop)).padStart(10, '0') : nextHop };
         queue.push({ r: n.peer, area: cur.area, inter: cur.inter, d: cur.d + n.cost, hop });
       }
-      dist.set(k, cur);
     }
 
     const best = new Map();
@@ -277,16 +361,17 @@ function computeOspf(routers, issue) {
     };
     for (const st of done.values()) {
       if (st.r === src) continue;
-      for (const stub of st.r.ospf.stubs) {
+      const { sortKey, ...hop } = st.hop;
+      for (const stub of st.r[key].stubs) {
         if (stub.area !== st.area) continue;
-        offer({ net: stub.net, mask: stub.mask, proto: st.inter ? 'O IA' : 'O', ad: AD.O, metric: st.d + stub.cost, fwd: st.d, ...st.hop });
+        offer({ net: stub.net, mask: stub.mask, proto: st.inter ? 'O IA' : 'O', ad: AD.O, metric: st.d + stub.cost, fwd: st.d, ...hop });
       }
-      for (const ext of st.r.ospf.externals) {
-        offer({ net: ext.net, mask: ext.mask, proto: ext.mask === 0 ? 'O*E2' : 'O E2', ad: AD.O, metric: ext.metric, fwd: st.d, ...st.hop });
+      for (const ext of st.r[key].externals) {
+        offer({ net: ext.net, mask: ext.mask, proto: ext.mask === 0 ? 'O*E2' : 'O E2', ad: AD.O, metric: ext.metric, fwd: st.d, ...hop });
       }
     }
     // Les réseaux connectés restent connectés (distance 0)
-    src.ospf.routes = [...best.values()].filter((x) => !src.connected.has(prefixKey(x.net, x.mask)));
+    src[key].routes = [...best.values()].filter((x) => !connected(src, x));
   }
 }
 

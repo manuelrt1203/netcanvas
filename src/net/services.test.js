@@ -131,7 +131,7 @@ test('contrôles en direct : serveur DNS sans service, enregistrements invalides
   bad.devices.find((d) => d.id === 'srv').config.services.dns.records.push({ name: 'www..lan', ip: '1.2.3.4' }, { name: 'WWW.entreprise.lan', ip: '172.16.0.11' }, { name: 'x.lan', ip: '300.1.1.1' });
   const t2 = validate(bad).map((i) => i.text);
   assert.ok(t2.some((t) => /« www\.\.lan » : nom invalide/.test(t)));
-  assert.ok(t2.some((t) => /enregistré deux fois/.test(t)));
+  assert.ok(t2.some((t) => /a deux enregistrements A/.test(t)));
   assert.ok(t2.some((t) => /x\.lan : adresse « 300\.1\.1\.1 » invalide/.test(t)));
 });
 

@@ -13,7 +13,7 @@ import { clearNatCommand, natConfigCommand, natInterfaceCommands, showNatTransla
 import { ipv6GlobalCommands, ipv6InterfaceCommands, ipv6ShowCommand } from './ios-ipv6.js';
 import { dnsConfigCommands, isTarget, resolveTarget, showHostsCommand } from './ios-dns.js';
 import { accessGroupCommands, aclConfigCommands, aclShows, aclTree, showAccessLists } from './ios-acl.js';
-import { bgpTree, interfaceRoutingCommands, ospfTree, ripTree, routeFilters, routerCommands, routingShows, showIpRoute } from './ios-routing.js';
+import { bgpTree, interfaceRoutingCommands, ospf6Tree, ospfTree, ripTree, routeFilters, routerCommands, routingShows, showIpRoute } from './ios-routing.js';
 
 const NOT_SIMULATED = (what) => [`% NetCanvas : ${what} n'est pas encore simulé.`, ''];
 
@@ -117,7 +117,7 @@ function runningConfig(dev) {
       lines.push(`interface ${e.name}`);
       if (e.description) lines.push(` description ${e.description}`);
       lines.push(e.ip && e.mask != null ? ` ip address ${e.ip} ${cidrToMask(e.mask)}` : ' no ip address');
-      lines.push(...iosIpv6IfaceLines(e), ...iosInterfaceExtras(dev.config ?? {}, e), ...(e.shutdown ? [' shutdown'] : []), '!');
+      lines.push(...iosIpv6IfaceLines(e, dev.config ?? {}), ...iosInterfaceExtras(dev.config ?? {}, e), ...(e.shutdown ? [' shutdown'] : []), '!');
     }
     const c = dev.config ?? {};
     if (c.ipRouting) lines.push('ip routing', '!');
@@ -133,7 +133,7 @@ function runningConfig(dev) {
       if (e?.description) lines.push(` description ${e.description}`);
       if (e?.parent && e.vlan) lines.push(` encapsulation dot1Q ${e.vlan}${e.native ? ' native' : ''}`);
       lines.push(e?.ip && isValidIp(e.ip) && e.mask != null ? ` ip address ${e.ip} ${cidrToMask(e.mask)}` : ' no ip address');
-      lines.push(...iosIpv6IfaceLines(e), ...iosInterfaceExtras(dev.config ?? {}, e));
+      lines.push(...iosIpv6IfaceLines(e, dev.config ?? {}), ...iosInterfaceExtras(dev.config ?? {}, e));
       if (e?.clockRate) lines.push(` clock rate ${e.clockRate}`);
       if (e?.shutdown) lines.push(' shutdown');
       lines.push('!');
@@ -733,6 +733,7 @@ const TREES = {
   vlan: vlanTree,
   line: lineTree,
   'router-ospf': (d) => ospfTree([endCmd(), doCmd(d)]),
+  'router-ospf6': (d) => ospf6Tree([endCmd(), doCmd(d)]),
   'router-rip': (d) => ripTree([endCmd(), doCmd(d)]),
   'router-bgp': (d) => bgpTree([endCmd(), doCmd(d)]),
   'acl-std': (d) => aclTree([endCmd(), doCmd(d)]),
@@ -741,7 +742,7 @@ const TREES = {
 };
 
 const SUFFIX = { user: '>', priv: '#', config: '(config)#', if: '(config-if)#', 'if-range': '(config-if-range)#', vlan: '(config-vlan)#', line: '(config-line)#',
-  'router-ospf': '(config-router)#', 'router-rip': '(config-router)#', 'router-bgp': '(config-router)#',
+  'router-ospf': '(config-router)#', 'router-ospf6': '(config-rtr)#', 'router-rip': '(config-router)#', 'router-bgp': '(config-router)#',
   'acl-std': '(config-std-nacl)#', 'acl-ext': '(config-ext-nacl)#', dhcp: '(dhcp-config)#' };
 
 export const ios = {

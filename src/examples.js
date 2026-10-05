@@ -376,6 +376,36 @@ export const IPV6_DEMO = (() => {
   return doc;
 })();
 
+// OSPFv3 : la démo OSPF 2 zones en double pile. Les liens entre routeurs n'ont que leur link-local
+// (OSPFv3 s'en contente) ; le MikroTik annonce la route par défaut IPv6 vers Internet.
+export const OSPF6_DEMO = (() => {
+  const doc = structuredClone(OSPF_DEMO);
+  doc.name = 'Démo : OSPFv3 2 zones (IPv6)';
+  const dev = (id) => doc.devices.find((d) => d.id === id);
+  const set = (id, name, v6) => Object.assign(dev(id).config.interfaces.find((i) => i.name === name), v6);
+  const area = (list) => list.map(([name, a]) => ({ name, area: a }));
+  set('r1', 'G0/0', { ipv6: '2001:db8:1:1::1', prefix6: 64 });
+  set('r1', 'G0/1', { ipv6Enable: true });
+  set('r1', 'Lo0', { ipv6: '2001:db8:ffff::1', prefix6: 128 });
+  Object.assign(dev('r1').config, { ipv6Routing: true, ospf6: { processId: 1, interfaces: area([['G0/0', 1], ['G0/1', 1], ['Lo0', 1]]), passive: ['G0/0'] } });
+  set('r2', 'G0/0', { ipv6Enable: true });
+  set('r2', 'G0/1', { ipv6Enable: true });
+  set('r2', 'Lo0', { ipv6: '2001:db8:ffff::2', prefix6: 128 });
+  Object.assign(dev('r2').config, { ipv6Routing: true, ospf6: { processId: 1, interfaces: area([['G0/0', 1], ['G0/1', 0], ['Lo0', 0]]) } });
+  set('r3', 'ether1', { ipv6Enable: true });
+  set('r3', 'ether2', { ipv6: '2001:db8:3:1::1', prefix6: 64 });
+  set('r3', 'ether3', { ipv6: '2001:db8:f::1', prefix6: 64 });
+  set('r3', 'lo', { ipv6: '2001:db8:ffff::3', prefix6: 128 });
+  Object.assign(dev('r3').config, {
+    routes6: [{ network: '::', prefix: 0, nextHop: '2001:db8:f::2' }],
+    ospf6: { routerId: '3.3.3.3', interfaces: area([['ether1', 0], ['ether2', 0], ['lo', 0]]), passive: ['ether2'], defaultOriginate: true },
+  });
+  dev('pc1').config.slaac = true;
+  dev('srv').config.slaac = true;
+  Object.assign(dev('net').config, { ipv6: '2001:db8:f::2', prefix6: 64, gateway6: '2001:db8:f::1' });
+  return doc;
+})();
+
 // Triangle de switches : STP bloque un port pour casser la boucle (SW Cœur est root bridge)
 const trunk = (name) => ({ name, mode: 'trunk' });
 export const STP_DEMO = {
@@ -456,6 +486,7 @@ export const DEMOS = [
   { id: 'stp', label: 'STP (triangle de switches)', doc: STP_DEMO },
   { id: 'services', label: 'DNS et web (ACL par port)', doc: SERVICES_DEMO },
   { id: 'ipv6', label: 'Double pile IPv4 / IPv6', doc: IPV6_DEMO },
+  { id: 'ospf6', label: 'OSPFv3 2 zones (IPv6, Cisco + MikroTik)', doc: OSPF6_DEMO },
   { id: 'tp-vlan', label: 'TP : inter-VLAN en panne (3 pannes)', doc: TP_INTERVLAN },
   { id: 'tp-ospf', label: 'TP : OSPF ne monte pas (3 pannes)', doc: TP_OSPF },
   { id: 'ospf', label: 'OSPF 2 zones (Cisco + MikroTik)', doc: OSPF_DEMO },

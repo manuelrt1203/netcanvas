@@ -3,6 +3,7 @@ import { useId } from 'react';
 import { isValidIp } from './net/ip.js';
 import { isHostname } from './net/services.js';
 import { isMikrotik } from './net/catalog.js';
+import { isValidIp6 } from './net/ip6.js';
 
 function Input({ label, invalid, ...props }) {
   const id = useId();
@@ -49,7 +50,7 @@ export function ServicesForm({ node, update }) {
             <div key={i} className="field-row">
               <Input label={`Nom ${i + 1}`} placeholder="www.exemple.lan" value={r.name ?? ''} invalid={r.name && !isHostname(r.name)}
                 onChange={(e) => patchRecord(i, { name: e.target.value.trim() })} />
-              <Input label="Adresse (A)" placeholder="192.168.1.10" inputMode="decimal" value={r.ip ?? ''} invalid={r.ip && !isValidIp(r.ip)}
+              <Input label="Adresse (A ou AAAA)" placeholder="192.168.1.10 ou 2001:db8::10" value={r.ip ?? ''} invalid={r.ip && !isValidIp(r.ip) && !isValidIp6(r.ip)}
                 onChange={(e) => patchRecord(i, { ip: e.target.value.trim() })} />
               <button type="button" className="ghost small" aria-label={`Retirer ${r.name || `l'enregistrement ${i + 1}`}`}
                 onClick={() => set('dns', { ...dns, records: records.filter((_, j) => j !== i) })}>×</button>

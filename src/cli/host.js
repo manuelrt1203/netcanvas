@@ -221,7 +221,8 @@ export const host = {
         const r = resolveName(asked, dev.id, name);
         if (server) ctx.effects.push({ type: 'ping', source: dev.id, target: server, options: { proto: 'udp', dport: 53 } });
         out.push(`Server:  ${server ?? 'Unknown'}`, `Address:  ${server ?? '0.0.0.0'}`, '');
-        if (r.ok) out.push(`Name:    ${name}`, `Address:  ${r.ip}`, '');
+        const all = r.addresses ?? [r.ip];
+        if (r.ok) out.push(`Name:    ${name}`, all.length > 1 ? `Addresses:  ${all[0]}` : `Address:  ${r.ip}`, ...all.slice(1).map((a) => `          ${a}`), '');
         else out.push(r.log.at(-1).text.includes('NXDOMAIN') ? `*** ${server} can't find ${name}: Non-existent domain` : `*** Request to ${server ?? 'Unknown'} timed-out`, '', `NetCanvas : ${r.log.at(-1).text}`, '');
         break;
       }

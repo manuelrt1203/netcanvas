@@ -466,3 +466,87 @@ export function interfaceRoutingCommands(forIfaces) {
     noBandwidth: kw('bandwidth', '', { run: (c) => forIfaces(c, (e) => { delete e.bandwidth; }) }),
   };
 }
+
+// === OSPFv3 (IPv6) ===========================================================================
+// « ipv6 router ospf 1 » (router-id, passive-interface, default-information originate) ;
+// sur l'interface « ipv6 ospf 1 area 0 ». Même config que le formulaire : config.ospf6.
+const ospf6Of = (c) => (c.dev.config.ospf6 ??= { processId: 1, interfaces: [] });
+
+export function ospf6RouterCommand(remove = false) {
+  return kw('ospf', 'Open Shortest Path First (OSPF)', {
+    children: [arg('pid', '<1-65535>', 'Process ID', isNum(1, 65535), {
+      run: (c) => {
+        const cfg = c.dev.config;
+        const pid = Number(c.args.pid);
+        if (remove) {
+          delete cfg.ospf6;
+          return touch(c);
+        }
+        if (cfg.ospf6 && Number(cfg.ospf6.processId ?? 1) !== pid) return c.out.push(`% NetCanvas : un seul processus OSPFv3 par routeur (déjà « ipv6 router ospf ${cfg.ospf6.processId ?? 1} »).`, '');
+        cfg.ospf6 ??= { processId: pid, interfaces: [] };
+        cfg.ospf6.processId = pid;
+        c.s.mode = 'router-ospf6';
+        touch(c);
+      },
+    })],
+  });
+}
+
+export function ospf6Tree(common) {
+  const defaultInfo = (add) => kw('default-information', 'Distribution of default information', {
+    children: [kw('originate', 'Distribute a default route', {
+      run: (c) => { ospf6Of(c).defaultOriginate = add ? true : undefined; touch(c); },
+      children: add ? [kw('always', 'Always advertise default route', { run: (c) => { ospf6Of(c).defaultOriginate = 'always'; touch(c); } })] : [],
+    })],
+  });
+  return {
+    children: [
+      kw('router-id', 'router-id for this OSPF process', { children: [arg('rid', 'A.B.C.D', 'OSPF router-id in IP address format', isIp, { run: (c) => { ospf6Of(c).routerId = c.args.rid; touch(c); } })] }),
+      passive(ospf6Of, true),
+      defaultInfo(true),
+      accept('log-adjacency-changes', 'Log changes in adjacency state'),
+      accept('auto-cost', 'Calculate OSPF interface cost according to bandwidth'),
+      kw('no', 'Negate a command or set its defaults', {
+        children: [passive(ospf6Of, false), defaultInfo(false), kw('router-id', '', { run: (c) => { delete ospf6Of(c).routerId; touch(c); } })],
+      }),
+      leaveRouter(),
+      ...common,
+    ],
+  };
+}
+
+// Interface : « ipv6 ospf 1 area 0 » (forIfaces : interfaces sélectionnées)
+export function ospf6InterfaceCommand(forIfaces, remove = false) {
+  return kw('ospf', 'OSPF interface commands', {
+    children: [arg('pid', '<1-65535>', 'Process ID', isNum(1, 65535), {
+      children: [kw('area', 'Set the OSPF area ID', {
+        run: remove ? (c) => setOspf6Area(c, forIfaces, null) : undefined,
+        children: [arg('area', '<0-4294967295>', 'OSPF area ID as a decimal value', isArea, { run: (c) => setOspf6Area(c, forIfaces, remove ? null : areaNum(c.args.area)) })],
+      })],
+    })],
+  });
+}
+
+function setOspf6Area(c, forIfaces, area) {
+  const cfg = c.dev.config;
+  if (area !== null && cfg.ospf6 && Number(cfg.ospf6.processId ?? 1) !== Number(c.args.pid)) {
+    return c.out.push(`% NetCanvas : un seul processus OSPFv3 par routeur (« ipv6 router ospf ${cfg.ospf6.processId ?? 1} »).`, '');
+  }
+  forIfaces(c, (e, name) => {
+    const o = (cfg.ospf6 ??= { processId: Number(c.args.pid), interfaces: [] });
+    o.interfaces = (o.interfaces ?? []).filter((x) => x.name !== name);
+    if (area !== null) o.interfaces.push({ name, area });
+  });
+}
+
+export function showOspf6Neighbor(dev, doc) {
+  const r = routerOf(dev, doc);
+  const rows = [
+    `            OSPFv3 Router with ID (${r?.ospf6.routerId ?? '0.0.0.0'}) (Process ID ${dev.config?.ospf6?.processId ?? 1})`, '',
+    `${pad('Neighbor ID', 16)}${pad('Pri', 6)}${pad('State', 16)}${pad('Dead Time', 12)}${pad('Interface ID', 15)}Interface`,
+  ];
+  for (const n of r?.ospf6.neighbors ?? []) {
+    rows.push(`${pad(n.peer.ospf6.routerId, 16)}${pad(n.p2p ? 0 : 1, 6)}${pad(n.p2p ? 'FULL/  -' : 'FULL/DR', 16)}${pad('00:00:35', 12)}${pad(3, 15)}${long(n.iface.name)}`);
+  }
+  return [...rows, '', ...explain(r, /^OSPFv3|OSPFv3/), ''];
+}

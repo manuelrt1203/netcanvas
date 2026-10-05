@@ -10,6 +10,7 @@ import { buildTopology } from './topology.js';
 import { computeRouting } from './routing.js';
 import { isValidIp, parseIp } from './ip.js';
 import { isMikrotik } from './catalog.js';
+import { isValidIp6, normIp6 } from './ip6.js';
 
 const norm = (name) => String(name ?? '').trim().toLowerCase().replace(/\.$/, '');
 // Nom d'hôte (« www.exemple.fr », point final accepté : forme absolue)
@@ -29,6 +30,15 @@ export function serviceEnabled(dev, svc) {
 }
 const recordsOf = (dev) => (dev.config?.services?.dns?.enabled ? dev.config.services.dns.records ?? [] : dev.config?.hosts ?? []);
 const MAX_FORWARD = 3;
+const isAddr = (ip) => isValidIp(ip) || isValidIp6(ip);
+// Enregistrements d'un nom : A (IPv4) et AAAA (IPv6). Un hôte qui a une adresse IPv6 globale préfère AAAA.
+function pick(records, name, topo, srcId) {
+  const all = records.filter((r) => norm(r.name) === norm(name));
+  const v6 = all.find((r) => isValidIp6(r.ip));
+  const v4 = all.find((r) => !isValidIp6(r.ip));
+  const hasV6 = topo.l3Ifaces6(srcId).some((i) => i.ip);
+  return { record: (hasV6 && v6) || v4 || v6 || null, all };
+}
 
 // Équipement qui possède une adresse IP
 function ownerOf(topo, ip) {
@@ -50,10 +60,11 @@ export function resolveName(rawDoc, srcId, name, ctx = null, depth = 0) {
   const log = [];
   const fail = (text, device = srcId) => ({ ok: false, ip: null, server: null, log: [...log, { phase: 'dns', text, level: 'error', device }] });
   if (isValidIp(name)) return { ok: true, ip: name, server: null, log };
+  if (isValidIp6(name)) return { ok: true, ip: normIp6(name), server: null, log };
   if (!isHostname(name)) return fail(`« ${name} » n'est ni une adresse IP ni un nom valide.`);
 
   // Routeur : table locale « ip host » d'abord
-  const local = (dev.config?.hosts ?? []).find((h) => norm(h.name) === norm(name));
+  const local = pick(dev.config?.hosts ?? [], name, topo, srcId).record;
   if (local) return { ok: true, ip: local.ip, server: null, log: [{ phase: 'dns', text: `${label(srcId)} : ${name} est dans sa table locale (${isMikrotik(dev) ? '/ip dns static' : 'ip host'}) : ${local.ip}.`, level: 'ok', device: srcId }] };
 
   const server = dnsServerOf(dev);
@@ -68,11 +79,12 @@ export function resolveName(rawDoc, srcId, name, ctx = null, depth = 0) {
 
   // Réponse préparée d'après le serveur visé (affichée dans la simulation pas à pas)
   const target = ownerOf(topo, server);
-  const record = (target ? recordsOf(target) : []).find((r) => norm(r.name) === norm(name));
+  const { record, all } = target ? pick(recordsOf(target), name, topo, srcId) : { record: null, all: [] };
+  const answer = all.map((r) => `${norm(name)} ${isValidIp6(r.ip) ? 'AAAA' : 'A'} ${isValidIp6(r.ip) ? normIp6(r.ip) : r.ip}`).join(', ');
   const app = {
     name: 'DNS',
-    request: [['Question', `${norm(name)} (type A)`], ['ID', '0x1a2b']],
-    reply: [['Réponse', record ? `${norm(name)} A ${record.ip}` : 'NXDOMAIN (nom inconnu)'], ['ID', '0x1a2b']],
+    request: [['Question', `${norm(name)} (type A et AAAA)`], ['ID', '0x1a2b']],
+    reply: [['Réponse', record ? answer : 'NXDOMAIN (nom inconnu)'], ['ID', '0x1a2b']],
   };
   log.push({ phase: 'dns', text: `${label(srcId)} demande l'adresse de ${name} au serveur DNS ${server}.`, level: 'info', device: srcId });
   const query = simulatePing(doc, srcId, server, { topo, routing, proto: 'udp', dport: 53, app });
@@ -93,9 +105,11 @@ export function resolveName(rawDoc, srcId, name, ctx = null, depth = 0) {
     const fix = target.config?.services?.dns?.enabled ? 'ajoute un enregistrement A' : 'ajoute une entrée statique ou un serveur DNS à relayer';
     return { ...fail(`Le serveur DNS ${server} (${label(target.id)}) ne connaît pas ${name} (NXDOMAIN) : ${fix}.`, target.id), query };
   }
-  if (!isValidIp(record.ip)) return { ...fail(`Le serveur DNS ${label(target.id)} a pour ${name} une adresse invalide (« ${record.ip} »).`, target.id), query };
-  log.push({ phase: 'dns', text: `${label(target.id)} répond : ${name} = ${record.ip}.`, level: 'ok', device: target.id });
-  return { ok: true, ip: record.ip, server, log, query };
+  if (!isAddr(record.ip)) return { ...fail(`Le serveur DNS ${label(target.id)} a pour ${name} une adresse invalide (« ${record.ip} »).`, target.id), query };
+  const ip = isValidIp6(record.ip) ? normIp6(record.ip) : record.ip;
+  const others = all.filter((r) => r !== record).map((r) => (isValidIp6(r.ip) ? normIp6(r.ip) : r.ip));
+  log.push({ phase: 'dns', text: `${label(target.id)} répond : ${name} = ${ip}${others.length ? ` (aussi ${others.join(', ')})` : ''}.`, level: 'ok', device: target.id });
+  return { ok: true, ip, addresses: [ip, ...others], server, log, query };
 }
 
 // Page web : résolution du nom si besoin, puis requête HTTP (TCP 80)

@@ -433,7 +433,7 @@ await page.getByTestId('rf__node-srv').click();
 await page.click('role=tab[name=/Propriétés/]');
 await page.click('role=button[name="Ajouter un enregistrement"]');
 await page.getByLabel('Nom 3').fill('mail.entreprise.lan');
-await page.getByLabel('Adresse (A)').nth(2).fill('172.16.0.10');
+await page.getByLabel('Adresse (A ou AAAA)').nth(2).fill('172.16.0.10');
 await page.click('role=tab[name="Simulation"]');
 await page.click('role=button[name="Résoudre le nom"]');
 await page.waitForSelector('button:has-text("Résoudre le nom"):not([disabled])', { timeout: 15000 });

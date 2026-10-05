@@ -62,7 +62,7 @@ function routerConfig(d, rows, { target, table, topo }) {
   const renamed = new Map();
 
   for (const lo of (cfg.interfaces ?? []).filter((i) => /^Lo\d+$/.test(i.name) && (i.ip || i.ipv6))) {
-    lines.push(`interface ${iosLongName(lo.name)}`, ...(lo.ip ? [` ip address ${lo.ip} ${cidrToMask(lo.mask)}`] : []), ...iosIpv6IfaceLines(lo), ...iosInterfaceExtras(cfg, lo));
+    lines.push(`interface ${iosLongName(lo.name)}`, ...(lo.ip ? [` ip address ${lo.ip} ${cidrToMask(lo.mask)}`] : []), ...iosIpv6IfaceLines(lo, cfg), ...iosInterfaceExtras(cfg, lo));
     if (lo.shutdown) lines.push(' shutdown');
     lines.push(end);
   }
@@ -89,7 +89,7 @@ function routerConfig(d, rows, { target, table, topo }) {
     if (row.hasIp) lines.push(` ip address ${row.ip} ${cidrToMask(row.mask)}`);
     else if (subs.length) lines.push(' no ip address'); // trunk vers les sous-interfaces
     else if (!row.ipv6) warnings.push(`${ifname} (vers ${ascii(row.peer?.label)}) n'a pas d'adresse IP.`);
-    lines.push(...iosIpv6IfaceLines(row), ...iosInterfaceExtras(cfg, row));
+    lines.push(...iosIpv6IfaceLines(row, cfg), ...iosInterfaceExtras(cfg, row));
     // Liaison série : le côté DCE fournit l'horloge
     const link = topo.links.get(row.link);
     const isDce = link?.cable === 'serial' && (link.dce === 'target' ? link.target : link.source) === d.id;
@@ -104,7 +104,7 @@ function routerConfig(d, rows, { target, table, topo }) {
       renamed.set(sub.name, subName);
       lines.push(`interface ${subName}`, ` encapsulation dot1Q ${sub.vlan}${sub.native ? ' native' : ''}`);
       if (sub.ip) lines.push(` ip address ${sub.ip} ${cidrToMask(sub.mask)}`);
-      lines.push(...iosIpv6IfaceLines(sub), ...iosInterfaceExtras(cfg, sub));
+      lines.push(...iosIpv6IfaceLines(sub, cfg), ...iosInterfaceExtras(cfg, sub));
       if (sub.shutdown) lines.push(' shutdown');
       lines.push(end);
     }
@@ -147,7 +147,7 @@ function switchConfig(d, rows) {
   // Niveau 3 / administration : interfaces VLAN, ip routing, passerelle, routes, protocoles
   const c = d.config ?? {};
   for (const svi of (c.interfaces ?? []).filter((i) => /^Vlan\d+$/.test(i.name) && (i.ip || i.ipv6))) {
-    lines.push(`interface ${svi.name}`, ...(svi.ip ? [` ip address ${svi.ip} ${cidrToMask(svi.mask)}`] : []), ...iosIpv6IfaceLines(svi), ...iosInterfaceExtras(c, svi), svi.shutdown ? ' shutdown' : ' no shutdown', ' exit');
+    lines.push(`interface ${svi.name}`, ...(svi.ip ? [` ip address ${svi.ip} ${cidrToMask(svi.mask)}`] : []), ...iosIpv6IfaceLines(svi, c), ...iosInterfaceExtras(c, svi), svi.shutdown ? ' shutdown' : ' no shutdown', ' exit');
   }
   if (c.ipRouting) lines.push('ip routing');
   if (c.ipv6Routing) lines.push('ipv6 unicast-routing');
@@ -376,19 +376,27 @@ export function iosNatLines(cfg, ifName = iosLongName) {
 // --- IPv6 (partagé avec le terminal) -------------------------------------------------------------
 const UP6 = (a) => String(a).toUpperCase();
 // Lignes de running-config d'une interface
-export function iosIpv6IfaceLines(e) {
+export function iosIpv6IfaceLines(e, cfg = {}) {
   if (!e) return [];
+  const o6 = cfg.ospf6?.interfaces?.find((x) => x.name === e.name);
   return [
     ...(e.linkLocal ? [` ipv6 address ${UP6(e.linkLocal)} link-local`] : []),
     ...(e.ipv6 ? [` ipv6 address ${UP6(normIp6(e.ipv6) ?? e.ipv6)}/${e.prefix6 ?? 64}${e.eui64 ? ' eui-64' : ''}`] : []),
     ...(e.ipv6Enable ? [' ipv6 enable'] : []),
+    ...(o6 ? [` ipv6 ospf ${cfg.ospf6.processId ?? 1} area ${o6.area}`] : []),
   ];
 }
 
 export function iosIpv6GlobalLines(cfg, ifName = iosLongName) {
-  return (cfg.routes6 ?? []).filter((r) => isValidIp6(r.network) && r.prefix != null).map((r) => [
+  const o = cfg.ospf6;
+  const ospf = o ? [
+    `ipv6 router ospf ${o.processId ?? 1}`, ...(o.routerId ? [` router-id ${o.routerId}`] : []),
+    ...(o.passive ?? []).map((n) => ` passive-interface ${ifName(n)}`),
+    ...(o.defaultOriginate ? [` default-information originate${o.defaultOriginate === 'always' ? ' always' : ''}`] : []), '!',
+  ] : [];
+  return [...ospf, ...(cfg.routes6 ?? []).filter((r) => isValidIp6(r.network) && r.prefix != null).map((r) => [
     'ipv6 route', `${UP6(normIp6(r.network))}/${r.prefix}`, r.iface && ifName(r.iface), r.nextHop && UP6(r.nextHop),
-  ].filter(Boolean).join(' '));
+  ].filter(Boolean).join(' '))];
 }
 
 // --- DNS côté équipement (partagé avec le terminal) : ip name-server, ip host ---------------------

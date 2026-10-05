@@ -279,3 +279,86 @@ test('MikroTik : /ipv6 address, route, settings, neighbor ; RA actives par défa
   assert.match(dev(withLeases(t.doc), 'srv').config.slaacError, /n'envoie pas d'annonces RA/);
   assert.match(t.run('/ipv6 settings print'), /forward: no/);
 });
+
+test('OSPFv3 : routes inter-zones et externe, sauts suivants link-local, pannes expliquées', async () => {
+  const { OSPF6_DEMO } = await import('../examples.js');
+  const { computeRouting } = await import('./routing.js');
+  const { routeText6 } = await import('./routing6.js');
+  const { simulatePing } = await import('./simulate.js');
+  const { withLeases } = await import('./dhcp.js');
+  const routes = (doc, id) => [...computeRouting(withLeases(doc)).ribs6.get(id).values()].map((r) => `${r.proto} ${routeText6(r)}`);
+  const r1 = routes(OSPF6_DEMO, 'r1');
+  assert.ok(r1.includes('O IA 2001:db8:3:1::/64'));
+  assert.ok(r1.includes('O*E2 ::/0'));
+  const def = [...computeRouting(withLeases(OSPF6_DEMO)).ribs6.get('r1').values()].find((r) => r.prefix === 0);
+  assert.match(def.nextHop, /^fe80::/);
+  assert.equal(def.iface, 'G0/1');
+  const srv = dev(withLeases(OSPF6_DEMO), 'srv').config.slaac6.ip;
+  assert.equal(simulatePing(OSPF6_DEMO, 'pc1', srv).ok, true);
+  assert.equal(simulatePing(OSPF6_DEMO, 'pc1', '2001:db8:f::2').ok, true);
+  assert.deepEqual(validate(OSPF6_DEMO).filter((i) => /OSPF/.test(i.text)), []);
+  // Zone différente d'un côté : plus d'adjacence, explication
+  const bad = structuredClone(OSPF6_DEMO);
+  dev(bad, 'r2').config.ospf6.interfaces.find((x) => x.name === 'G0/1').area = 2;
+  assert.ok(validate(bad).some((i) => /OSPFv3 : pas d'adjacence R2 \(ABR\) G0\/1 ↔ R3 MikroTik ether1 : zones différentes \(2 et 0\)/.test(i.text)));
+  assert.ok(!routes(bad, 'r1').includes('O*E2 ::/0'));
+  // Sans aucune adresse IPv4 ni router-id : OSPFv3 ne démarre pas
+  const norid = structuredClone(OSPF6_DEMO);
+  for (const i of dev(norid, 'r1').config.interfaces) i.ip = null;
+  assert.ok(validate(norid).some((i) => /R1 : OSPFv3 ne démarre pas, aucun router-id/.test(i.text)));
+});
+
+test('OSPFv3 au terminal : IOS et MikroTik, show, export et réimport', async () => {
+  const { OSPF6_DEMO } = await import('../examples.js');
+  const { importConfig } = await import('../cli/import.js');
+  // IOS : reconstruire R1 au terminal
+  const blank = structuredClone(OSPF6_DEMO);
+  delete dev(blank, 'r1').config.ospf6;
+  const t = await terminal(blank, 'r1');
+  t.run('enable', 'configure terminal', 'ipv6 router ospf 1', 'passive-interface g0/0', 'exit',
+    'interface g0/0', 'ipv6 ospf 1 area 1', 'interface g0/1', 'ipv6 ospf 1 area 1', 'interface lo0', 'ipv6 ospf 1 area 1', 'end');
+  assert.deepEqual(dev(t.doc, 'r1').config.ospf6, dev(OSPF6_DEMO, 'r1').config.ospf6);
+  assert.match(t.run('show ipv6 ospf neighbor'), /OSPFv3 Router with ID \(1\.1\.1\.1\)[\s\S]*2\.2\.2\.2\s+1\s+FULL\/DR\s+00:00:35\s+3\s+GigabitEthernet0\/1/);
+  assert.match(t.run('show ipv6 route'), /OI  2001:DB8:3:1::\/64 \[110\/3\]\n     via FE80::[0-9A-F:]+, GigabitEthernet0\/1/);
+  const run = t.run('show running-config');
+  assert.match(run, /interface GigabitEthernet0\/1\n ip address 10\.0\.12\.1 255\.255\.255\.252\n ipv6 enable\n ipv6 ospf 1 area 1/);
+  assert.match(run, /ipv6 router ospf 1\n passive-interface GigabitEthernet0\/0\n!/);
+  const fresh = structuredClone(blank);
+  const back = importConfig(dev(fresh, 'r1'), fresh, run);
+  assert.deepEqual(back.ignored.filter((l) => /ipv6/.test(l.text)), []);
+  const sorted = (o) => ({ ...o, interfaces: [...o.interfaces].sort((a, b) => a.name.localeCompare(b.name)) });
+  assert.deepEqual(sorted(back.device.config.ospf6), sorted(dev(OSPF6_DEMO, 'r1').config.ospf6));
+  // MikroTik : export /routing ospf version=3, réimporté à l'identique
+  const m = await terminal(structuredClone(OSPF6_DEMO), 'r3');
+  const exported = m.run('/export');
+  assert.match(exported, /\/routing ospf instance\nadd name=default-v3 version=3 router-id=3\.3\.3\.3 originate-default=if-installed\n\/routing ospf area\nadd area-id=0\.0\.0\.0 instance=default-v3 name=backbone-v3\n\/routing ospf interface-template\nadd area=backbone-v3 interfaces=ether1\nadd area=backbone-v3 interfaces=ether2 passive/);
+  assert.match(m.run('/routing ospf neighbor print'), /instance=default-v3 area=backbone-v3 address=fe80::[0-9a-f:]+%ether1 router-id=2\.2\.2\.2 state="Full"/);
+  const bare = structuredClone(OSPF6_DEMO);
+  delete dev(bare, 'r3').config.ospf6;
+  const mk = importConfig(dev(bare, 'r3'), bare, exported).device.config.ospf6;
+  const ref = dev(OSPF6_DEMO, 'r3').config.ospf6;
+  assert.deepEqual([mk.routerId, mk.defaultOriginate, mk.interfaces, mk.passive], [ref.routerId, ref.defaultOriginate, ref.interfaces, ref.passive]);
+});
+
+test('DNS : enregistrements AAAA, IPv6 préférée par un PC qui a une adresse IPv6', async () => {
+  const { resolveName, httpGet } = await import('./services.js');
+  const doc = structuredClone(IPV6_DEMO);
+  Object.assign(dev(doc, 'srv').config, {
+    services: { dns: { enabled: true, records: [{ name: 'www.lan', ip: '172.16.0.10' }, { name: 'www.lan', ip: '2001:db8:acad:30::10' }] }, http: { enabled: true, title: 'Intranet' } },
+  });
+  dev(doc, 'pc1').config.dns = '172.16.0.10';
+  dev(doc, 'pc3').config.dns = '172.16.0.10';
+  const r = resolveName(doc, 'pc1', 'www.lan');
+  assert.equal(r.ip, '2001:db8:acad:30::10');
+  assert.deepEqual(r.addresses, ['2001:db8:acad:30::10', '172.16.0.10']);
+  assert.match(r.query.frames.find((f) => f.kind === 'udp' && f.phase === 'reply').layers.at(-1).fields[0][1], /www\.lan A 172\.16\.0\.10, www\.lan AAAA 2001:db8:acad:30::10/);
+  // La page web arrive en IPv6
+  const web = httpGet(doc, 'pc1', 'http://www.lan');
+  assert.equal(web.ok, true);
+  assert.ok(web.result.frames.some((f) => f.layers.some((l) => l.name === 'IPv6')));
+  // Sans IPv6 globale, le PC prend l'enregistrement A
+  const v4only = structuredClone(doc);
+  delete dev(v4only, 'pc3').config.slaac;
+  assert.equal(resolveName(v4only, 'pc3', 'www.lan').ip, '172.16.0.10');
+  assert.deepEqual(validate(doc).filter((i) => /DNS/.test(i.text)), []);
+});
