@@ -12,14 +12,24 @@ page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
 page.on('dialog', (d) => d.accept());
 
 const step = (name) => console.log(`- ${name}`);
-const openDemo = async (label) => {
-  await page.click('summary:has-text("Démos")');
-  await page.click(`role=menuitem[name="${label}"]`);
+const fileMenu = async (item) => {
+  await page.click('summary:has-text("Fichier")');
+  await page.click(`role=menuitem[name=/^${item}/]`);
 };
+// Exemples : écran d'accueil (menu Fichier)
+const openDemo = async (label) => {
+  await fileMenu('Accueil et exemples');
+  await page.locator('.example', { hasText: label.replace(/^TP : /, '') }).first().click();
+};
+const newProject = () => fileMenu('Nouveau');
 
 await page.goto(URL);
 await page.evaluate(() => localStorage.clear());
 await page.reload();
+step('écran d\'accueil, nouveau projet');
+assert.ok(await page.getByRole('heading', { name: 'NetCanvas' }).isVisible());
+assert.equal(await page.locator('.welcome .example').count(), 13);
+await page.click('role=button[name="Nouveau projet"]');
 
 step('ajout et connexion d’équipements');
 const item = (label) => page.locator('.palette-item', { hasText: new RegExp(`^${label}$`) });
@@ -85,6 +95,7 @@ await page.screenshot({ path: 'e2e/ping-fail.png' });
 
 step('persistance du brouillon');
 await page.reload();
+await page.click('role=button[name=/^Reprendre/]');
 assert.equal(await page.locator('.react-flow__node').count(), 9);
 
 step('exports : Packet Tracer, CSV, PNG');
@@ -112,7 +123,7 @@ assert.deepEqual([...head], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 's
 await page.screenshot({ path: 'e2e/export.png' });
 
 step('câblage : croisé automatique entre deux PC, puis mauvais câble');
-await page.click('text=Effacer');
+await newProject();
 await page.click('role=tab[name=/Propriétés/]');
 await item('PC').click();
 await item('PC').click();
@@ -125,7 +136,7 @@ assert.match(await page.locator('.cable-status').textContent(), /deux PC se reli
 assert.equal(await page.locator('.link-light.off').count(), 2);
 
 step('câblage : série sans module, puis HWIC-2T et clock rate');
-await page.click('text=Effacer');
+await newProject();
 await item('Cisco 1941').click();
 await item('Cisco 1941').click();
 await page.click('role=radio[name="Série"]');
@@ -178,7 +189,7 @@ await page.click('role=radio[name="Formulaire"]');
 assert.equal(await page.getByLabel('Adresse IP').first().inputValue(), '192.168.10.254');
 
 step('MikroTik : câble droit accepté (auto-MDIX), RouterOS et invite de commandes du PC');
-await page.click('text=Effacer');
+await newProject();
 await item('MikroTik hAP ac²').click();
 await item('PC').click();
 await page.click('role=radio[name="Droit"]');
@@ -499,7 +510,7 @@ assert.equal(await page.locator('#tab-tp .badge').textContent(), '1/5');
 assert.ok(await page.locator('.tp-objectives li.ok').getByText('PC Compta ping 192.168.10.11').isVisible());
 
 step('édition : annuler / rétablir, copier-coller, sélection multiple, recherche');
-await page.click('text=Effacer');
+await newProject();
 await page.locator('.react-flow__pane').click({ position: { x: 40, y: 40 } });
 await item('PC').click();
 await page.waitForTimeout(500); // l'historique regroupe les modifications rapprochées

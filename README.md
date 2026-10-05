@@ -2,14 +2,30 @@
 
 Éditeur de schémas réseau **vivants** : les équipements ont une vraie configuration (IP, masque, passerelle, VLAN, routes statiques), et un simulateur montre le chemin d'un ping, ou explique pourquoi il échoue.
 
-## Lancer
+## Installer
+
+- **Application de bureau** (Windows, macOS, Linux) : télécharger l'installeur de la dernière version dans les [Releases](https://github.com/manuelrt1203/netcanvas/releases).
+  - Windows : `NetCanvas-x.y.z-win-x64.exe`. L'installeur n'est pas signé : à l'avertissement SmartScreen, « Informations complémentaires » puis « Exécuter quand même ».
+  - macOS : `NetCanvas-x.y.z-mac-arm64.dmg` (Apple Silicon) ou `-x64.dmg` (Intel). App non signée : clic droit sur l'app, « Ouvrir », la première fois.
+  - Linux : `NetCanvas-x.y.z-linux-amd64.deb` (`sudo apt install ./NetCanvas-….deb`) ou l'AppImage (rendre exécutable, puis lancer).
+- **Sans installation** : https://netcanvas.vercel.app (même application dans le navigateur).
+
+L'application s'ouvre sur un écran d'accueil : nouveau projet, ouvrir un fichier, projets récents, exemples et TP. Les schémas s'enregistrent dans des fichiers `.netcanvas` (Ctrl+S, Ctrl+Maj+S) ; un double-clic sur un `.netcanvas` l'ouvre dans l'application. Dans le navigateur, l'enregistrement réécrit le même fichier quand le navigateur le permet (Chrome, Edge), sinon il le télécharge ; le brouillon en cours est aussi gardé automatiquement.
+
+## Développer
 
 ```bash
 npm install
-npm run dev        # http://localhost:5173
+npm run dev        # site : http://localhost:5173
+npm run desktop    # application de bureau (Electron) sur la version construite
+npm run dist       # installeurs dans release/ (pour le système courant)
 ```
 
-Menu **Démos** :
+Publier une version : mettre à jour `version` dans `package.json`, puis `git tag v1.0.0 && git push origin v1.0.0` ; GitHub Actions construit les installeurs Windows, macOS et Linux et les publie dans les Releases.
+
+Partage par lien (facultatif) : copier `.env.example` en `.env` avec l'URL du projet Supabase et sa clé « publishable » (en CI : secrets `VITE_SUPABASE_URL` et `VITE_SUPABASE_KEY`).
+
+Menu **Fichier > Accueil et exemples** :
 - **2 VLAN, 2 routeurs** : routage statique, liaison série /30 entre R1 et R2 ;
 - **Router-on-a-stick** : un trunk 802.1Q entre le switch et R1, une sous-interface par VLAN ;
 - **Switch niveau 3** : un 3560 route 3 VLAN par ses interfaces VLAN (SVI) et sort vers Internet par R1 ;
@@ -318,6 +334,7 @@ Les fichiers v1 et v2 s'importent toujours : le modèle est déduit des ports ut
 ```bash
 npm test           # 162 tests : calculs IP, ping, validation, JSON, TP, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
 npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : édition, contrôles, ping, persistance, exports, câblage, terminaux (IOS, RouterOS, PC), démos OSPF et BGP (show ip ospf neighbor, next-hop-self retiré)
+npm run test:desktop   # application de bureau (Electron, après npm run build ; sous Linux sans écran : xvfb-run -a) : ouvrir par double-clic, enregistrer, récents, fermeture
 ```
 
 `src/export/containerlab.netns.test.js` monte l'export Containerlab sur un vrai réseau Linux, sans Docker ni root : un namespace réseau par équipement (`unshare -rnm`), des paires veth pour les câbles, puis les commandes générées. Les pings réels doivent donner le même verdict que le simulateur (VLAN, inter-VLAN, 2 routeurs, mauvais VLAN, trunk, démos OSPF et BGP avec les routes calculées). Le test est ignoré si les namespaces utilisateur sont indisponibles.

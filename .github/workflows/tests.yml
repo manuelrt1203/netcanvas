@@ -40,6 +40,9 @@ jobs:
           for i in $(seq 1 60); do curl -sf http://localhost:5173 > /dev/null && break; sleep 1; done
           npm run test:e2e
 
+      - name: Test de l'application de bureau (Electron)
+        run: xvfb-run -a npm run test:desktop
+
       - name: Captures d'écran (en cas d'échec)
         if: failure()
         uses: actions/upload-artifact@v4

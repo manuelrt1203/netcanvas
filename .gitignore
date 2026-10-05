@@ -2,3 +2,4 @@ node_modules
 dist
 e2e/*.png
 .vercel
+release

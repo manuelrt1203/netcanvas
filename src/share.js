@@ -32,7 +32,11 @@ export async function loadShared(id) {
 export const saveShared = (id, token, doc) => rpc('update_diagram', { p_id: id, p_token: token, p_doc: doc, p_name: doc.name });
 
 // Lien de lecture et lien d'édition
-export function shareLinks(id, token, origin = window.location.origin) {
+// Application de bureau (file://) : les liens pointent vers le site public
+export const PUBLIC_SITE = 'https://netcanvas.vercel.app';
+const siteOrigin = () => (window.location.protocol === 'file:' ? PUBLIC_SITE : window.location.origin);
+
+export function shareLinks(id, token, origin = siteOrigin()) {
   const view = `${origin}/?d=${id}`;
   return { view, edit: token ? `${view}#edit=${token}` : null, embed: `${view}&embed=1` };
 }

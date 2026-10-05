@@ -477,18 +477,19 @@ export const TP_OSPF = broken(OSPF_DEMO, 'TP : OSPF ne monte pas', {
   delete devOf(d, 'r3').config.ospf.defaultOriginate; // route par défaut non annoncée
 });
 
+// Exemples livrés avec l'application (menu Exemples, écran d'accueil) ; kind : « tp » = exercice avec objectifs
 export const DEMOS = [
-  { id: 'vlan', label: '2 VLAN, 2 routeurs (statique)', doc: DEMO },
-  { id: 'roas', label: 'Router-on-a-stick (802.1Q)', doc: ROAS_DEMO },
-  { id: 'l3', label: 'Switch niveau 3 (SVI, ip routing)', doc: L3_DEMO },
-  { id: 'nat', label: 'NAT / PAT (box, FAI, serveur publié)', doc: NAT_DEMO },
-  { id: 'dhcp', label: 'DHCP (serveur et relais)', doc: DHCP_DEMO },
-  { id: 'stp', label: 'STP (triangle de switches)', doc: STP_DEMO },
-  { id: 'services', label: 'DNS et web (ACL par port)', doc: SERVICES_DEMO },
-  { id: 'ipv6', label: 'Double pile IPv4 / IPv6', doc: IPV6_DEMO },
-  { id: 'ospf6', label: 'OSPFv3 2 zones (IPv6, Cisco + MikroTik)', doc: OSPF6_DEMO },
-  { id: 'tp-vlan', label: 'TP : inter-VLAN en panne (3 pannes)', doc: TP_INTERVLAN },
-  { id: 'tp-ospf', label: 'TP : OSPF ne monte pas (3 pannes)', doc: TP_OSPF },
-  { id: 'ospf', label: 'OSPF 2 zones (Cisco + MikroTik)', doc: OSPF_DEMO },
-  { id: 'bgp', label: 'BGP eBGP + iBGP', doc: BGP_DEMO },
+  { id: 'vlan', label: '2 VLAN, 2 routeurs (statique)', about: 'VLAN, liaison série, routes statiques et route par défaut.', doc: DEMO },
+  { id: 'roas', label: 'Router-on-a-stick (802.1Q)', about: 'Trunk 802.1Q et une sous-interface par VLAN.', doc: ROAS_DEMO },
+  { id: 'l3', label: 'Switch niveau 3 (SVI, ip routing)', about: 'Routage inter-VLAN par les interfaces VLAN d\'un 3560.', doc: L3_DEMO },
+  { id: 'nat', label: 'NAT / PAT (box, FAI, serveur publié)', about: 'PAT, NAT statique, adresses privées et publiques.', doc: NAT_DEMO },
+  { id: 'dhcp', label: 'DHCP (serveur et relais)', about: 'Pools DHCP, relais ip helper-address, baux datés.', doc: DHCP_DEMO },
+  { id: 'stp', label: 'STP (triangle de switches)', about: 'Root bridge, port bloqué, tempête sans STP.', doc: STP_DEMO },
+  { id: 'services', label: 'DNS et web (ACL par port)', about: 'Serveur DNS et web, ACL étendue par port.', doc: SERVICES_DEMO },
+  { id: 'ospf', label: 'OSPF 2 zones (Cisco + MikroTik)', about: 'Zones, ABR, route par défaut annoncée.', doc: OSPF_DEMO },
+  { id: 'bgp', label: 'BGP eBGP + iBGP', about: 'Deux AS, iBGP entre loopbacks, next-hop-self.', doc: BGP_DEMO },
+  { id: 'ipv6', label: 'Double pile IPv4 / IPv6', about: 'SLAAC, NDP, passerelles link-local, routes IPv6.', doc: IPV6_DEMO },
+  { id: 'ospf6', label: 'OSPFv3 2 zones (IPv6, Cisco + MikroTik)', about: 'OSPFv3 sur link-local, route par défaut IPv6.', doc: OSPF6_DEMO },
+  { id: 'tp-vlan', kind: 'tp', label: 'TP : inter-VLAN en panne (3 pannes)', about: 'Trouve et répare trois pannes ; objectifs vérifiés en direct.', doc: TP_INTERVLAN },
+  { id: 'tp-ospf', kind: 'tp', label: 'TP : OSPF ne monte pas (3 pannes)', about: 'Adjacences OSPF à réparer ; indices progressifs.', doc: TP_OSPF },
 ];

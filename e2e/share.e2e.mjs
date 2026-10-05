@@ -17,8 +17,7 @@ await page.evaluate(() => localStorage.clear());
 await page.reload();
 
 step('création du lien depuis une démo');
-await page.click('summary:has-text("Démos")');
-await page.click('role=menuitem[name="NAT / PAT (box, FAI, serveur publié)"]');
+await page.locator('.welcome .example', { hasText: 'NAT / PAT (box, FAI, serveur publié)' }).click();
 await page.click('role=button[name="Partager"]');
 await page.waitForSelector('.share-dialog[open]');
 const [view, edit] = await page.locator('.share-dialog .copy-row input').evaluateAll((els) => els.map((e) => e.value));

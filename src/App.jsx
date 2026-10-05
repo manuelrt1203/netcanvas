@@ -20,7 +20,8 @@ const Terminal = lazy(() => import('./Terminal.jsx'));
 import { CableInspector, DeviceInspector, MultiInspector, Overview } from './Inspector.jsx';
 import { arrange, copySelection, duplicate, search } from './editing.js';
 import { DEVICE_TYPES, Icon, PALETTE, iconName } from './devices.jsx';
-import { DEMOS } from './examples.js';
+import Welcome from './Welcome.jsx';
+import { desktop, openFile, saveFile, saveFileAs } from './files.js';
 import { toJSON, fromJSON, freePorts, linksOfNode, deviceToData } from './serialize.js';
 import { simulatePing } from './net/simulate.js';
 import { traceroute } from './net/traceroute.js';
@@ -81,16 +82,23 @@ function emptyData(model, count) {
 
 // Signature de la config (sans les positions) pour savoir si une simulation est périmée
 const configSig = (doc) => JSON.stringify([doc.devices.map(({ position, ...d }) => d), doc.links]);
+// Signature du document enregistrable (positions comprises, sans l'état d'exécution) : modifications non enregistrées
+const fileSig = (doc) => JSON.stringify([doc.name, doc.devices, doc.links, doc.exercise ?? null]);
+const VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '';
+const EMPTY_DOC = { format: 'netcanvas', version: 3, name: 'Nouveau réseau', devices: [], links: [] };
 
 function Editor() {
+  // Brouillon enregistré automatiquement. Navigateur : rouvert tel quel. Application de bureau (fichiers) :
+  // l'éditeur démarre vide, le brouillon n'est proposé qu'en récupération depuis l'accueil.
   const draft = useMemo(loadDraft, []);
-  const [nodes, setNodes, onNodesChange] = useNodesState(draft?.nodes ?? []);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(draft?.edges ?? []);
-  const [name, setName] = useState(draft?.name ?? 'Mon réseau');
+  const start = desktop ? null : draft;
+  const [nodes, setNodes, onNodesChange] = useNodesState(start?.nodes ?? []);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(start?.edges ?? []);
+  const [name, setName] = useState(start?.name ?? 'Mon réseau');
   // État d'exécution : temps simulé, baux DHCP, table NAT (enregistré avec le schéma)
-  const [runtime, setRuntime] = useState(() => ({ ...EMPTY_RUNTIME, ...draft?.runtime }));
+  const [runtime, setRuntime] = useState(() => ({ ...EMPTY_RUNTIME, ...start?.runtime }));
   // TP attaché au schéma : consigne et objectifs vérifiés en direct
-  const [exercise, setExercise] = useState(draft?.exercise ?? null);
+  const [exercise, setExercise] = useState(start?.exercise ?? null);
   const [tab, setTab] = useState('props');
   const [cableTool, setCableTool] = useState('auto');
   const [configMode, setConfigModeState] = useState(() => {
@@ -102,14 +110,31 @@ function Editor() {
   });
   const sessions = useRef(new Map()); // sessions des terminaux, par équipement
   const [error, setError] = useState('');
+  // Fichier ouvert ({ name, path | handle }) et signature du document au dernier enregistrement
+  const [file, setFile] = useState(null);
+  const [savedSig, setSavedSig] = useState(null);
+  const [cleanTick, setCleanTick] = useState(0);
+  // Accueil au lancement, sauf lien de partage
+  const [welcome, setWelcome] = useState(() => !parseShareLocation());
+  const [recents, setRecents] = useState([]);
   const [simForm, setSimForm] = useState({ source: '', target: '', custom: '' });
   const [sim, setSim] = useState({ result: null, sig: null, playing: false, view: EMPTY_SIM });
-  const { screenToFlowPosition, setCenter, fitView } = useReactFlow();
+  const { screenToFlowPosition, setCenter, fitView, setViewport } = useReactFlow();
   const wrapper = useRef(null);
-  const importInput = useRef(null);
   const timer = useRef(null);
 
   const doc = useMemo(() => toJSON(nodes, edges, name, runtime, exercise), [nodes, edges, name, runtime, exercise]);
+  const sig = useMemo(() => fileSig(doc), [doc]);
+  const dirty = savedSig !== sig && (Boolean(file) || doc.devices.length > 0);
+  // Après ouverture ou enregistrement : le document affiché devient la référence « enregistrée »
+  useEffect(() => {
+    if (cleanTick) setSavedSig(sig);
+  }, [cleanTick]); // eslint-disable-line react-hooks/exhaustive-deps
+  const markClean = () => setCleanTick((t) => t + 1);
+  useEffect(() => {
+    document.title = `${dirty ? '• ' : ''}${file?.name ?? name} — NetCanvas`;
+    desktop?.setDirty(dirty);
+  }, [dirty, file, name]);
   // Document effectif (clients DHCP avec leur bail), topologie et routage : calculés une fois par modification
   const live = useMemo(() => withLeases(doc), [doc]);
   // Les baux calculés (renouvelés, expirés, d'hôtes partis) sont enregistrés dans l'état d'exécution
@@ -213,11 +238,12 @@ function Editor() {
   };
 
   // Quitter le schéma partagé : retour au brouillon local (« garder » : le schéma devient le brouillon)
-  const leaveShared = (keep) => {
+  // restore : recharger le brouillon (sinon l'appelant charge autre chose)
+  const leaveShared = (keep, restore = true) => {
     if (keep && draft?.nodes.length && !confirm('Remplacer ton brouillon local par ce schéma ?')) return;
-    window.history.replaceState(null, '', '/');
+    window.history.replaceState(null, '', window.location.pathname);
     setShared(null);
-    if (!keep) {
+    if (!keep && restore) {
       const local = loadDraft();
       replaceDoc(local ?? { nodes: [], edges: [], name: 'Mon réseau', runtime: null });
     }
@@ -545,33 +571,105 @@ function Editor() {
     setRuntime({ ...EMPTY_RUNTIME, ...loaded.runtime });
     setExercise(loaded.exercise ?? null);
     setError('');
-    requestAnimationFrame(() => fitView({ maxZoom: 1, duration: reducedMotion() ? 0 : 300 }));
+    if (loaded.nodes.length) requestAnimationFrame(() => fitView({ maxZoom: 1, duration: reducedMotion() ? 0 : 300 }));
+    else setViewport({ x: 0, y: 0, zoom: 1 });
   };
 
-  const importJson = async (e) => {
-    const file = e.target.files[0];
-    e.target.value = '';
-    if (!file) return;
+  // --- Fichiers : nouveau, ouvrir, enregistrer --------------------------------------------
+  const fileMenu = useRef(null);
+  const closeMenu = () => { if (fileMenu.current) fileMenu.current.open = false; };
+  const discardOk = () => !dirty || confirm('Le schéma a des modifications non enregistrées. Les abandonner ?');
+  const startFrom = (loaded, f = null) => {
+    if (shared) leaveShared(false, false);
+    replaceDoc(loaded);
+    setFile(f);
+    markClean();
+    setWelcome(false);
+  };
+  const newProject = () => {
+    closeMenu();
+    if (!discardOk()) return;
+    startFrom(loadDoc(EMPTY_DOC));
+  };
+  const openContent = (content, f) => {
     try {
-      replaceDoc(loadDoc(JSON.parse(await file.text())));
+      startFrom(loadDoc(JSON.parse(content)), f);
+      if (f?.path) desktop?.addRecent(f.path).then(setRecents);
     } catch (err) {
-      setError(err instanceof SyntaxError ? "Ce fichier n'est pas du JSON valide." : err.message);
+      setError(err instanceof SyntaxError ? `${f?.name ?? 'Ce fichier'} n'est pas un schéma NetCanvas (JSON invalide).` : err.message);
     }
   };
-
-  const demoMenu = useRef(null);
-  const loadDemo = (demo = DEMOS[0]) => {
-    if (demoMenu.current) demoMenu.current.open = false;
-    if (nodes.length && !confirm(`Remplacer le schéma actuel par la démo « ${demo.label} » ?`)) return;
-    replaceDoc(loadDoc(demo.doc));
+  const openProject = async () => {
+    closeMenu();
+    if (!discardOk()) return;
+    try {
+      const r = await openFile();
+      if (r) openContent(r.content, r.file);
+    } catch (err) {
+      setError(`Ouverture impossible : ${err.message}`);
+    }
+  };
+  const openPath = async (path) => {
+    if (!discardOk()) return;
+    try {
+      const r = await desktop.readFile(path);
+      openContent(r.content, { name: r.name, path: r.path });
+    } catch (err) {
+      setError(`Ouverture impossible : ${err.message}`);
+      desktop.recentFiles().then(setRecents);
+    }
+  };
+  const saveProject = async (as = false) => {
+    closeMenu();
+    try {
+      const f = as ? await saveFileAs(doc) : await saveFile(doc, file);
+      if (!f) return false;
+      setFile(f.downloaded ? null : f);
+      markClean();
+      if (f.path) desktop?.addRecent(f.path).then(setRecents);
+      return true;
+    } catch (err) {
+      setError(`Enregistrement impossible : ${err.message}`);
+      return false;
+    }
+  };
+  const openExample = (demo) => {
+    closeMenu();
+    if (!discardOk()) return;
+    startFrom(loadDoc(demo.doc));
   };
 
-  const clearAll = () => {
-    if (nodes.length && !confirm('Effacer tout le schéma ?')) return;
-    resetSim();
-    setNodes([]);
-    setEdges([]);
-  };
+  // Application de bureau : menus natifs, fichier ouvert par double-clic, fermeture avec modifications
+  const fileActions = useRef({});
+  fileActions.current = { newProject, openProject, saveProject, openPath, showWelcome: () => setWelcome(true), dirty };
+  useEffect(() => {
+    if (!desktop) return undefined;
+    desktop.recentFiles().then(setRecents);
+    const offMenu = desktop.onMenu(async (cmd) => {
+      const a = fileActions.current;
+      if (cmd === 'new') a.newProject();
+      else if (cmd === 'open') a.openProject();
+      else if (cmd === 'save') a.saveProject(false);
+      else if (cmd === 'save-as') a.saveProject(true);
+      else if (cmd === 'welcome') a.showWelcome();
+      else if (cmd === 'save-and-close') { if (await a.saveProject(false)) desktop.closeNow(); }
+    });
+    const offOpen = desktop.onOpenPath((path) => fileActions.current.openPath(path));
+    desktop.ready();
+    return () => { offMenu(); offOpen(); };
+  }, []);
+  // Navigateur : Ctrl+O, Ctrl+S, Ctrl+Maj+S (l'application de bureau passe par ses menus)
+  useEffect(() => {
+    if (desktop) return undefined;
+    const onKey = (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const k = e.key.toLowerCase();
+      if (k === 's') { e.preventDefault(); fileActions.current.saveProject(e.shiftKey); }
+      else if (k === 'o') { e.preventDefault(); fileActions.current.openProject(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const TABS = [
     ['props', 'Propriétés', errorCount ? errorCount : null, `${errorCount} erreur(s)`],
@@ -606,17 +704,16 @@ function Editor() {
                   onClick={() => setRuntime({ ...EMPTY_RUNTIME })}>↺</button>
               </div>
               {!readOnly && (<>
-              <details className="demo-menu" ref={demoMenu}>
-                <summary className="button ghost">Démos</summary>
+              <details className="demo-menu" ref={fileMenu}>
+                <summary className="button ghost">Fichier</summary>
                 <div className="demo-list" role="menu">
-                  {DEMOS.map((d) => (
-                    <button key={d.id} type="button" role="menuitem" onClick={() => loadDemo(d)}>{d.label}</button>
-                  ))}
+                  <button type="button" role="menuitem" onClick={newProject}>Nouveau</button>
+                  <button type="button" role="menuitem" onClick={openProject}>Ouvrir… <kbd>Ctrl+O</kbd></button>
+                  <button type="button" role="menuitem" onClick={() => saveProject(false)}>Enregistrer <kbd>Ctrl+S</kbd></button>
+                  <button type="button" role="menuitem" onClick={() => saveProject(true)}>Enregistrer sous… <kbd>Ctrl+Maj+S</kbd></button>
+                  <button type="button" role="menuitem" onClick={() => { closeMenu(); setWelcome(true); }}>Accueil et exemples</button>
                 </div>
               </details>
-              <button type="button" className="ghost" onClick={() => importInput.current.click()}>Importer</button>
-              <input ref={importInput} type="file" accept="application/json,.json" hidden onChange={importJson} />
-              <button type="button" className="ghost" onClick={clearAll}>Effacer</button>
               <div className="icon-group" role="group" aria-label="Historique">
                 <button type="button" className="ghost icon" onClick={undo} disabled={!canUndo} aria-label="Annuler (Ctrl+Z)" title="Annuler (Ctrl+Z)">↶</button>
                 <button type="button" className="ghost icon" onClick={redo} disabled={!canRedo} aria-label="Rétablir (Ctrl+Y)" title="Rétablir (Ctrl+Y)">↷</button>
@@ -733,7 +830,7 @@ function Editor() {
               snapToGrid
               snapGrid={[16, 16]}
               // Recadrage seulement à l'ouverture d'un brouillon, sinon le 1er équipement déposé déclenche un zoom x2
-              fitView={Boolean(draft?.nodes.length)}
+              fitView={Boolean(start?.nodes.length)}
               fitViewOptions={{ maxZoom: 1 }}
               defaultViewport={{ x: 0, y: 0, zoom: 1 }}
             >
@@ -744,7 +841,7 @@ function Editor() {
             {nodes.length === 0 && (
               <div className="empty">
                 <p>Glisse un routeur, un switch ou un PC ici pour commencer.</p>
-                <button type="button" className="ghost" onClick={() => loadDemo()}>Ouvrir le schéma de démo</button>
+                <button type="button" className="ghost" onClick={() => setWelcome(true)}>Voir les exemples</button>
               </div>
             )}
           </main>
@@ -869,6 +966,17 @@ function Editor() {
             <p className="hint">Dans le terminal, Ctrl+Z sort du mode configuration (IOS).</p>
             <form method="dialog"><button type="submit">Fermer</button></form>
           </dialog>
+          {welcome && (
+            <Welcome version={VERSION} recents={recents}
+              draft={draft?.nodes.length && !file && !(desktop && nodes.length) ? { name: draft.name ?? 'Mon réseau', count: draft.nodes.length, recover: Boolean(desktop) } : null}
+              onNew={newProject} onOpen={openProject} onRecent={(r) => openPath(r.path)}
+              onResume={() => {
+                // Bureau : on recharge le brouillon (non enregistré, donc marqué modifié)
+                if (desktop) replaceDoc(draft);
+                setWelcome(false);
+              }}
+              onExample={openExample} onClose={() => setWelcome(false)} />
+          )}
         </div>
       </SimContext.Provider>
     </LinkContext.Provider>
