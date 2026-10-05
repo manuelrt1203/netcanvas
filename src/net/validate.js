@@ -197,7 +197,8 @@ export function validate(rawDoc, ctx = {}) {
       for (const e of c.interfaces ?? []) {
         if (e.dhcp6Server && !c.dhcp6Pools?.[e.dhcp6Server]) add(d.id, 'warning', `${d.label} ${e.name} : « ipv6 dhcp server ${e.dhcp6Server} » : ce pool n'existe pas.`);
         else if (e.ndManaged && e.dhcp6Server && !c.dhcp6Pools[e.dhcp6Server].prefix) add(d.id, 'warning', `${d.label} ${e.name} : M=1 mais le pool ${e.dhcp6Server} n'a pas de « address prefix » : les PC n'auront pas d'adresse.`);
-        if ((e.ndManaged || e.ndOther) && !e.dhcp6Server) add(d.id, 'warning', `${d.label} ${e.name} : le drapeau ${e.ndManaged ? 'M' : 'O'} est annoncé mais aucun serveur DHCPv6 (« ipv6 dhcp server ») ne tourne sur l'interface.`);
+        if (e.dhcp6Relay && !isValidIp6(e.dhcp6Relay)) add(d.id, 'error', `${d.label} ${e.name} : relais DHCPv6 vers « ${e.dhcp6Relay} » : adresse IPv6 invalide.`);
+        else if ((e.ndManaged || e.ndOther) && !e.dhcp6Server && !e.dhcp6Relay) add(d.id, 'warning', `${d.label} ${e.name} : le drapeau ${e.ndManaged ? 'M' : 'O'} est annoncé mais il n'y a ni serveur DHCPv6 (« ipv6 dhcp server ») ni relais (« ipv6 dhcp relay destination ») sur l'interface.`);
       }
       // ACL IPv6 appliquées : existence, et « deny ipv6 any any » explicite en entrée qui bloque NDP
       for (const e of c.interfaces ?? []) {

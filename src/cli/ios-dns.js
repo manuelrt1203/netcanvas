@@ -28,10 +28,10 @@ export function dnsConfigCommands(remove = false) {
   return [
     kw('name-server', 'Specify address of name server to use', {
       ...(remove ? { run: (c) => { delete c.dev.config.nameServer; c.changed = true; } } : {}),
-      children: [arg('ip', 'A.B.C.D', 'Domain server IP address', isIp, {
+      children: [arg('ip', 'A.B.C.D | X:X:X:X::X', 'Domain server IP address', (t) => isIp(t) || isValidIp6(t), {
         run: (c) => {
           if (remove) delete c.dev.config.nameServer;
-          else c.dev.config.nameServer = c.args.ip;
+          else c.dev.config.nameServer = isValidIp6(c.args.ip) ? normIp6(c.args.ip) : c.args.ip;
           c.changed = true;
         },
       })],

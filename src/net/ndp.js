@@ -4,11 +4,16 @@
 // Drapeaux de l'annonce (interface du routeur) : M (ndManaged, « ipv6 nd managed-config-flag ») : l'adresse vient
 // du serveur DHCPv6 (stateful) ; O (ndOther, « other-config-flag ») : SLAAC, et le DNS vient de DHCPv6 (stateless).
 // Serveur DHCPv6 : « ipv6 dhcp server POOL » sur l'interface du routeur ; config.dhcp6Pools = { [nom]: { prefix, len, dns } }.
+// Relais : « ipv6 dhcp relay destination ADRESSE » (interface.dhcp6Relay) : le serveur doit être joignable depuis
+// l'adresse du relais, et avoir un pool qui couvre le réseau du relais (comme le giaddr en DHCPv4).
 // Résultat dans config.slaac6 = { ip, prefix, gateway, router, iface, how: 'slaac' | 'dhcp6', dns, dnsError }
 // ou config.slaacError.
 import { flood } from './l2.js';
 import { buildTopology, isHost, v6Forwarding } from './topology.js';
-import { eui64Address, formatIp6, isLinkLocal6, isValidIp6, isValidPrefix6, networkLabel6, networkOf6 } from './ip6.js';
+import { eui64Address, formatIp6, inPrefix6, isLinkLocal6, isValidIp6, isValidPrefix6, networkLabel6, networkOf6, normIp6 } from './ip6.js';
+import { computeRouting } from './routing.js';
+import { isMikrotik } from './catalog.js';
+import { simulatePing } from './simulate.js';
 import { macCisco, macOf } from './mac.js';
 
 const isSlaacClient = (d) => isHost(d) && d.config?.slaac === true;
@@ -33,10 +38,13 @@ function announce(topo, hostId) {
       badPrefix ??= `${dev.label} annonce ${networkLabel6(v6.ip, v6.prefix)} : SLAAC demande un préfixe /64`;
       continue;
     }
-    const pool = v6.dhcp6Server ? dev.config?.dhcp6Pools?.[v6.dhcp6Server] : null;
+    let pool = v6.dhcp6Server ? dev.config?.dhcp6Pools?.[v6.dhcp6Server] : null;
+    // MikroTik : le serveur DHCPv6 donne les serveurs DNS de /ip dns (s'ils sont en IPv6)
+    if (pool && !pool.dns && isMikrotik(dev) && isValidIp6(dev.config?.nameServer)) pool = { ...pool, dns: normIp6(dev.config.nameServer) };
     return {
       router: dev.id, routerLabel: dev.label, iface: v6.name, network: networkLabel6(v6.ip, 64).split('/')[0], gateway: v6.linkLocal,
       managed: Boolean(v6.ndManaged), other: Boolean(v6.ndOther), server: v6.dhcp6Server ?? null, pool,
+      relay: v6.dhcp6Server ? null : normIp6(v6.dhcp6Relay) ?? null, relayFrom: v6.ip,
     };
   }
   return { error: badPrefix ?? silent ?? 'aucun routeur IPv6 n\'envoie d\'annonce RA sur ce réseau' };
@@ -53,9 +61,23 @@ function allocate(pool, used) {
   return null;
 }
 
+// Relais DHCPv6 : serveur joignable et pool du réseau du relais ; { pool, server, label } ou { error }
+function relayed(doc, topo, ra, ctx) {
+  const server = [...topo.devices.values()].find((d) => topo.l3Ifaces6(d.id).some((i) => i.ip === ra.relay));
+  if (!server) return { error: `${ra.routerLabel} relaie vers ${ra.relay}, mais aucun équipement actif n'a cette adresse` };
+  ctx.routing ??= computeRouting(doc, topo);
+  const ping = simulatePing(doc, ra.router, ra.relay, { topo, routing: ctx.routing, srcIp: ra.relayFrom });
+  if (!ping.ok) return { error: `${ra.routerLabel} relaie vers ${ra.relay}, injoignable (${ping.log.findLast((l) => l.level === 'error')?.text})` };
+  const entry = Object.entries(server.config?.dhcp6Pools ?? {})
+    .find(([, p]) => isValidIp6(p.prefix) && isValidPrefix6(p.len) && inPrefix6(ra.network, p.prefix, Math.min(p.len, 64)));
+  if (!entry) return { error: `le serveur ${server.label} n'a pas de pool DHCPv6 pour ${ra.network}/64 (réseau du relais ${ra.routerLabel})` };
+  return { server: entry[0], pool: entry[1], label: server.label, id: server.id };
+}
+
 export function withSlaac(doc) {
   if (!doc.devices.some(isSlaacClient)) return doc;
   const topo = buildTopology(doc);
+  const ctx = {}; // routage calculé une fois, seulement si un relais sert
   const used = new Set(doc.devices.flatMap((d) => topo.l3Ifaces6(d.id, { includeDown: true }).map((i) => i.ip).filter(Boolean)));
   return {
     ...doc,
@@ -65,9 +87,16 @@ export function withSlaac(doc) {
       const ra = announce(topo, d.id);
       if (ra.error) return { ...d, config: { ...config, slaacError: ra.error } };
       const where = `${ra.routerLabel} ${ra.iface}`;
+      // Relais DHCPv6 : le pool vient du serveur distant
+      if ((ra.managed || ra.other) && ra.relay) {
+        const r = relayed(doc, topo, ra, ctx);
+        if (r.error && ra.managed) return { ...d, config: { ...config, slaacError: r.error } };
+        if (!r.error) Object.assign(ra, { server: r.server, pool: r.pool, relayedBy: ra.routerLabel, routerLabel: r.label, serverId: r.id });
+        else ra.relayError = r.error;
+      }
       // Drapeau M ou O : le PC interroge le serveur DHCPv6 du routeur
       const asked = ra.managed || ra.other;
-      const noServer = !ra.server ? `${where} annonce ${ra.managed ? 'M=1 (adresse par DHCPv6)' : 'O=1 (DNS par DHCPv6)'} mais n'a pas de serveur DHCPv6 (« ipv6 dhcp server »)`
+      const noServer = !ra.server ? `${where} annonce ${ra.managed ? 'M=1 (adresse par DHCPv6)' : 'O=1 (DNS par DHCPv6)'} mais n'a ni serveur DHCPv6 (« ipv6 dhcp server ») ni relais (« ipv6 dhcp relay destination »)`
         : !ra.pool ? `le pool DHCPv6 ${ra.server} de ${ra.routerLabel} n'existe pas` : null;
       if (ra.managed && noServer) return { ...d, config: { ...config, slaacError: noServer } };
       let ip;
@@ -81,12 +110,12 @@ export function withSlaac(doc) {
         ip = eui64Address(ra.network, macCisco(macOf(d, topo.hostIface(d.id).name)));
       }
       const dns = asked && ra.pool?.dns && isValidIp6(ra.pool.dns) ? ra.pool.dns : null;
-      const dnsError = asked && noServer ? noServer : null;
+      const dnsError = asked && (ra.relayError ?? noServer) ? ra.relayError ?? noServer : null;
       return {
         ...d,
         config: {
           ...config,
-          slaac6: { ip, prefix: 64, gateway: ra.gateway, router: ra.router, iface: ra.iface, how, ...(dns ? { dns } : {}), ...(dnsError ? { dnsError } : {}) },
+          slaac6: { ip, prefix: 64, gateway: ra.gateway, router: ra.router, iface: ra.iface, how, server: ra.serverId ?? ra.router, ...(ra.relayedBy ? { relay: ra.relayedBy } : {}), ...(dns ? { dns } : {}), ...(dnsError ? { dnsError } : {}) },
         },
       };
     }),

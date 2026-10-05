@@ -2,7 +2,7 @@
 // ipv6 unicast-routing, ipv6 route, show ipv6 interface brief / route / neighbors, ping et traceroute IPv6.
 import { arg, kw, rest } from './engine.js';
 import { pad, withDevice } from './device.js';
-import { isLinkLocal6, isValidIp6, networkLabel6, normIp6, sameSubnet6, splitPrefix6 } from '../net/ip6.js';
+import { inPrefix6, isLinkLocal6, isValidIp6, networkLabel6, normIp6, sameSubnet6, splitPrefix6 } from '../net/ip6.js';
 import { buildTopology } from '../net/topology.js';
 import { computeRouting } from '../net/routing.js';
 import { withLeases } from '../net/dhcp.js';
@@ -220,7 +220,14 @@ export function dhcp6InterfaceCommands(forIfaces, guard = (run) => run, remove =
   const flag = (key) => guard((c) => forIfaces(c, (e) => { if (remove) delete e[key]; else e[key] = true; }));
   return [
     kw('dhcp', 'IPv6 DHCP interface subcommands', {
-      children: [kw('server', 'Configure IPv6 DHCP server on this interface', {
+      children: [kw('relay', 'Act as an IPv6 DHCP relay agent', {
+        children: [kw('destination', 'Configure relay destination', {
+          ...(remove ? { run: guard((c) => forIfaces(c, (e) => { delete e.dhcp6Relay; })) } : {}),
+          children: [arg('ip', 'X:X:X:X::X', 'IPv6 address', isValidIp6, {
+            run: guard((c) => forIfaces(c, (e) => { if (remove) delete e.dhcp6Relay; else e.dhcp6Relay = normIp6(c.args.ip); })),
+          })],
+        })],
+      }), kw('server', 'Configure IPv6 DHCP server on this interface', {
         ...(remove ? { run: guard((c) => forIfaces(c, (e) => { delete e.dhcp6Server; })) } : {}),
         children: [arg('pool', 'WORD', 'Name of IPv6 DHCP pool', isName, {
           run: guard((c) => forIfaces(c, (e) => { if (remove) delete e.dhcp6Server; else e.dhcp6Server = c.args.pool; })),
@@ -295,10 +302,10 @@ export function dhcp6PoolTree(common) {
 function showDhcp6(c, what) {
   const doc = liveDoc(c);
   const pools = Object.entries(c.dev.config?.dhcp6Pools ?? {});
-  const bindings = doc.devices.filter((d) => d.config?.slaac6?.how === 'dhcp6' && d.config.slaac6.router === c.dev.id);
+  const bindings = doc.devices.filter((d) => d.config?.slaac6?.how === 'dhcp6' && (d.config.slaac6.server ?? d.config.slaac6.router) === c.dev.id);
   if (what === 'pool') {
     return [...pools.flatMap(([name, p]) => {
-      const n = bindings.filter((b) => (c.dev.config.interfaces ?? []).some((i) => i.dhcp6Server === name && i.name === b.config.slaac6.iface)).length;
+      const n = bindings.filter((b) => b.config.slaac6.ip && isValidIp6(p.prefix) && inPrefix6(b.config.slaac6.ip, p.prefix, p.len)).length;
       return [`DHCPv6 pool: ${name}`, ...(p.prefix ? [`  Address allocation prefix: ${UP(p.prefix)}/${p.len} valid 172800 preferred 86400 (${n} in use, 0 conflicts)`] : []),
         ...(p.dns ? [`  DNS server: ${UP(p.dns)}`] : []), `  Active clients: ${n}`];
     }), ''];

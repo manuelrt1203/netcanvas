@@ -10,7 +10,11 @@ import { ndRows } from '../net/tables.js';
 import { macColon } from '../net/mac.js';
 
 export const IPV6_MENUS = {
-  ipv6: { menus: ['address', 'route', 'settings', 'neighbor', 'firewall'], commands: ['export'] },
+  ipv6: { menus: ['address', 'route', 'settings', 'neighbor', 'firewall', 'pool', 'dhcp-server', 'dhcp-relay', 'nd'], commands: ['export'] },
+  'ipv6 pool': { menus: [], commands: ['add', 'print', 'remove'] },
+  'ipv6 dhcp-server': { menus: [], commands: ['add', 'print', 'remove'] },
+  'ipv6 dhcp-relay': { menus: [], commands: ['add', 'print', 'remove'] },
+  'ipv6 nd': { menus: [], commands: ['set', 'print'] },
   'ipv6 firewall': { menus: ['filter'], commands: [] },
   'ipv6 firewall filter': { menus: [], commands: ['add', 'print', 'remove'] },
   'ipv6 address': { menus: [], commands: ['add', 'print', 'remove', 'export'] },
@@ -19,7 +23,9 @@ export const IPV6_MENUS = {
   'ipv6 neighbor': { menus: [], commands: ['print'] },
 };
 export const IPV6_ARGS = {
-  'ipv6 address|add': 'address= interface= eui-64= advertise=', 'ipv6 route|add': 'dst-address= gateway=', 'ipv6 settings|set': 'forward=',
+  'ipv6 address|add': 'address= interface= eui-64= advertise=',
+  'ipv6 pool|add': 'name= prefix= prefix-length=', 'ipv6 dhcp-server|add': 'name= interface= address-pool=',
+  'ipv6 dhcp-relay|add': 'name= interface= dhcp-server=', 'ipv6 nd|set': '[ find interface= ] managed-address-configuration= other-configuration=', 'ipv6 route|add': 'dst-address= gateway=', 'ipv6 settings|set': 'forward=',
 };
 
 const index = (n, items) => {
@@ -142,6 +148,81 @@ export function runIpv6(ctx, p, isIface) {
     case 'ipv6 settings|print':
       out.push(`  forward: ${c.ipv6NoForward ? 'no' : 'yes'}`, '  accept-router-advertisements: yes-if-forwarding-disabled', '');
       return true;
+    // --- DHCPv6 : pools, serveur sur une interface, drapeaux M / O des annonces, relais ---
+    case 'ipv6 pool|add': {
+      const pr = splitPrefix6(p.named.prefix ?? '');
+      if (!p.named.name) return out.push('failure: name required', ''), true;
+      if (!pr) return out.push('failure: invalid value for argument prefix', ''), true;
+      c.dhcp6Pools = { ...(c.dhcp6Pools ?? {}), [p.named.name]: { ...(c.dhcp6Pools?.[p.named.name] ?? {}), prefix: networkLabel6(pr.ip, pr.prefix).split('/')[0], len: pr.prefix } };
+      ctx.changed = true;
+      return true;
+    }
+    case 'ipv6 pool|print':
+      out.push('Columns: NAME, PREFIX, PREFIX-LENGTH', `#  ${pad('NAME', 14)}${pad('PREFIX', 28)}PREFIX-LENGTH`);
+      Object.entries(c.dhcp6Pools ?? {}).forEach(([n, x], i) => out.push(`${pad(i, 3)}${pad(n, 14)}${pad(`${x.prefix ?? ''}/${x.len ?? ''}`, 28)}128`));
+      out.push('');
+      return true;
+    case 'ipv6 pool|remove': {
+      const names = Object.keys(c.dhcp6Pools ?? {});
+      const i = index(p.named.numbers ?? p.unnamed[0], names);
+      if (i === null) return out.push('no such item', ''), true;
+      delete c.dhcp6Pools[names[i]];
+      if (!Object.keys(c.dhcp6Pools).length) delete c.dhcp6Pools;
+      ctx.changed = true;
+      return true;
+    }
+    case 'ipv6 dhcp-server|add': {
+      if (!p.named.interface || !isIface(p.named.interface)) return out.push('input does not match any value of interface', ''), true;
+      if (!c.dhcp6Pools?.[p.named['address-pool']]) return out.push('input does not match any value of address-pool', ''), true;
+      ensureEntry(dev, p.named.interface, ctx.doc).dhcp6Server = p.named['address-pool'];
+      ctx.changed = true;
+      return true;
+    }
+    case 'ipv6 dhcp-server|print':
+    case 'ipv6 dhcp-relay|print': {
+      const relay = p.path[1] === 'dhcp-relay';
+      const rows = (c.interfaces ?? []).filter((e) => (relay ? e.dhcp6Relay : e.dhcp6Server));
+      out.push(relay ? `#  ${pad('INTERFACE', 12)}DHCP-SERVER` : `#  ${pad('INTERFACE', 12)}ADDRESS-POOL`);
+      rows.forEach((e, i) => out.push(`${pad(i, 3)}${pad(e.name, 12)}${relay ? e.dhcp6Relay : e.dhcp6Server}`));
+      out.push('');
+      return true;
+    }
+    case 'ipv6 dhcp-server|remove':
+    case 'ipv6 dhcp-relay|remove': {
+      const key = p.path[1] === 'dhcp-relay' ? 'dhcp6Relay' : 'dhcp6Server';
+      const rows = (c.interfaces ?? []).filter((e) => e[key]);
+      const i = index(p.named.numbers ?? p.unnamed[0], rows);
+      if (i === null) return out.push('no such item', ''), true;
+      delete rows[i][key];
+      ctx.changed = true;
+      return true;
+    }
+    case 'ipv6 dhcp-relay|add': {
+      if (!p.named.interface || !isIface(p.named.interface)) return out.push('input does not match any value of interface', ''), true;
+      if (!isValidIp6(p.named['dhcp-server'] ?? '')) return out.push('failure: invalid value for argument dhcp-server', ''), true;
+      ensureEntry(dev, p.named.interface, ctx.doc).dhcp6Relay = normIp6(p.named['dhcp-server']);
+      ctx.changed = true;
+      return true;
+    }
+    // « set [ find interface=ether2 ] managed-address-configuration=yes other-configuration=yes »
+    case 'ipv6 nd|set': {
+      const name = (p.named.interface ?? '').replace(/\]$/, '');
+      if (!isIface(name)) return out.push('no such item', ''), true;
+      const e = ensureEntry(dev, name, ctx.doc);
+      for (const [arg, key] of [['managed-address-configuration', 'ndManaged'], ['other-configuration', 'ndOther']]) {
+        if (p.named[arg] === undefined) continue;
+        if (!['yes', 'no'].includes(p.named[arg])) return out.push(`invalid value for argument ${arg}`, ''), true;
+        if (p.named[arg] === 'yes') e[key] = true;
+        else delete e[key];
+      }
+      ctx.changed = true;
+      return true;
+    }
+    case 'ipv6 nd|print':
+      out.push(`#  ${pad('INTERFACE', 12)}${pad('RA', 5)}MANAGED-ADDRESS-CONFIGURATION OTHER-CONFIGURATION`);
+      (c.interfaces ?? []).filter((e) => e.ipv6).forEach((e, i) => out.push(`${pad(i, 3)}${pad(e.name, 12)}${pad('yes', 5)}${pad(e.ndManaged ? 'yes' : 'no', 30)}${e.ndOther ? 'yes' : 'no'}`));
+      out.push('');
+      return true;
     case 'ipv6 neighbor|print': {
       out.push('Columns: ADDRESS, INTERFACE, MAC-ADDRESS, STATUS', `#  ${pad('ADDRESS', 40)}${pad('INTERFACE', 10)}${pad('MAC-ADDRESS', 19)}STATUS`);
       ndRows(dev, live(ctx)).forEach((r, i) => out.push(`${pad(i, 3)}${pad(r.ip, 40)}${pad(r.iface, 10)}${pad(macColon(r.mac), 19)}${r.state === 'REACH' ? 'reachable' : 'stale'}`));
@@ -165,5 +246,13 @@ export function ipv6Script(dev) {
   const routes = (c.routes6 ?? []).filter((r) => isValidIp6(r.network) && r.nextHop);
   if (routes.length) lines.push('/ipv6 route', ...routes.map((r) => `add dst-address=${normIp6(r.network)}/${r.prefix} gateway=${r.nextHop}${r.iface ? `%${r.iface}` : ''}`));
   if (c.ipv6NoForward) lines.push('/ipv6 settings', 'set forward=no');
+  const pools = Object.entries(c.dhcp6Pools ?? {}).filter(([, x]) => x.prefix);
+  if (pools.length) lines.push('/ipv6 pool', ...pools.map(([n, x]) => `add name=${n} prefix=${x.prefix}/${x.len} prefix-length=128`));
+  const servers = (c.interfaces ?? []).filter((e) => e.dhcp6Server);
+  if (servers.length) lines.push('/ipv6 dhcp-server', ...servers.map((e) => `add address-pool=${e.dhcp6Server} interface=${e.name} name=dhcp6-${e.name}`));
+  const relays = (c.interfaces ?? []).filter((e) => e.dhcp6Relay);
+  if (relays.length) lines.push('/ipv6 dhcp-relay', ...relays.map((e) => `add dhcp-server=${e.dhcp6Relay} interface=${e.name} name=relay6-${e.name}`));
+  const nd = (c.interfaces ?? []).filter((e) => e.ndManaged || e.ndOther);
+  if (nd.length) lines.push('/ipv6 nd', ...nd.map((e) => `set [ find interface=${e.name} ] managed-address-configuration=${e.ndManaged ? 'yes' : 'no'} other-configuration=${e.ndOther ? 'yes' : 'no'}`));
   return lines;
 }

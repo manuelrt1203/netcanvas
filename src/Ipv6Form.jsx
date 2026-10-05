@@ -67,6 +67,11 @@ export function Ipv6IfaceFields({ entry = {}, patch, loopback = false, v6, pools
             </div>
           )}
           {entry.ipv6 && pools.length > 0 && <PoolSelect value={entry.dhcp6Server} pools={pools} onChange={(dhcp6Server) => patch({ dhcp6Server })} />}
+          {entry.ipv6 && !entry.dhcp6Server && (entry.ndManaged || entry.ndOther || entry.dhcp6Relay) && (
+            <Input label="Relais DHCPv6 vers (ipv6 dhcp relay destination)" placeholder="2001:db8:acad:12::2" value={entry.dhcp6Relay ?? ''}
+              error={entry.dhcp6Relay && !isValidIp6(entry.dhcp6Relay) ? 'Adresse IPv6 du serveur DHCPv6 attendue' : null}
+              onChange={(e) => patch({ dhcp6Relay: e.target.value.trim() || undefined })} />
+          )}
           {!entry.ipv6 && !entry.linkLocal && (
             <label className="check">
               <input type="checkbox" checked={Boolean(entry.ipv6Enable)} onChange={(e) => patch({ ipv6Enable: e.target.checked || undefined })} /> IPv6 actif sans adresse globale (ipv6 enable)
@@ -201,7 +206,7 @@ export function Ipv6RoutingForm({ node, update }) {
       <button type="button" className="ghost small" onClick={() => setRoutes([...routes, { network: '', prefix: 64 }])}>Ajouter une route IPv6</button>
       <p className="hint">Route par défaut : ::/0. Un saut suivant link-local (fe80::) exige l'interface de sortie.</p>
       <Ospf6Fields node={node} update={update} />
-      {!mk && <Dhcp6Pools node={node} update={update} />}
+      <Dhcp6Pools node={node} update={update} />
     </details>
   );
 }

@@ -390,6 +390,7 @@ export function iosIpv6IfaceLines(e, cfg = {}) {
     ...(e.ndManaged ? [' ipv6 nd managed-config-flag'] : []),
     ...(e.ndOther ? [' ipv6 nd other-config-flag'] : []),
     ...(e.dhcp6Server ? [` ipv6 dhcp server ${e.dhcp6Server}`] : []),
+    ...(e.dhcp6Relay ? [` ipv6 dhcp relay destination ${UP6(e.dhcp6Relay)}`] : []),
     ...(e.aclIn6 ? [` ipv6 traffic-filter ${e.aclIn6} in`] : []),
     ...(e.aclOut6 ? [` ipv6 traffic-filter ${e.aclOut6} out`] : []),
   ];

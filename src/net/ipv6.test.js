@@ -463,8 +463,8 @@ test('DHCPv6 : stateful (M), stateless (O), erreurs expliquées, terminal IOS', 
   // M=1 sans serveur : pas d'adresse, raison donnée ; contrôle côté routeur
   const bad = structuredClone(doc);
   delete dev(bad, 'r1').config.interfaces.find((i) => i.name === 'G0/0').dhcp6Server;
-  assert.match(dev(withLeases(bad), 'pc1').config.slaacError, /R1 G0\/0 annonce M=1 \(adresse par DHCPv6\) mais n'a pas de serveur DHCPv6/);
-  assert.ok(validate(bad).some((i) => /R1 G0\/0 : le drapeau M est annoncé mais aucun serveur DHCPv6/.test(i.text)));
+  assert.match(dev(withLeases(bad), 'pc1').config.slaacError, /R1 G0\/0 annonce M=1 \(adresse par DHCPv6\) mais n'a ni serveur DHCPv6 \(« ipv6 dhcp server »\) ni relais/);
+  assert.ok(validate(bad).some((i) => /R1 G0\/0 : le drapeau M est annoncé mais il n.y a ni serveur DHCPv6/.test(i.text)));
   // Terminal IOS : même config, show ipv6 dhcp binding
   const blank = structuredClone(IPV6_DEMO);
   const t = await terminal(blank, 'r1');
@@ -481,4 +481,55 @@ test('DHCPv6 : stateful (M), stateless (O), erreurs expliquées, terminal IOS', 
   const back = importConfig(dev(fresh, 'r1'), fresh, run).device.config;
   assert.deepEqual(back.dhcp6Pools, dev(t.doc, 'r1').config.dhcp6Pools);
   assert.equal(back.interfaces.find((i) => i.name === 'G0/0').dhcp6Server, 'VLAN10');
+});
+
+test('Relais DHCPv6 (ipv6 dhcp relay destination) : pool du serveur distant, erreurs expliquées', async () => {
+  const { withLeases } = await import('./dhcp.js');
+  const doc = structuredClone(IPV6_DEMO);
+  // Le serveur DHCPv6 est R2 ; R1 relaie pour le VLAN 10 vers l'adresse de R2 sur la liaison série
+  dev(doc, 'r2').config.dhcp6Pools = { VLAN10: { prefix: '2001:db8:acad:10::', len: 64, dns: '2001:db8:acad:30::10' } };
+  Object.assign(dev(doc, 'r1').config.interfaces.find((i) => i.name === 'G0/0'), { ndManaged: true, dhcp6Relay: '2001:db8:acad:12::2' });
+  const pc1 = dev(withLeases(doc), 'pc1').config.slaac6;
+  assert.deepEqual([pc1.how, pc1.ip, pc1.dns, pc1.relay, pc1.server], ['dhcp6', '2001:db8:acad:10::2', '2001:db8:acad:30::10', 'R1', 'r2']);
+  // Pas de pool pour ce réseau sur le serveur
+  const nopool = structuredClone(doc);
+  dev(nopool, 'r2').config.dhcp6Pools = { AUTRE: { prefix: '2001:db8:acad:99::', len: 64 } };
+  assert.match(dev(withLeases(nopool), 'pc1').config.slaacError, /le serveur R2 n'a pas de pool DHCPv6 pour 2001:db8:acad:10::\/64 \(réseau du relais R1\)/);
+  // Serveur injoignable : routage IPv6 coupé sur R2 → le relais ne passe pas
+  const down = structuredClone(doc);
+  dev(down, 'r1').config.routes6 = [];
+  dev(down, 'r1').config.interfaces.find((i) => i.name === 'G0/0').dhcp6Relay = '2001:db8:acad:30::1';
+  assert.match(dev(withLeases(down), 'pc1').config.slaacError, /R1 relaie vers 2001:db8:acad:30::1, injoignable/);
+  // Terminal IOS et running-config
+  const t = await terminal(structuredClone(IPV6_DEMO), 'r1');
+  t.run('enable', 'configure terminal', 'interface g0/0', 'ipv6 nd managed-config-flag', 'ipv6 dhcp relay destination 2001:DB8:ACAD:12::2', 'end');
+  assert.equal(dev(t.doc, 'r1').config.interfaces.find((i) => i.name === 'G0/0').dhcp6Relay, '2001:db8:acad:12::2');
+  assert.match(t.run('show running-config'), / ipv6 dhcp relay destination 2001:DB8:ACAD:12::2/);
+});
+
+test('MikroTik : serveur DHCPv6 (/ipv6 pool, dhcp-server, nd), relais, export et import', async () => {
+  const { OSPF6_DEMO } = await import('../examples.js');
+  const { withLeases } = await import('./dhcp.js');
+  const m = await terminal(structuredClone(OSPF6_DEMO), 'r3');
+  m.run('/ipv6 pool add name=SERVEURS prefix=2001:db8:3:1::/64 prefix-length=128',
+    '/ip dns set servers=2001:db8:f::53',
+    '/ipv6 dhcp-server add name=dhcp6 interface=ether2 address-pool=SERVEURS',
+    '/ipv6 nd set [ find interface=ether2 ] managed-address-configuration=yes other-configuration=yes');
+  assert.match(m.run('/ipv6 dhcp-server add interface=ether2 address-pool=INCONNU'), /address-pool/);
+  const srv = dev(withLeases(m.doc), 'srv').config.slaac6;
+  // ::1 est le MikroTik : première adresse libre ::2 ; DNS = serveurs de /ip dns
+  assert.deepEqual([srv.how, srv.ip, srv.dns], ['dhcp6', '2001:db8:3:1::2', '2001:db8:f::53']);
+  assert.match(m.run('/ipv6 nd print'), /ether2\s+yes\s+yes\s+yes/);
+  const exported = m.run('/export');
+  assert.match(exported, /\/ipv6 pool\nadd name=SERVEURS prefix=2001:db8:3:1::\/64 prefix-length=128\n\/ipv6 dhcp-server\nadd address-pool=SERVEURS interface=ether2 name=dhcp6-ether2/);
+  assert.match(exported, /\/ipv6 nd\nset \[ find interface=ether2 \] managed-address-configuration=yes other-configuration=yes/);
+  const { importConfig } = await import('../cli/import.js');
+  const fresh = structuredClone(OSPF6_DEMO);
+  const back = importConfig(dev(fresh, 'r3'), fresh, exported).device.config;
+  assert.deepEqual(back.dhcp6Pools, dev(m.doc, 'r3').config.dhcp6Pools);
+  assert.deepEqual(['dhcp6Server', 'ndManaged', 'ndOther'].map((k) => back.interfaces.find((i) => i.name === 'ether2')[k]), ['SERVEURS', true, true]);
+  // Relais MikroTik
+  m.run('/ipv6 dhcp-relay add name=r interface=ether1 dhcp-server=2001:db8:ffff::1');
+  assert.equal(dev(m.doc, 'r3').config.interfaces.find((i) => i.name === 'ether1').dhcp6Relay, '2001:db8:ffff::1');
+  assert.match(m.run('/export'), /\/ipv6 dhcp-relay\nadd dhcp-server=2001:db8:ffff::1 interface=ether1/);
 });

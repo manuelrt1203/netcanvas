@@ -163,7 +163,7 @@ function runDns(ctx, p) {
       if (servers === undefined && remote === undefined) return out.push('expected end of command', ''), true;
       if (servers !== undefined) {
         const first = servers.split(',')[0];
-        if (first && !isValidIp(first)) return out.push('invalid value for argument servers', ''), true;
+        if (first && !isValidIp(first) && !isValidIp6(first)) return out.push('invalid value for argument servers', ''), true;
         if (first) c.nameServer = first;
         else delete c.nameServer;
       }
