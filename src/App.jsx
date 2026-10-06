@@ -1151,7 +1151,7 @@ function Editor() {
                   routing={routing.routers.get(selected.id)} issues={issues.filter((i) => i.device === selected.id)}
                   live={live.devices.find((d) => d.id === selected.id)?.config}
                   live6={new Map(topo.l3Ifaces6(selected.id, { includeDown: true }).map((i) => [i.name, i]))}
-                  importer={!readOnly && (selected.type === 'router' || selected.type === 'switch') && (
+                  importer={!readOnly && (selected.type === 'router' || selected.type === 'switch' || HOST_TYPES.has(selected.type)) && (
                     <ConfigImport device={selectedDevice} doc={doc} onApply={(dev) => updateNode(selected.id)(() => deviceToData(dev, doc.links))} />
                   )}
                   terminal={hasTerminal(selectedDevice) && (

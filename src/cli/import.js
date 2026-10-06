@@ -129,12 +129,12 @@ export function configInterfaces(text) {
 
 const mediaOf = (name) => (name.startsWith('Se') ? 'serial' : 'copper');
 
-// Modules qui donnent exactement ces interfaces sur ce modèle, ou null
-function fitModel(modelKey, names) {
+// Modules qui donnent exactement ces interfaces sur ce modèle (exact : false -> au moins ces interfaces), ou null
+export function fitModel(modelKey, names, { exact = true } = {}) {
   const model = MODELS[modelKey];
   const want = new Set(names);
   const fixed = model.ports.filter((p) => isDataMedia(p.media)).map((p) => p.name);
-  if (fixed.some((n) => !want.has(n))) return null; // « show run » liste toutes les interfaces : aucune en trop
+  if (exact && fixed.some((n) => !want.has(n))) return null; // « show run » liste toutes les interfaces : aucune en trop
   const modules = {};
   const left = new Set(names.filter((n) => !fixed.includes(n)));
   for (const slot of slotList(model)) {
@@ -142,8 +142,8 @@ function fitModel(modelKey, names) {
     const best = Object.entries(MODULES)
       .filter(([, mod]) => mod.slot === slot.kind)
       .map(([id, mod]) => [id, mod.ports(slot.n).map((p) => p.name)])
-      .filter(([, ports]) => ports.every((n) => left.has(n)))
-      .sort((a, b) => b[1].length - a[1].length)[0];
+      .filter(([, ports]) => (exact ? ports.every((n) => left.has(n)) : ports.some((n) => left.has(n))))
+      .sort((a, b) => b[1].filter((n) => left.has(n)).length - a[1].filter((n) => left.has(n)).length || b[1].length - a[1].length)[0];
     if (best) {
       modules[slot.id] = best[0];
       best[1].forEach((n) => left.delete(n));

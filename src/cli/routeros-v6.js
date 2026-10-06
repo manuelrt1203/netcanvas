@@ -378,7 +378,8 @@ export function routingScriptV6(dev) {
       ...(o.networks ?? []).map((x) => [`${x.network}/${wildcardToCidr(x.wildcard)}`, x.area]),
       ...(o.interfaces ?? []).map((x) => [subnetOf(cfg, x.name), x.area]).filter(([net]) => net),
     ];
-    if (nets.length) out.push('/routing ospf network', ...nets.map(([net, a]) => `add area=${areaName(o, a)} network=${net}`));
+    const lines = [...new Set(nets.map(([net, a]) => `add area=${areaName(o, a)} network=${net}`))];
+    if (lines.length) out.push('/routing ospf network', ...lines);
   }
   const o6 = cfg.ospf6;
   if (o6) {
