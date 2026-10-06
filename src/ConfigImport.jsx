@@ -24,7 +24,8 @@ export default function ConfigImport({ device, doc, onApply }) {
     return { ...m, lost: cabled.filter((n) => !have.has(n)) };
   });
   const usable = models.filter((m) => !m.lost.length);
-  const choice = !analysis?.missing.length ? 'keep' : ports.choice ?? (usable.length ? 'model' : 'rename');
+  // Par défaut : le modèle compatible s'il y en a un, sinon tel quel (pas de renommage silencieux)
+  const choice = !analysis?.missing.length ? 'keep' : ports.choice ?? (usable.length ? 'model' : 'keep');
   const target = usable.find((m) => m.id === ports.model) ?? usable[0];
   const mapping = { ...analysis?.mapping, ...ports.mapping };
   const ownPorts = devicePorts(modelId(device), device.modules).filter((p) => isDataMedia(p.media));
