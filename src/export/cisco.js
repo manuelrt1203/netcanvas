@@ -43,7 +43,10 @@ export function hostname(label, type) {
 function gns3PortName(table, peer, link) {
   const row = table.get(peer.id)?.find((r) => r.link === link);
   if (!row) return peer.port;
-  if (peer.type === 'router') return row.index < C7200_MAX_PORTS ? c7200Port(row.index).name : peer.port;
+  if (peer.type === 'router') {
+    if (MODELS[peer.model]?.gns3) return iosInterfaceName(peer.port) ?? peer.port;
+    return row.index < C7200_MAX_PORTS ? c7200Port(row.index).name : peer.port;
+  }
   if (peer.type === 'switch' || peer.type === 'hub') return `port ${row.index}`;
   return 'e0';
 }
@@ -56,7 +59,10 @@ const genericWarning = (d) =>
   modelOf(d).generic ? [`${modelOf(d).label} : choisis un modèle Cisco pour que les noms de ports correspondent à Packet Tracer.`] : [];
 
 function routerConfig(d, rows, { target, table, topo }) {
-  const warnings = target === 'gns3' ? [] : genericWarning(d);
+  const native = Boolean(modelOf(d).gns3); // c3640, c3725, c7200 : ports réels de GNS3, pas de renumérotation
+  const warnings = target === 'gns3' ? [] : native
+    ? [`${modelOf(d).label} n'existe pas dans Packet Tracer : les noms de ports ne correspondront pas à un 2911.`]
+    : genericWarning(d);
   const lines = [];
   const cfg = d.config ?? {};
   const end = target === 'gns3' ? '!' : ' exit';
@@ -72,7 +78,7 @@ function routerConfig(d, rows, { target, table, topo }) {
 
   for (const row of rows) {
     let ifname;
-    if (target === 'gns3') {
+    if (target === 'gns3' && !native) {
       if (row.index >= C7200_MAX_PORTS) {
         warnings.push(`${row.name} ignorée : un c7200 a au plus ${C7200_MAX_PORTS} ports FastEthernet.`);
         continue;
@@ -96,7 +102,7 @@ function routerConfig(d, rows, { target, table, topo }) {
     // Liaison série : le côté DCE fournit l'horloge
     const link = topo.links.get(row.link);
     const isDce = link?.cable === 'serial' && (link.dce === 'target' ? link.target : link.source) === d.id;
-    if (target !== 'gns3' && isDce) {
+    if ((target !== 'gns3' || native) && isDce) {
       if (row.clockRate) lines.push(` clock rate ${row.clockRate}`);
       else warnings.push(`${ifname} est le côté DCE de la liaison série mais n'a pas de clock rate.`);
     }

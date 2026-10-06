@@ -3,10 +3,13 @@
 // écrivent la même config : l'import passe donc par les mêmes commandes, avec les mêmes contrôles.
 import { shellFor } from './index.js';
 import { host } from './host.js';
-import { isMikrotik } from '../net/catalog.js';
+import { MODELS, MODULES, devicePorts, isDataMedia, isMikrotik, modelId, slotList } from '../net/catalog.js';
 
 // Lignes sans effet sur la simulation : en-têtes de « show run », commentaires
-const NOISE_IOS = [/^!/, /^Building configuration/i, /^Current configuration/i, /^Last configuration change/i, /^version \S+$/, /^end$/, /^boot-(start|end)-marker$/];
+const NOISE_IOS = [/^!/, /^\S+#\s*(sh|show)\s/i, /^Building configuration/i, /^Current configuration/i, /^Last configuration change/i, /^version \S+$/, /^end$/, /^boot-(start|end)-marker$/];
+
+// Sections IOS acceptées sans effet : leurs lignes indentées (« archive / log config / hidekeys ») le sont aussi
+const NOOP_SECTIONS = /^(archive|control-plane|crypto|voice|gatekeeper|call-home|license|redundancy)\b/i;
 
 // IOS : bannières sur plusieurs lignes (« banner motd ^C ... ^C ») et lignes vides retirées
 function iosLines(text) {
@@ -76,6 +79,7 @@ export function importConfig(device, doc, text) {
   let applied = 0;
   const ignored = [];
   let refused = null; // section (interface, router…) refusée : ses lignes indentées sont ignorées avec elle
+  let noop = false; // section sans effet sur la simulation (archive, control-plane…) : son contenu aussi
   for (const { n, text: line, skipped, indented } of mk ? routerosLines(text) : iosLines(text)) {
     if (skipped) {
       ignored.push({ n, text: line, reason: skipped });
@@ -85,6 +89,8 @@ export function importConfig(device, doc, text) {
       ignored.push({ n, text: line, reason: `ignorée avec « ${refused} » (ligne refusée plus haut)` });
       continue;
     }
+    if (!indented) noop = !mk && NOOP_SECTIONS.test(line);
+    else if (noop) continue;
     if (!indented) refused = null;
     // Une config collée ne quitte jamais le mode configuration
     if (!mk && /^(end|exit)$/i.test(line) && session.mode === 'config') continue;
@@ -97,4 +103,84 @@ export function importConfig(device, doc, text) {
     if (!mk && (session.mode === 'priv' || session.mode === 'user')) shell.run(session, 'configure terminal', dev, docOf());
   }
   return { device: dev, applied, ignored };
+}
+
+// --- Interfaces d'une config venue d'un autre modèle ----------------------------------------------
+// Ex. : « show run » d'un c3640 de GNS3 (FastEthernet0/0, FastEthernet1/0) importé dans un 2911 (G0/0…).
+const LONG_TO_SHORT = [[/^gigabitethernet/i, 'G'], [/^fastethernet/i, 'Fa'], [/^ethernet/i, 'Eth'], [/^serial/i, 'Se']];
+const SHORT_TO_LONG = { G: 'GigabitEthernet', Fa: 'FastEthernet', Eth: 'Ethernet', Se: 'Serial' };
+
+// Interfaces physiques déclarées par « interface X » (sans loopbacks, VLAN, tunnels ni sous-interfaces), en noms courts
+export function configInterfaces(text) {
+  const out = [];
+  for (const raw of text.replace(/\r/g, '').split('\n')) {
+    const m = /^interface\s+([a-z-]+)\s*(\d+(?:\/\d+)*)(\.\d+)?\s*$/i.exec(raw.trim());
+    const type = m && LONG_TO_SHORT.find(([re]) => re.test(m[1]));
+    if (!type) continue;
+    const name = `${type[1]}${m[2]}`;
+    if (!out.includes(name)) out.push(name);
+  }
+  return out;
+}
+
+const mediaOf = (name) => (name.startsWith('Se') ? 'serial' : 'copper');
+
+// Modules qui donnent exactement ces interfaces sur ce modèle, ou null
+function fitModel(modelKey, names) {
+  const model = MODELS[modelKey];
+  const want = new Set(names);
+  const fixed = model.ports.filter((p) => isDataMedia(p.media)).map((p) => p.name);
+  if (fixed.some((n) => !want.has(n))) return null; // « show run » liste toutes les interfaces : aucune en trop
+  const modules = {};
+  const left = new Set(names.filter((n) => !fixed.includes(n)));
+  for (const slot of slotList(model)) {
+    // Module de l'emplacement dont tous les ports sont demandés, le plus grand d'abord
+    const best = Object.entries(MODULES)
+      .filter(([, mod]) => mod.slot === slot.kind)
+      .map(([id, mod]) => [id, mod.ports(slot.n).map((p) => p.name)])
+      .filter(([, ports]) => ports.every((n) => left.has(n)))
+      .sort((a, b) => b[1].length - a[1].length)[0];
+    if (best) {
+      modules[slot.id] = best[0];
+      best[1].forEach((n) => left.delete(n));
+    } else if (slot.required) return null;
+  }
+  return left.size ? null : modules;
+}
+
+// Analyse avant import : interfaces absentes du modèle actuel, modèles qui les ont toutes, correspondance proposée
+export function analyzeInterfaces(device, text) {
+  const names = configInterfaces(text);
+  const ports = devicePorts(modelId(device), device.modules).filter((p) => isDataMedia(p.media));
+  const have = new Set(ports.map((p) => p.name));
+  const missing = names.filter((n) => !have.has(n));
+  if (!missing.length || isMikrotik(device) || device.type !== 'router') return { names, missing: [], models: [], mapping: {} };
+  const models = Object.keys(MODELS)
+    .filter((id) => MODELS[id].type === 'router' && !MODELS[id].vendor && !MODELS[id].generic)
+    .map((id) => ({ id, label: MODELS[id].label, modules: fitModel(id, names) }))
+    .filter((m) => m.modules)
+    .sort((a, b) => Number(Boolean(MODELS[b.id].gns3)) - Number(Boolean(MODELS[a.id].gns3)));
+  // Correspondance par défaut : même média, dans l'ordre ; les interfaces déjà présentes gardent leur nom
+  const free = ports.filter((p) => !names.includes(p.name));
+  const mapping = {};
+  for (const n of missing) {
+    const i = free.findIndex((p) => (p.media === 'serial') === (mediaOf(n) === 'serial'));
+    mapping[n] = i >= 0 ? free.splice(i, 1)[0].name : '';
+  }
+  return { names, missing, models, mapping };
+}
+
+// Renomme les interfaces dans tout le texte (interface, passive-interface, ip route, nat…) : { 'Fa0/0': 'G0/0' }
+export function renameInterfaces(text, mapping) {
+  const entries = Object.entries(mapping).filter(([from, to]) => to && from !== to);
+  if (!entries.length) return text;
+  const re = /\b(GigabitEthernet|FastEthernet|Ethernet|Serial|Gi|Fa|Eth|Se|G|F|E|S)\s?(\d+(?:\/\d+)+)(?![\d/])/gi;
+  return text.replace(re, (all, type, num) => {
+    const short = LONG_TO_SHORT.find(([r]) => r.test(type))?.[1]
+      ?? { gi: 'G', g: 'G', fa: 'Fa', f: 'Fa', eth: 'Eth', e: 'Eth', se: 'Se', s: 'Se' }[type.toLowerCase()];
+    const to = mapping[`${short}${num}`];
+    if (!to) return all;
+    const [, t, n] = /^([A-Za-z]+)(.*)$/.exec(to);
+    return `${SHORT_TO_LONG[t] ?? t}${n}`;
+  });
 }

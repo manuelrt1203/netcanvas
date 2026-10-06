@@ -82,7 +82,7 @@ function emptyData(model, count) {
   const type = MODELS[model].type;
   const data = { label: `${MODELS[model].vendor === 'mikrotik' ? 'MikroTik' : TYPES[type].label} ${count}`, model };
   if (HOST_TYPES.has(type)) Object.assign(data, { ip: '', mask: '', gateway: '' });
-  if (type === 'router') Object.assign(data, { modules: {}, ifaces: {}, routes: [] });
+  if (type === 'router') Object.assign(data, { modules: { ...MODELS[model].defaultModules }, ifaces: {}, routes: [] });
   if (type === 'switch') data.ports = {};
   return data;
 }

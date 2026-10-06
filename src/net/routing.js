@@ -46,6 +46,7 @@ function bandwidth(name, entry) {
   if (entry?.bandwidth) return Number(entry.bandwidth);
   if (/^Se/.test(name)) return 1544;
   if (/^Fa/.test(name)) return 100000;
+  if (/^Eth\d/.test(name)) return 10000;
   return 1000000;
 }
 

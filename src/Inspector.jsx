@@ -2,7 +2,7 @@ import { useId, useState } from 'react';
 import { edgePort, freePorts, linksOfNode, portsOf } from './serialize.js';
 import { cidrToMask, isValidCidr, isValidIp, splitCidr } from './net/ip.js';
 import { HOST_TYPES } from './net/topology.js';
-import { CABLES, CLOCK_RATES, MEDIA_LABEL, MODELS, MODULES, TYPES, devicePorts, modelId, modelsOfType } from './net/catalog.js';
+import { CABLES, CLOCK_RATES, MEDIA_LABEL, MODELS, MODULES, SLOT_LABEL, TYPES, devicePorts, modelId, modelsOfType, slotList } from './net/catalog.js';
 import { useLinkStatus } from './SimContext.js';
 import { LoopbacksForm, RoutingForm, SubInterfaces } from './RoutingForm.jsx';
 import { InterfaceSecurity, SecurityForm } from './SecurityForm.jsx';
@@ -384,11 +384,10 @@ function Hardware({ node, edges, update }) {
   };
 
   const changeModel = (next) => {
-    // On garde les modules si le nouveau modèle a les mêmes emplacements
-    const keep = MODELS[next].slots?.kind === spec.slots?.kind
-      ? Object.fromEntries(Object.entries(node.data.modules ?? {}).filter(([slot]) => MODELS[next].slots.ids.includes(Number(slot))))
-      : {};
-    apply(next, keep);
+    // On garde les modules dont l'emplacement existe aussi sur le nouveau modèle ; sinon ses modules par défaut
+    const kinds = new Map(slotList(MODELS[next]).map((s) => [s.id, s.kind]));
+    const keep = Object.fromEntries(Object.entries(node.data.modules ?? {}).filter(([slot, mod]) => kinds.get(slot) === MODULES[mod]?.slot));
+    apply(next, { ...MODELS[next].defaultModules, ...keep });
   };
 
   const setModule = (slot, mod) => {
@@ -415,12 +414,12 @@ function Hardware({ node, edges, update }) {
       {spec.slots && (
         <>
           <h3>Modules</h3>
-          {spec.slots.ids.map((slot) => (
+          {slotList(spec).map(({ id: slot, n, kind, required }) => (
             <div className="field" key={slot}>
-              <label htmlFor={`slot-${slot}`}>Emplacement {spec.slots.kind === 'nim' ? 'NIM' : 'EHWIC'} {slot}</label>
+              <label htmlFor={`slot-${slot}`}>Emplacement {SLOT_LABEL[kind]} {n}</label>
               <select id={`slot-${slot}`} value={node.data.modules?.[slot] ?? ''} onChange={(e) => setModule(slot, e.target.value)}>
-                <option value="">Vide</option>
-                {Object.entries(MODULES).filter(([, m]) => m.slot === spec.slots.kind).map(([id, m]) => (
+                {!required && <option value="">Vide</option>}
+                {Object.entries(MODULES).filter(([, m]) => m.slot === kind).map(([id, m]) => (
                   <option key={id} value={id}>{m.label}</option>
                 ))}
               </select>

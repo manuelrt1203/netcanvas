@@ -10,6 +10,7 @@ import { arpRows, clearArp } from '../net/tables.js';
 import { macColon } from '../net/mac.js';
 import { formatDuration } from '../net/runtime.js';
 import { buildTopology } from '../net/topology.js';
+import { isRos6, routingScriptV6 } from './routeros-v6.js';
 
 // Durée RouterOS : « 10m », « 1h30m », « 1d », « 3600 » (secondes)
 function parseRosTime(t) {
@@ -483,6 +484,7 @@ export function routingScript(dev) {
   if (dh?.pools?.length) {
     out.push('/ip dhcp-server network', ...dh.pools.map((x) => `add address=${x.network}/${x.mask}${x.dns ? ` dns-server=${x.dns}` : ''}${x.defaultRouter ? ` gateway=${x.defaultRouter}` : ''}`));
   }
+  if (isRos6(dev)) return [...out, ...routingScriptV6(dev)];
   const o = cfg.ospf;
   if (o) {
     const instance = o.instance ?? 'default-v2';

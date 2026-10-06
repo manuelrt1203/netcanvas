@@ -97,7 +97,7 @@ function showIpIntBrief(dev, doc) {
 }
 
 function runningConfig(dev) {
-  const lines = ['!', 'version 15.1', 'no service timestamps log datetime msec', '!', `hostname ${iosHostname(dev.label, dev.type)}`, '!'];
+  const lines = ['!', `version ${modelOf(dev).gns3 ? '12.4' : '15.1'}`, 'no service timestamps log datetime msec', '!', `hostname ${iosHostname(dev.label, dev.type)}`, '!'];
   if (dev.config?.ipv6Routing) lines.push('ipv6 unicast-routing', '!');
   if (dev.type === 'switch') {
     lines.push(...iosStpLines(dev.config ?? {}), '!');
@@ -455,6 +455,7 @@ function configTree(dev) {
         ...(!isSwitch || modelOf(dev).l3 ? [kw('route', 'Establish static routes', { children: [routeArgs(addRoute)] })] : []),
         kw('domain-lookup', 'Enable IP Domain Name System hostname translation', { run() {} }),
         accept('domain-name', 'Define the default domain name'),
+        ...IOS_NOOP_IP.map(([w, h]) => accept(w, h)),
         ...dnsConfigCommands(),
         kw('classless', 'Follow classless routing forwarding rules', { run() {} }),
         ...(!isSwitch || modelOf(dev).l3 ? [dhcpConfigCommand()] : []),
@@ -467,6 +468,7 @@ function configTree(dev) {
     accept('banner', 'Define a login banner'),
     accept('username', 'Establish User Name Authentication'),
     accept('crypto', 'Encryption module'),
+    ...IOS_NOOP_GLOBAL.map(([w, h]) => accept(w, h)),
     kw('line', 'Configure a terminal line', { children: [rest('x', 'LINE', 'Line type and number', (c) => { c.s.mode = 'line'; })] }),
     ...(!isSwitch || modelOf(dev).l3 ? [routerCommands().router] : []),
     kw('no', 'Negate a command or set its defaults', {
@@ -477,6 +479,7 @@ function configTree(dev) {
           children: [
             kw('route', 'Establish static routes', { children: [routeArgs(removeRoute, true)] }),
             kw('domain-lookup', 'Enable IP Domain Name System hostname translation', { run() {} }),
+            ...IOS_NOOP_IP.map(([w, h]) => accept(w, h)),
             aclConfigCommands().noIpNamed,
             ...dnsConfigCommands(true),
             natConfigCommand(true),
@@ -487,6 +490,7 @@ function configTree(dev) {
           kw('ip', 'Global IP configuration subcommands', {
             children: [
               kw('domain-lookup', '', { run() {} }),
+              ...IOS_NOOP_IP.map(([w, h]) => accept(w, h)),
               aclConfigCommands().noIpNamed,
               ...dnsConfigCommands(true),
               kw('routing', 'Enable IP routing', { run: (c) => setIpRouting(c, false) }),
@@ -499,6 +503,7 @@ function configTree(dev) {
         ] : []),
         accept('service', ''),
         accept('banner', ''),
+        ...IOS_NOOP_GLOBAL.map(([w, h]) => accept(w, h)),
       ],
     }),
     kw('exit', 'Exit from configure mode', leave('priv')),
@@ -710,6 +715,19 @@ function vlanTree(dev) {
   };
 }
 
+// Lignes présentes dans tout « show run » (IOS 12.4 de GNS3 notamment), sans effet sur la simulation
+const IOS_NOOP_GLOBAL = [
+  ['aaa', 'Authentication, Authorization and Accounting.'], ['memory-size', 'Adjust memory size by percentage'],
+  ['control-plane', 'Configure control plane services'], ['logging', 'Modify message logging facilities'],
+  ['archive', 'Archive the configuration'], ['multilink', 'PPP multilink global configuration'],
+  ['cdp', 'Global CDP configuration subcommands'],
+];
+const IOS_NOOP_IP = [
+  ['domain', 'IP DNS Resolver'], ['cef', 'Cisco Express Forwarding'], ['tcp', 'Global TCP parameters'],
+  ['http', 'HTTP server configuration'], ['icmp', 'ICMP options'], ['subnet-zero', 'Allow \'subnet zero\' subnets'],
+  ['source-route', 'Process packets with source routing header options'], ['finger', 'finger server'], ['forward-protocol', 'Controls forwarding of physical and directed IP broadcasts'],
+];
+
 function lineTree(dev) {
   return {
     children: [
@@ -718,6 +736,9 @@ function lineTree(dev) {
       accept('logging', 'Modify message logging facilities'),
       accept('exec-timeout', 'Set the EXEC timeout'),
       accept('transport', 'Define transport protocols for line'),
+      accept('privilege', 'Change privilege level for line'),
+      accept('history', 'Enable and control the command history function'),
+      accept('stopbits', 'Set async line stop bits'),
       kw('exit', 'Exit from line configuration mode', leave('config')),
       endCmd(),
       doCmd(dev),

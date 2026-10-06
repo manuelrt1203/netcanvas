@@ -46,6 +46,24 @@ export const MODELS = {
     ports: [port('G0/0/0'), port('G0/0/1'), CONSOLE],
     slots: { kind: 'nim', ids: [1, 2] },
   },
+  // Routeurs Dynamips de GNS3 : mêmes emplacements et modules que dans GNS3 (Configure > Slots)
+  c3640: {
+    type: 'router', gns3: true, label: 'Cisco 3640 (GNS3)', short: 'c3640',
+    ports: [CONSOLE],
+    slots: { kind: 'nm', ids: [0, 1, 2, 3] },
+    defaultModules: { 0: 'NM-1FE-TX' },
+  },
+  c3725: {
+    type: 'router', gns3: true, label: 'Cisco 3725 (GNS3)', short: 'c3725',
+    ports: [port('Fa0/0'), port('Fa0/1'), CONSOLE],
+    slots: [{ kind: 'wic', ids: ['wic0', 'wic1', 'wic2'] }, { kind: 'nm', ids: [1, 2] }],
+  },
+  c7200: {
+    type: 'router', gns3: true, label: 'Cisco 7200 (GNS3)', short: 'c7200',
+    ports: [CONSOLE],
+    slots: [{ kind: 'c7200-io', ids: [0], required: true }, { kind: 'pa', ids: [1, 2, 3, 4, 5, 6] }],
+    defaultModules: { 0: 'C7200-IO-FE' },
+  },
   // MikroTik (RouterOS) : ports etherN en auto-MDI/MDIX, terminal RouterOS
   'hAP-ac2': {
     type: 'router', vendor: 'mikrotik', mdi: 'auto', label: 'MikroTik hAP ac²', short: 'hAP ac²',
@@ -59,8 +77,17 @@ export const MODELS = {
     type: 'router', vendor: 'mikrotik', mdi: 'auto', label: 'MikroTik CCR2004-16G-2S+', short: 'CCR2004',
     ports: [...range((i) => `ether${i}`, 1, 16), port('sfp-sfpplus1', 'fiber'), port('sfp-sfpplus2', 'fiber'), port('serial0', 'console')],
   },
+  // MikroTik CHR (virtuel) des appliances GNS3 : la 6.49 a l'ancienne syntaxe de routage (/routing ospf network…)
+  'CHR-6.49': {
+    type: 'router', vendor: 'mikrotik', mdi: 'auto', gns3: true, ros: 6, label: 'MikroTik CHR 6.49.19', short: 'CHR 6.49',
+    ports: range((i) => `ether${i}`, 1, 8),
+  },
+  'CHR-7.1': {
+    type: 'router', vendor: 'mikrotik', mdi: 'auto', gns3: true, ros: 7, label: 'MikroTik CHR 7.1', short: 'CHR 7.1',
+    ports: range((i) => `ether${i}`, 1, 8),
+  },
   CHR: {
-    type: 'router', vendor: 'mikrotik', mdi: 'auto', label: 'MikroTik CHR (virtuel)', short: 'CHR',
+    type: 'router', vendor: 'mikrotik', mdi: 'auto', gns3: true, ros: 7, label: 'MikroTik CHR 7.16', short: 'CHR 7.16',
     ports: range((i) => `ether${i}`, 1, 8),
   },
   'Router-PT': {
@@ -109,7 +136,34 @@ export const MODULES = {
   'HWIC-1GE-SFP': { label: 'HWIC-1GE-SFP : 1 port fibre', slot: 'ehwic', ports: (s) => [port(`G0/${s}/0`, 'fiber')] },
   'NIM-2T': { label: 'NIM-2T : 2 ports série', slot: 'nim', ports: (s) => [port(`Se0/${s}/0`, 'serial'), port(`Se0/${s}/1`, 'serial')] },
   'NIM-1GE-CU-SFP': { label: 'NIM-1GE-CU-SFP : 1 port fibre', slot: 'nim', ports: (s) => [port(`G0/${s}/0`, 'fiber')] },
+  // Dynamips (GNS3) : modules réseau des c3640 / c3725, interface <slot>/<n>
+  'NM-1FE-TX': { label: 'NM-1FE-TX : 1 port FastEthernet', slot: 'nm', ports: (s) => [port(`Fa${s}/0`)] },
+  'NM-1E': { label: 'NM-1E : 1 port Ethernet', slot: 'nm', ports: (s) => [port(`Eth${s}/0`)] },
+  'NM-4E': { label: 'NM-4E : 4 ports Ethernet', slot: 'nm', ports: (s) => range((i) => `Eth${s}/${i}`, 0, 3) },
+  'NM-4T': { label: 'NM-4T : 4 ports série', slot: 'nm', ports: (s) => range((i) => `Se${s}/${i}`, 0, 3, 'serial') },
+  // Cartes WIC du c3725 : ports série Serial0/<n>, numérotés à la suite (wic0 -> 0/0-0/1, wic1 -> 0/2-0/3…)
+  'WIC-1T': { label: 'WIC-1T : 1 port série', slot: 'wic', ports: (w) => [port(`Se0/${w * 2}`, 'serial')] },
+  'WIC-2T': { label: 'WIC-2T : 2 ports série', slot: 'wic', ports: (w) => [port(`Se0/${w * 2}`, 'serial'), port(`Se0/${w * 2 + 1}`, 'serial')] },
+  // c7200 : carte d'entrées-sorties (slot 0) et adaptateurs de ports (slots 1 à 6)
+  'C7200-IO-FE': { label: 'C7200-IO-FE : 1 port FastEthernet', slot: 'c7200-io', ports: () => [port('Fa0/0')] },
+  'C7200-IO-2FE': { label: 'C7200-IO-2FE : 2 ports FastEthernet', slot: 'c7200-io', ports: () => [port('Fa0/0'), port('Fa0/1')] },
+  'C7200-IO-GE-E': { label: 'C7200-IO-GE-E : 1 port Gigabit', slot: 'c7200-io', ports: () => [port('G0/0')] },
+  'PA-FE-TX': { label: 'PA-FE-TX : 1 port FastEthernet', slot: 'pa', ports: (s) => [port(`Fa${s}/0`)] },
+  'PA-2FE-TX': { label: 'PA-2FE-TX : 2 ports FastEthernet', slot: 'pa', ports: (s) => [port(`Fa${s}/0`), port(`Fa${s}/1`)] },
+  'PA-4E': { label: 'PA-4E : 4 ports Ethernet', slot: 'pa', ports: (s) => range((i) => `Eth${s}/${i}`, 0, 3) },
+  'PA-8E': { label: 'PA-8E : 8 ports Ethernet', slot: 'pa', ports: (s) => range((i) => `Eth${s}/${i}`, 0, 7) },
+  'PA-4T+': { label: 'PA-4T+ : 4 ports série', slot: 'pa', ports: (s) => range((i) => `Se${s}/${i}`, 0, 3, 'serial') },
+  'PA-8T': { label: 'PA-8T : 8 ports série', slot: 'pa', ports: (s) => range((i) => `Se${s}/${i}`, 0, 7, 'serial') },
+  'PA-GE': { label: 'PA-GE : 1 port Gigabit', slot: 'pa', ports: (s) => [port(`G${s}/0`)] },
 };
+
+export const SLOT_LABEL = { ehwic: 'EHWIC', nim: 'NIM', nm: 'NM', wic: 'WIC', 'c7200-io': 'I/O', pa: 'PA' };
+
+// Emplacements d'un modèle, à plat : [{ id, n, kind, required }] ; id = clé dans device.modules
+export function slotList(model) {
+  const groups = [model?.slots ?? []].flat();
+  return groups.flatMap((g) => g.ids.map((id) => ({ id: String(id), n: Number(String(id).replace(/\D/g, '')), kind: g.kind, required: Boolean(g.required) })));
+}
 
 export const DEFAULT_MODEL = {
   router: '2911', switch: '2960-24TT', hub: 'Hub-PT', pc: 'PC-PT', server: 'Server-PT', printer: 'Printer-PT', cloud: 'Cloud',
@@ -140,10 +194,9 @@ export const modelsOfType = (type) => Object.entries(MODELS).filter(([, m]) => m
 export function devicePorts(model, modules = {}) {
   const m = MODELS[model] ?? MODELS[DEFAULT_MODEL[model]];
   if (!m) return [];
-  const extra = Object.entries(modules ?? {})
-    .filter(([slot, mod]) => MODULES[mod] && m.slots?.ids.includes(Number(slot)) && MODULES[mod].slot === m.slots.kind)
-    .sort(([a], [b]) => a - b)
-    .flatMap(([slot, mod]) => MODULES[mod].ports(Number(slot)));
+  const extra = slotList(m)
+    .filter((s) => MODULES[modules?.[s.id]]?.slot === s.kind)
+    .flatMap((s) => MODULES[modules[s.id]].ports(s.n));
   // Les ports des modules se placent avant le port console
   const base = m.ports.filter((p) => p.media !== 'console' && p.media !== 'rs232');
   const admin = m.ports.filter((p) => p.media === 'console' || p.media === 'rs232');

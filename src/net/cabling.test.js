@@ -179,3 +179,12 @@ test('migration v2 -> v3 : modèle, câbles et ports déduits', () => {
   assert.deepEqual(validate(doc), []);
   assert.ok(simulatePing(doc, 'pc', '10.0.0.2').ok === false); // pas de route de retour sur R2, mais le câblage est bon
 });
+
+test('catalogue GNS3 : ports des routeurs Dynamips selon les modules', () => {
+  const names = (model, modules) => devicePorts(model, modules).map((p) => p.name);
+  assert.deepEqual(names('c3640', { 0: 'NM-1FE-TX', 1: 'NM-4T' }), ['Fa0/0', 'Se1/0', 'Se1/1', 'Se1/2', 'Se1/3', 'Console']);
+  assert.deepEqual(names('c3725', { wic0: 'WIC-2T', 1: 'NM-1FE-TX' }), ['Fa0/0', 'Fa0/1', 'Se0/0', 'Se0/1', 'Fa1/0', 'Console']);
+  assert.deepEqual(names('c7200', { 0: 'C7200-IO-2FE', 1: 'PA-GE', 2: 'PA-4E' }), ['Fa0/0', 'Fa0/1', 'G1/0', 'Eth2/0', 'Eth2/1', 'Eth2/2', 'Eth2/3', 'Console']);
+  // Module d'un autre type d'emplacement : ignoré
+  assert.deepEqual(names('c3640', { 0: 'PA-GE' }), ['Console']);
+});

@@ -30,7 +30,7 @@ export function interfaceTable(doc) {
       const peer = topo.devices.get(peerId);
       const row = {
         link: linkId, index, name: topo.portName(linkId, d.id),
-        peer: { id: peerId, label: peer.label, type: peer.type, port: topo.portName(linkId, peerId) },
+        peer: { id: peerId, label: peer.label, type: peer.type, model: peer.model, port: topo.portName(linkId, peerId) },
       };
       if (d.type === 'router') Object.assign(row, topo.routerIface(d.id, linkId));
       else if (d.type === 'switch') Object.assign(row, topo.switchPort(d.id, linkId));

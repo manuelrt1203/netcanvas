@@ -11,6 +11,7 @@ import { ROUTING_MENUS, routeTable, routingScript, runRouting } from './routeros
 import { isHostname, resolveName } from '../net/services.js';
 import { IPV6_ARGS, IPV6_MENUS, ipv6Script, runIpv6 } from './routeros-ipv6.js';
 import { isValidIp6, normIp6 } from '../net/ip6.js';
+import { ROUTING_MENUS_V6, isRos6, runRoutingV6 } from './routeros-v6.js';
 
 // Menus : sous-menus et commandes de chaque chemin
 const MENUS = {
@@ -28,6 +29,23 @@ const MENUS = {
   'system identity': { menus: [], commands: ['print', 'set', 'export'] },
   ...ROUTING_MENUS,
   ...IPV6_MENUS,
+};
+
+// RouterOS v6 (CHR 6.49) : autres menus de routage dynamique
+const MENUS_V6 = Object.fromEntries([
+  ...Object.entries(MENUS).filter(([k]) => !k.startsWith('routing')),
+  ...Object.entries(ROUTING_MENUS_V6),
+]);
+const menusFor = (dev) => (isRos6(dev) ? MENUS_V6 : MENUS);
+const V7_ONLY = {
+  'interface-template': 'Sur la 6.49 : /routing ospf network add network=10.0.0.0/24 area=backbone (passive : /routing ospf interface add interface=ether2 passive=yes).',
+  connection: 'Sur la 6.49 : /routing bgp instance set default as=65001 puis /routing bgp peer add remote-address=… remote-as=….',
+  session: 'Sur la 6.49 : /routing bgp peer print (drapeau E = session établie).',
+};
+const V6_ONLY = {
+  network: 'En v7 : /routing ospf interface-template add networks=10.0.0.0/24 area=backbone-v2 (RIP : /routing rip interface-template).',
+  peer: 'En v7 : /routing bgp connection add as=65001 remote.address=… remote.as=… local.role=ebgp.',
+  'ospf-v3': 'En v7 : /routing ospf instance add version=3, puis area et interface-template.',
 };
 
 const match = (word, options) => {
@@ -51,7 +69,7 @@ function tokenizeRos(line) {
   return tokens;
 }
 
-function parseLine(line, cwd) {
+function parseLine(line, cwd, menus = MENUS) {
   const tokens = tokenizeRos(line);
   let path = [...cwd];
   let i = 0;
@@ -68,7 +86,7 @@ function parseLine(line, cwd) {
       path.pop();
       continue;
     }
-    const menu = MENUS[path.join(' ')];
+    const menu = menus[path.join(' ')];
     const subs = match(word, menu.menus);
     const cmds = match(word, menu.commands);
     if (subs.length + cmds.length > 1) return { error: err(`ambiguous value of command, more than one possible value: ${[...subs, ...cmds].join(', ')}`, tokens[i].start + 1) };
@@ -376,7 +394,7 @@ function run(ctx, p) {
       s.path = [];
       return out.push('interrupted', '');
     default:
-      if (runDns(ctx, p) || runIpv6(ctx, p, iface) || runRouting(ctx, p)) return;
+      if (runDns(ctx, p) || runIpv6(ctx, p, iface) || (isRos6(dev) && runRoutingV6(ctx, p)) || runRouting(ctx, p)) return;
       return out.push(...err('expected command name', 1));
   }
 }
@@ -399,9 +417,13 @@ export const routeros = {
   run(s, line, dev, doc) {
     const ctx = { s, dev, doc, out: [], effects: [], changed: false };
     if (!line.trim()) return ctx;
-    const p = parseLine(line, s.path);
+    const p = parseLine(line, s.path, menusFor(dev));
     if (p.error) {
       ctx.out.push(...p.error);
+      // Syntaxe de l'autre version de RouterOS : on explique au lieu de laisser « bad command name »
+      const word = /bad command name (\S+)/.exec(p.error[0])?.[1];
+      const hint = isRos6(dev) ? V7_ONLY[word] : V6_ONLY[word];
+      if (hint) ctx.out.splice(-1, 0, `NetCanvas : « ${word} » est la syntaxe RouterOS ${isRos6(dev) ? 'v7' : 'v6'}. ${hint}`);
       return ctx;
     }
     if (!p.command) {
@@ -412,10 +434,11 @@ export const routeros = {
     return ctx;
   },
 
-  help(s, line) {
-    const p = parseLine(line.replace(/\?$/, ''), s.path);
+  help(s, line, dev) {
+    const menus = menusFor(dev);
+    const p = parseLine(line.replace(/\?$/, ''), s.path, menus);
     if (p.error) return p.error;
-    const menu = MENUS[p.path.join(' ')];
+    const menu = menus[p.path.join(' ')];
     if (p.command) {
       const ARGS = { 'ip address|add': 'address= interface=', 'ip route|add': 'dst-address= gateway=', '|ping': 'address count=', 'system identity|set': 'name=', 'ip dns|set': 'servers= allow-remote-requests=', 'ip dns static|add': 'name= address=', ...IPV6_ARGS };
       return [`${p.command} ${ARGS[`${p.path.join(' ')}|${p.command}`] ?? ''}`.trim(), ''];
@@ -423,16 +446,17 @@ export const routeros = {
     return [...menu.menus.map((m) => `  ${pad(m, 12)} --`), ...menu.commands.map((c) => `  ${c}`), ''];
   },
 
-  complete(s, line) {
+  complete(s, line, dev) {
+    const menus = menusFor(dev);
     if (/\s$/.test(line) || !line.trim()) return line;
     const tokens = tokenize(line);
     const last = tokens.at(-1);
     if (last.text.includes('=')) return line;
-    const before = parseLine(line.slice(0, last.start), s.path);
+    const before = parseLine(line.slice(0, last.start), s.path, menus);
     if (before.error || before.command) return line;
     const slash = last.text.startsWith('/') ? '/' : '';
     const word = last.text.slice(slash.length);
-    const menu = MENUS[(slash ? [] : before.path).join(' ')];
+    const menu = menus[(slash ? [] : before.path).join(' ')];
     const options = [...match(word, menu.menus), ...match(word, menu.commands)];
     return options.length === 1 ? `${line.slice(0, last.start)}${slash}${options[0]} ` : line;
   },

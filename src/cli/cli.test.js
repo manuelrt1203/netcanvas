@@ -602,3 +602,41 @@ test('tables : arp -a sur le PC, /ip arp print sur MikroTik', () => {
   assert.match(mk.run('/ip arp print'), new RegExp(`DC 172\\.16\\.3\\.10 +${macColon(macOf(dev(doc, 'srv'), 'Fa0'))} +ether2`));
   assert.match(mk.run('/interface print'), new RegExp(`ether1 +ether +1500 +${macColon(macOf(dev(doc, 'r3'), 'ether1'))}`));
 });
+
+test('RouterOS 6.49 (CHR de GNS3) : syntaxe v6 du routage, OSPF avec un Cisco, export v6, aide sur la v7', () => {
+  const mk = (id, model, label) => ({ id, type: 'router', model, label, modules: {}, config: { interfaces: [], routes: [] } });
+  const a = mk('a', 'CHR-6.49', 'MK6');
+  const b = mk('b', '2911', 'R2');
+  const doc = { devices: [a, b], links: [{ id: 'l', source: 'a', sourceIface: 'ether1', target: 'b', targetIface: 'G0/0', cable: 'cross' }] };
+  const sh = shellFor(a);
+  const s = sh.newSession(a);
+  const run = (l, dev = a, sess = s, shell = sh) => shell.run(sess, l, dev, doc).out;
+  for (const l of ['/ip address add address=10.0.0.1/24 interface=ether1', '/ip address add address=192.168.1.1/24 interface=ether2',
+    '/routing ospf instance set default router-id=1.1.1.1', '/routing ospf network add network=10.0.0.0/24 area=backbone',
+    '/routing ospf network add network=192.168.1.0/24 area=backbone', '/routing ospf interface add interface=ether2 passive=yes',
+    '/routing bgp instance set default as=65001', '/routing bgp peer add remote-address=10.0.0.2 remote-as=65002 nexthop-choice=force-self',
+    '/routing bgp network add network=192.168.1.0/24', '/routing rip network add network=192.168.1.0/24']) {
+    assert.deepEqual(run(l), [], l);
+  }
+  assert.deepEqual(a.config.ospf.networks.map((x) => x.network), ['10.0.0.0', '192.168.1.0']);
+  assert.deepEqual(a.config.ospf.passive, ['ether2']);
+  assert.deepEqual(a.config.bgp.neighbors, [{ ip: '10.0.0.2', remoteAs: 65002, name: 'peer1', nextHopSelf: true }]);
+  assert.deepEqual(a.config.rip.interfaces, ['ether2']);
+
+  const ios = shellFor(b);
+  const t = ios.newSession(b);
+  for (const l of ['enable', 'conf t', 'int g0/0', 'ip address 10.0.0.2 255.255.255.0', 'no shut', 'exit', 'router ospf 1', 'network 10.0.0.0 0.0.0.255 area 0']) run(l, b, t, ios);
+  assert.match(run('/routing ospf neighbor print').join('\n'), /router-id=10\.0\.0\.2 address=10\.0\.0\.2 interface=ether1 state="Full"/);
+
+  const exp = run('/export').join('\n');
+  assert.match(exp, /\/routing ospf network\nadd area=backbone network=10\.0\.0\.0\/24\nadd area=backbone network=192\.168\.1\.0\/24/);
+  assert.match(exp, /\/routing bgp instance\nset default as=65001/);
+  assert.match(exp, /\/routing bgp peer\nadd name=peer1 remote-address=10\.0\.0\.2 remote-as=65002 nexthop-choice=force-self/);
+  assert.match(exp, /\/routing rip network\nadd network=192\.168\.1\.0\/24/);
+  assert.doesNotMatch(exp, /interface-template|connection/);
+
+  // Syntaxe v7 sur une 6.49 (et l'inverse) : refusée, avec l'équivalent
+  assert.match(run('/routing ospf interface-template add networks=10.0.0.0/24').join('\n'), /bad command name interface-template[\s\S]*Sur la 6\.49 : \/routing ospf network add/);
+  const v7 = mk('c', 'CHR', 'MK7');
+  assert.match(sh.run(sh.newSession(v7), '/routing ospf network add network=10.0.0.0/24', v7, doc).out.join('\n'), /En v7 : \/routing ospf interface-template/);
+});
