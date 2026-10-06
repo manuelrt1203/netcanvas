@@ -6,7 +6,8 @@ import { rule6Text } from '../net/acl6.js';
 
 const upperV6 = (text) => text.replace(/[0-9a-f]*:[0-9a-f:]*/gi, (m) => m.toUpperCase());
 import { cidrToMask } from '../net/ip.js';
-import { MODELS, MODULES, isMikrotik, modelId, modelOf } from '../net/catalog.js';
+import { MODELS, MODULES, isFrr, isMikrotik, modelId, modelOf } from '../net/catalog.js';
+import { frrConfig } from '../cli/frr.js';
 import { routerosScript } from '../cli/routeros.js';
 import { aclTypeOf, ruleText } from '../net/acl.js';
 import { ascii, interfaceTable, switchVlans, uniqueNames } from './common.js';
@@ -202,6 +203,13 @@ export function ciscoConfigs(doc, { target = 'packet-tracer' } = {}) {
         : [`${modelOf(d).label} n'existe pas dans Packet Tracer : remplace-le par un routeur Cisco, ou utilise GNS3 (MikroTik CHR).`];
       const intro = target === 'gns3' ? '# GNS3 : appliance MikroTik CHR, coller ce script dans la console' : '# Script RouterOS (WinBox > New Terminal, ou SSH)';
       return { id: d.id, label: d.label, type: d.type, name, kind: 'routeros', text: [intro, ...routerosScript(d), ''].join('\n'), warnings };
+    }
+
+    // FRR : frr.conf (vtysh), dans GNS3 seulement
+    if (isFrr(d)) {
+      const warnings = target === 'gns3' ? [] : [`${modelOf(d).label} n'existe pas dans Packet Tracer : remplace-le par un routeur Cisco, ou utilise GNS3.`];
+      const intro = target === 'gns3' ? '! GNS3 : appliance FRR, coller dans vtysh apres « configure terminal » (ou dans /etc/frr/frr.conf)' : '! Configuration FRR (vtysh)';
+      return { id: d.id, label: d.label, type: d.type, name, kind: 'frr', text: [intro, ...frrConfig(d)].join('\n'), warnings };
     }
 
     if (d.type === 'hub') {

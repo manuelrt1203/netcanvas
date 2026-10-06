@@ -2,7 +2,7 @@
 // aperçu des lignes appliquées et ignorées, puis application à l'équipement.
 import { useId, useMemo, useRef, useState } from 'react';
 import { analyzeInterfaces, importConfig, renameInterfaces } from './cli/import.js';
-import { MODELS, devicePorts, isDataMedia, isMikrotik, modelId } from './net/catalog.js';
+import { MODELS, devicePorts, isDataMedia, isFrr, isMikrotik, modelId } from './net/catalog.js';
 
 const blankConfig = (dev) => (dev.type === 'switch' ? { ports: [] } : { interfaces: [], routes: [] });
 
@@ -55,13 +55,15 @@ export default function ConfigImport({ device, doc, onApply }) {
       <dialog ref={dialog} className="help-dialog import-dialog" aria-labelledby={`${textId}-title`}>
         <h2 id={`${textId}-title`}>Importer une configuration dans {device.label}</h2>
         <p className="hint">
-          Colle {mk ? 'la sortie de « /export » d\'un routeur MikroTik' : 'la sortie de « show running-config » d\'un routeur ou switch Cisco'}, ou choisis un fichier.
+          Colle {mk ? 'la sortie de « /export » d\'un routeur MikroTik' : isFrr(device) ? 'la sortie de « show running-config » de vtysh (FRR), ou le fichier frr.conf' : 'la sortie de « show running-config » d\'un routeur ou switch Cisco'}, ou choisis un fichier.
           Chaque ligne passe par le terminal simulé, avec les mêmes contrôles que si tu la tapais.
         </p>
         <div className="field">
           <label htmlFor={textId}>Configuration</label>
           <textarea id={textId} className="rules import-text" rows={12} spellCheck="false" value={text}
-            placeholder={mk ? '/ip address\nadd address=192.168.1.1/24 interface=ether2' : 'hostname R1\n!\ninterface GigabitEthernet0/0\n ip address 192.168.1.1 255.255.255.0\n no shutdown'}
+            placeholder={mk ? '/ip address\nadd address=192.168.1.1/24 interface=ether2'
+              : isFrr(device) ? 'hostname R1\n!\ninterface eth0\n ip address 192.168.1.1/24\n!\nrouter ospf\n network 192.168.1.0/24 area 0'
+                : 'hostname R1\n!\ninterface GigabitEthernet0/0\n ip address 192.168.1.1 255.255.255.0\n no shutdown'}
             onChange={(e) => setText(e.target.value)} />
         </div>
         <div className="row">

@@ -11,7 +11,7 @@ export const iconName = (type, model) => MODELS[model]?.icon ?? type;
 
 export const DEVICE_TYPES = Object.keys(TYPES);
 
-const GNS3_ORDER = ['c3725', 'c3640', 'c7200', 'CHR-6.49', 'CHR-7.1', 'CHR'];
+const GNS3_ORDER = ['c3725', 'c3640', 'c7200', 'FRR', 'CHR-6.49', 'CHR-7.1', 'CHR'];
 
 // Palette : groupes de modèles, comme le sélecteur en bas à gauche de Packet Tracer
 export const PALETTE = [

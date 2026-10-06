@@ -4,7 +4,7 @@ import { Fragment, useId } from 'react';
 import { Ipv6IfaceFields } from './Ipv6Form.jsx';
 import { cidrToWildcard, wildcardToCidr } from './net/routing.js';
 import { isValidIp } from './net/ip.js';
-import { isMikrotik } from './net/catalog.js';
+import { isFrr, isMikrotik } from './net/catalog.js';
 
 const num = (v) => (v === '' || v === null || v === undefined ? '' : Number(v));
 
@@ -101,7 +101,8 @@ export function SubInterfaces({ node, parent, update }) {
 }
 
 export function LoopbacksForm({ node, update }) {
-  const mk = isMikrotik({ type: node.type, model: node.data.model });
+  // MikroTik et FRR (Linux) : une seule loopback, « lo »
+  const mk = isMikrotik({ type: node.type, model: node.data.model }) || isFrr({ type: node.type, model: node.data.model });
   const names = Object.keys(node.data.ifaces ?? {}).filter((n) => /^(Lo\d+|lo)$/.test(n)).sort();
   const next = mk ? 'lo' : `Lo${names.length ? Math.max(...names.map((n) => Number(n.slice(2)) || 0)) + 1 : 0}`;
   const patch = (name, value) => update((d) => ({ ...d, ifaces: { ...d.ifaces, [name]: { ...d.ifaces?.[name], ...value } } }));
@@ -228,7 +229,7 @@ export function RoutingForm({ node, update, ports, state }) {
         )}
       </details>
 
-      {!mk && (
+      {!mk && !isFrr({ type: node.type, model: d.model }) && (
       <details className="proto" open={Boolean(d.eigrp)}>
         <summary>EIGRP {d.eigrp && <span className="badge-on">AS {d.eigrp.asn}</span>}</summary>
         <Check label="Activer EIGRP" checked={d.eigrp} onChange={toggle('eigrp', { asn: 100, networks: [] })} />

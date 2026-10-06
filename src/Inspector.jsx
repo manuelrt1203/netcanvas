@@ -2,7 +2,7 @@ import { useId, useState } from 'react';
 import { edgePort, freePorts, linksOfNode, portsOf } from './serialize.js';
 import { cidrToMask, isValidCidr, isValidIp, splitCidr } from './net/ip.js';
 import { HOST_TYPES } from './net/topology.js';
-import { CABLES, CLOCK_RATES, MEDIA_LABEL, MODELS, MODULES, SLOT_LABEL, TYPES, devicePorts, modelId, modelsOfType, slotList } from './net/catalog.js';
+import { CABLES, CLOCK_RATES, MEDIA_LABEL, MODELS, MODULES, SLOT_LABEL, TYPES, devicePorts, isFrr, modelId, modelsOfType, slotList } from './net/catalog.js';
 import { useLinkStatus } from './SimContext.js';
 import { LoopbacksForm, RoutingForm, SubInterfaces } from './RoutingForm.jsx';
 import { InterfaceSecurity, SecurityForm } from './SecurityForm.jsx';
@@ -143,6 +143,8 @@ function StaticRoutes({ routes, update }) {
 
 function RouterForm({ node, edges, labels, update, routing, issues, live6 }) {
   const ports = portsOf(node, edges);
+  // FRR route seulement : pas d'ACL, de NAT, de DHCP ni de DNS (c'est Linux qui s'en charge, hors vtysh)
+  const frr = isFrr({ type: node.type, model: node.data.model });
   const routes = node.data.routes ?? [];
 
   const patchIface = (p, patch) =>
@@ -162,12 +164,12 @@ function RouterForm({ node, edges, labels, update, routing, issues, live6 }) {
             </legend>
             <IpCidrFields ip={p.ip} mask={p.mask} onChange={(patch) => patchIface(p, patch)} />
             <Ipv6IfaceFields entry={node.data.ifaces?.[p.name]} patch={(patch) => patchIface(p, patch)} v6={live6?.get(p.name)} pools={Object.keys(node.data.dhcp6Pools ?? {})} />
-            <InterfaceSecurity node={node} name={p.name} patch={(patch) => patchIface(p, patch)} />
+            {!frr && <InterfaceSecurity node={node} name={p.name} patch={(patch) => patchIface(p, patch)} />}
             {!serial && !MODELS[modelId({ type: node.type, model: node.data.model })].vendor && (
               <Field label="Relais DHCP (ip helper-address)" placeholder="adresse du serveur DHCP" value={p.helperAddress ?? ''} error={ipError(p.helperAddress)}
                 onChange={(e) => patchIface(p, { helperAddress: e.target.value.trim() || undefined })} />
             )}
-            {!serial && <SubInterfaces node={node} parent={p.name} update={update} />}
+            {!serial && !frr && <SubInterfaces node={node} parent={p.name} update={update} />}
             {dce && <ClockRate link={p.link} value={p.clockRate} onChange={(clockRate) => patchIface(p, { clockRate })} />}
             {node.data.eigrp && (
               <div className="field-row">
@@ -189,9 +191,13 @@ function RouterForm({ node, edges, labels, update, routing, issues, live6 }) {
       <LoopbacksForm node={node} update={update} />
       <Ipv6RoutingForm node={node} update={update} />
       <RoutingForm node={node} update={update} ports={ports} state={routing} />
-      <SecurityForm node={node} update={update} issues={issues} ifaceNames={ports.map((p) => p.name)} />
-      <DhcpServerForm node={node} update={update} />
-      <RouterDnsForm node={node} update={update} />
+      {!frr && (
+        <>
+          <SecurityForm node={node} update={update} issues={issues} ifaceNames={ports.map((p) => p.name)} />
+          <DhcpServerForm node={node} update={update} />
+          <RouterDnsForm node={node} update={update} />
+        </>
+      )}
     </>
   );
 }
@@ -449,7 +455,7 @@ function ModeSwitch({ mode, onMode, vendor }) {
     <div className="mode-switch" role="radiogroup" aria-label="Mode de configuration">
       <button type="button" role="radio" aria-checked={mode === 'form'} onClick={() => onMode('form')}>Formulaire</button>
       <button type="button" role="radio" aria-checked={mode === 'terminal'} onClick={() => onMode('terminal')}>
-        {vendor === 'mikrotik' ? 'Terminal RouterOS' : HOST_TYPES.has(vendor) ? 'Invite de commandes' : 'Terminal IOS'}
+        {vendor === 'mikrotik' ? 'Terminal RouterOS' : vendor === 'frr' ? 'Terminal vtysh' : HOST_TYPES.has(vendor) ? 'Invite de commandes' : 'Terminal IOS'}
       </button>
     </div>
   );

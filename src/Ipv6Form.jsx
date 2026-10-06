@@ -2,7 +2,7 @@
 // routage IPv6 d'un routeur (ipv6 unicast-routing, routes statiques). Même config que les terminaux.
 import { useId } from 'react';
 import { isLinkLocal6, isValidIp6, splitPrefix6 } from './net/ip6.js';
-import { isMikrotik } from './net/catalog.js';
+import { isFrr, isMikrotik } from './net/catalog.js';
 import { v6Forwarding } from './net/topology.js';
 
 const toPrefix = (v) => (v === '' ? undefined : Math.max(0, Math.min(128, Math.trunc(Number(v)))));
@@ -187,7 +187,8 @@ export function Ipv6RoutingForm({ node, update }) {
           const { ipv6Routing, ipv6NoForward, ...rest } = x;
           if (mk) return e.target.checked ? rest : { ...rest, ipv6NoForward: true };
           return e.target.checked ? { ...rest, ipv6Routing: true } : rest;
-        })} /> {mk ? 'Router les paquets IPv6 et envoyer les annonces RA (/ipv6 settings forward=yes)' : 'Router les paquets IPv6 et envoyer les annonces RA (ipv6 unicast-routing)'}
+        })} /> {mk ? 'Router les paquets IPv6 et envoyer les annonces RA (/ipv6 settings forward=yes)'
+          : isFrr({ type: node.type, model: d.model }) ? 'Router les paquets IPv6 (ipv6 forwarding)' : 'Router les paquets IPv6 et envoyer les annonces RA (ipv6 unicast-routing)'}
       </label>
       {routes.map((r, i) => (
         <fieldset key={i} className="iface">

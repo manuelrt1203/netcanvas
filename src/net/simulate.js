@@ -12,7 +12,7 @@
 //    (ipv6 traffic-filter) et le pare-feu IPv6 MikroTik ; les ACL et le NAT IPv4 ne les touchent pas.
 import { formatIp, isValidCidr, isValidIp, networkLabel, networkOf, parseIp, sameSubnet } from './ip.js';
 import { buildTopology, isHost, isL3Switch, isRouting, v6Forwarding } from './topology.js';
-import { isMikrotik, modelOf } from './catalog.js';
+import { isFrr, isMikrotik, modelOf } from './catalog.js';
 import { evaluateAcl, evaluateFirewall } from './acl.js';
 import { destNat, isPrivate, natGlobals, sourceNat } from './nat.js';
 import { withLeases } from './dhcp.js';
@@ -155,7 +155,7 @@ function forward(ctx, startId, target, phase, result, log, name, fixedSrc = null
       throw new SimError(`${name(current)} reçoit un paquet pour ${dstIp} ${why}.`, current);
     }
     if (ctx.v6 && current !== startId && !v6Forwarding(dev)) {
-      throw new SimError(`${name(current)} reçoit un paquet IPv6 pour ${dstIp} mais le routage IPv6 n'est pas activé (${isMikrotik(dev) ? '/ipv6 settings forward=no' : '« ipv6 unicast-routing »'}) : il le jette.`, current);
+      throw new SimError(`${name(current)} reçoit un paquet IPv6 pour ${dstIp} mais le routage IPv6 n'est pas activé (${isMikrotik(dev) ? '/ipv6 settings forward=no' : isFrr(dev) ? '« ipv6 forwarding »' : '« ipv6 unicast-routing »'}) : il le jette.`, current);
     }
     if (ctx.v6 && current !== startId && isLinkLocal6(dstIp)) {
       throw new SimError(`${name(current)} : ${dstIp} est une adresse link-local, elle ne traverse jamais un routeur.`, current);

@@ -14,7 +14,7 @@ import { networkOf6 } from './ip6.js';
 import { buildTopology, isRouting, v6Forwarding } from './topology.js';
 import { flood } from './l2.js';
 import { formatIp, isValidCidr, isValidIp, maskBits, networkOf, parseIp, sameSubnet } from './ip.js';
-import { isMikrotik } from './catalog.js';
+import { isFrr, isMikrotik } from './catalog.js';
 import { simulatePing } from './simulate.js';
 
 export const AD = { C: 0, L: 0, S: 1, eBGP: 20, D: 90, O: 110, R: 120, DEX: 170, iBGP: 200 };
@@ -52,6 +52,7 @@ function bandwidth(name, entry) {
 
 export function ospfCost(dev, iface) {
   if (iface.ospfCost) return Number(iface.ospfCost);
+  if (isFrr(dev)) return 10; // ospfd : coût par défaut quand le débit de l'interface virtuelle est inconnu
   if (iface.loopback || isMikrotik(dev)) return 1;
   return Math.max(1, Math.floor(100000 / bandwidth(iface.name, iface)));
 }
@@ -387,9 +388,12 @@ function computeRip(routers, issue) {
     const nets = (c.networks ?? []).filter(isValidIp).map((n) => classful(n));
     const names = new Set(c.interfaces ?? []);
     const passive = new Set(c.passive ?? []);
+    // FRR : « network 10.0.0.0/24 » (préfixe CIDR qui contient l'adresse de l'interface)
+    const prefixes = (c.prefixes ?? []).filter((p) => isValidIp(p.network));
     for (const i of r.ifaces) {
       const cl = classful(i.ip);
-      if (names.has(i.name) || nets.some((n) => n.net === cl.net && n.mask === cl.mask)) {
+      const inPrefix = prefixes.some((p) => (i.loopback ? 32 : i.mask) >= p.mask && networkOf(i.ip, p.mask) === networkOf(p.network, p.mask));
+      if (names.has(i.name) || inPrefix || nets.some((n) => n.net === cl.net && n.mask === cl.mask)) {
         r.rip.ifaces.push({ iface: i, passive: passive.has(i.name) || i.loopback });
       }
     }
@@ -482,9 +486,9 @@ function computeEigrp(routers, issue) {
     const c = r.cfg.eigrp;
     r.eigrp = { enabled: Boolean(c?.asn), routes: [], ifaces: [], neighbors: [], table: new Map() };
     if (!r.eigrp.enabled) continue;
-    if (isMikrotik(r.dev)) {
+    if (isMikrotik(r.dev) || isFrr(r.dev)) {
       r.eigrp.enabled = false;
-      issue(r, `${r.label} : EIGRP est un protocole Cisco, RouterOS ne le gère pas.`);
+      issue(r, `${r.label} : EIGRP est un protocole Cisco, ${isFrr(r.dev) ? 'NetCanvas ne le simule pas sur FRR' : 'RouterOS ne le gère pas'}.`);
       continue;
     }
     r.eigrp.asn = Number(c.asn);

@@ -3,10 +3,10 @@
 // écrivent la même config : l'import passe donc par les mêmes commandes, avec les mêmes contrôles.
 import { shellFor } from './index.js';
 import { host } from './host.js';
-import { MODELS, MODULES, devicePorts, isDataMedia, isMikrotik, modelId, slotList } from '../net/catalog.js';
+import { MODELS, MODULES, devicePorts, isDataMedia, isFrr, isMikrotik, modelId, slotList } from '../net/catalog.js';
 
 // Lignes sans effet sur la simulation : en-têtes de « show run », commentaires
-const NOISE_IOS = [/^!/, /^\S+#\s*(sh|show)\s/i, /^Building configuration/i, /^Current configuration/i, /^Last configuration change/i, /^version \S+$/, /^end$/, /^boot-(start|end)-marker$/];
+const NOISE_IOS = [/^!/, /^\S+#\s*(sh|show)\s/i, /^Building configuration/i, /^Current configuration/i, /^Last configuration change/i, /^end$/, /^boot-(start|end)-marker$/];
 
 // Sections IOS acceptées sans effet : leurs lignes indentées (« archive / log config / hidekeys ») le sont aussi
 const NOOP_SECTIONS = /^(archive|control-plane|crypto|voice|gatekeeper|call-home|license|redundancy)\b/i;
@@ -18,6 +18,8 @@ function iosLines(text) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line || NOISE_IOS.some((re) => re.test(line))) continue;
+    // « version 12.4 » en tête de show run ; « version 2 » indenté (router rip) est une vraie commande
+    if (/^version \S+$/.test(lines[i])) continue;
     // Bloc par défaut de tout switch Cisco : interface Vlan1 sans adresse, éteinte
     if (line === 'interface Vlan1' && lines[i + 1]?.trim() === 'no ip address' && lines[i + 2]?.trim() === 'shutdown') {
       i += 2;
@@ -72,6 +74,8 @@ export function importConfig(device, doc, text) {
   const dev = structuredClone(device);
   const docOf = () => ({ ...doc, devices: doc.devices.map((d) => (d.id === dev.id ? dev : d)) });
   const session = shell.newSession(dev);
+  // FRR n'affiche « no ipv6 forwarding » que si le routage IPv6 est coupé : un show run complet sans cette ligne le rétablit
+  if (isFrr(dev) && /^(frr version|Current configuration)/m.test(text) && !/^no ipv6 forwarding$/m.test(text)) (dev.config ??= {}).ipv6Routing = true;
   if (!mk) {
     shell.run(session, 'enable', dev, docOf());
     shell.run(session, 'configure terminal', dev, docOf());

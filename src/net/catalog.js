@@ -77,6 +77,11 @@ export const MODELS = {
     type: 'router', vendor: 'mikrotik', mdi: 'auto', label: 'MikroTik CCR2004-16G-2S+', short: 'CCR2004',
     ports: [...range((i) => `ether${i}`, 1, 16), port('sfp-sfpplus1', 'fiber'), port('sfp-sfpplus2', 'fiber'), port('serial0', 'console')],
   },
+  // FRRouting (appliance GNS3) : Linux + vtysh, interfaces eth0…, auto-MDI comme toute carte virtuelle
+  FRR: {
+    type: 'router', vendor: 'frr', mdi: 'auto', gns3: true, label: 'FRR 7.5.1', short: 'FRR',
+    ports: range((i) => `eth${i}`, 0, 7),
+  },
   // MikroTik CHR (virtuel) des appliances GNS3 : la 6.49 a l'ancienne syntaxe de routage (/routing ospf network…)
   'CHR-6.49': {
     type: 'router', vendor: 'mikrotik', mdi: 'auto', gns3: true, ros: 6, label: 'MikroTik CHR 6.49.19', short: 'CHR 6.49',
@@ -184,6 +189,7 @@ export const CLOCK_RATES = [64000, 128000, 256000, 512000, 1000000, 2000000, 400
 
 export const vendorOf = (d) => modelOf(d).vendor ?? 'cisco';
 export const isMikrotik = (d) => vendorOf(d) === 'mikrotik';
+export const isFrr = (d) => vendorOf(d) === 'frr';
 export const isSviName = (name) => /^Vlan\d+$/.test(name ?? '');
 
 export const modelOf = (d) => MODELS[d?.model] ?? MODELS[DEFAULT_MODEL[d?.type]] ?? MODELS['PC-PT'];

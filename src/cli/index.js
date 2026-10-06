@@ -1,8 +1,9 @@
 // Point d'entrée des terminaux : choisit l'émulateur selon l'équipement.
 import { ios } from './ios.js';
 import { routeros } from './routeros.js';
+import { frr } from './frr.js';
 import { host } from './host.js';
-import { isMikrotik } from '../net/catalog.js';
+import { isFrr, isMikrotik } from '../net/catalog.js';
 import { HOST_TYPES } from '../net/topology.js';
 
 // null : pas de terminal (Internet, hub)
@@ -10,6 +11,7 @@ export function shellFor(dev) {
   if (dev.type === 'cloud' || dev.type === 'hub') return null;
   if (HOST_TYPES.has(dev.type)) return host;
   if (isMikrotik(dev)) return routeros;
+  if (isFrr(dev)) return frr;
   return ios;
 }
 
