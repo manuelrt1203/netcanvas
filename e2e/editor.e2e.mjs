@@ -225,7 +225,7 @@ await page.click('role=radio[name="Formulaire"]');
 step('routage dynamique : BGP, next-hop-self retiré dans le formulaire -> explication');
 await openDemo('BGP eBGP + iBGP');
 await page.getByTestId('rf__node-r2').click();
-const proto = page.locator('.proto', { hasText: 'BGP' });
+const proto = page.locator('details.proto', { has: page.locator('summary', { hasText: /^BGP/ }) });
 assert.match(await proto.textContent(), /Session iBGP avec R1 \(AS 65001\) \(1\.1\.1\.1\) : établie/);
 await proto.getByLabel('next-hop-self').first().uncheck();
 await page.locator('.react-flow__pane').click({ position: { x: 40, y: 40 } });
