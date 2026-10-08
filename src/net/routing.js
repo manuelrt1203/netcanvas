@@ -4,6 +4,7 @@
 //  - OSPF : voisins découverts sur le domaine de diffusion, SPF (Dijkstra) par zone, routes inter-zones
 //    seulement à travers la zone 0, externes E2 (redistribute, default-information originate) ;
 //  - RIP : Bellman-Ford, split horizon, 15 sauts maximum ;
+//  - redistribution entre protocoles (net/redistribute.js) : calcul repris tant que les tables changent ;
 //  - BGP : sessions vérifiées (adresses, AS, update-source, ebgp-multihop, joignabilité par un vrai ping),
 //    propagation avec AS_PATH, pas de relais iBGP -> iBGP, next-hop conservé en iBGP (sauf next-hop-self).
 // La sélection finale se fait par distance administrative, comme sur IOS.
@@ -16,6 +17,7 @@ import { flood } from './l2.js';
 import { formatIp, isValidCidr, isValidIp, maskBits, networkOf, parseIp, sameSubnet } from './ip.js';
 import { isFrr, isMikrotik } from './catalog.js';
 import { simulatePing } from './simulate.js';
+import { redistOf, redistSources } from './redistribute.js';
 
 export const AD = { C: 0, L: 0, S: 1, eBGP: 20, D: 90, O: 110, R: 120, DEX: 170, iBGP: 200 };
 const RIP_INFINITY = 16;
@@ -75,6 +77,34 @@ export function lookup(rib, ip, filter = () => true) {
   return best;
 }
 
+// Réseaux des interfaces actives dans chaque protocole (« redistribute ospf 1 » les inclut, comme IOS)
+function protocolNets(r) {
+  const nets = (list) => (list ?? []).map(({ iface }) => {
+    const mask = iface.loopback ? 32 : iface.mask;
+    return { net: networkOf(iface.ip, mask), mask, iface: iface.name, link: iface.link };
+  });
+  return { ospf: nets(r.ospf?.ifaces), rip: nets(r.rip?.ifaces), eigrp: nets(r.eigrp?.ifaces), bgp: [] };
+}
+
+const PROTO_OF = { ospf: /^O/, rip: /^R/, eigrp: /^D/, bgp: /^B$/ };
+// Routes que `r` redistribue depuis `source` dans `target` (null : processus inconnu, expliqué)
+function redistSource(r, source, target, issue) {
+  const v = redistOf(r.cfg[target], source);
+  if (source === 'static') return r.statics;
+  if (source === 'connected') return [...r.connected.values()].filter((x) => x.proto === 'C');
+  const own = { ospf: r.cfg.ospf ? Number(r.cfg.ospf.processId ?? 1) : null, eigrp: r.cfg.eigrp?.asn ? Number(r.cfg.eigrp.asn) : null, bgp: r.cfg.bgp?.asn ? Number(r.cfg.bgp.asn) : null, rip: r.cfg.rip ? 0 : null }[source];
+  if (own === null || (v.process && Number(v.process) !== own)) {
+    issue(r, `${r.label} : « redistribute ${source}${v.process ? ` ${v.process}` : ''} » dans ${target.toUpperCase()}, mais ${own === null ? `${source.toUpperCase()} n'est pas configuré` : `le processus est ${own}`} : rien à redistribuer.`);
+    return [];
+  }
+  const prev = r.previous;
+  if (!prev) return [];
+  // BGP vers un IGP : seulement les routes eBGP (IOS n'exporte pas l'iBGP sans « bgp redistribute-internal »)
+  const routes = [...prev.rib.values()].filter((x) => PROTO_OF[source].test(x.proto) && (source !== 'bgp' || x.ebgp));
+  const extra = prev.nets[source].filter((n) => !routes.some((x) => x.net === n.net && x.mask === n.mask));
+  return [...routes, ...extra];
+}
+
 export function computeRouting(doc, topo = buildTopology(doc)) {
   const routers = new Map();
   for (const d of topo.devices.values()) {
@@ -124,23 +154,33 @@ export function computeRouting(doc, topo = buildTopology(doc)) {
     }
   }
 
-  computeOspf(routers, issue);
-  computeRip(routers, issue);
-  computeEigrp(routers, issue);
-
-  // Table « IGP » : connecté, statique, OSPF, RIP (sert à BGP)
   const pick = (rib, route) => {
     const k = prefixKey(route.net, route.mask);
     const cur = rib.get(k);
     if (!cur || route.ad < cur.ad || (route.ad === cur.ad && route.metric < cur.metric)) rib.set(k, route);
   };
-  for (const r of routers.values()) {
-    r.rib = new Map();
-    for (const route of [...r.connected.values(), ...r.statics, ...r.ospf.routes, ...r.rip.routes, ...r.eigrp.routes]) pick(r.rib, route);
+  // Un IGP qui redistribue un autre protocole dynamique dépend du résultat de celui-ci : on recalcule
+  // en partant des tables de la passe précédente, jusqu'à ce qu'elles ne changent plus
+  const dynamic = [...routers.values()].some((r) => ['ospf', 'rip', 'eigrp'].some((p) => ['ospf', 'rip', 'eigrp', 'bgp'].some((src) => src !== p && redistOf(r.cfg[p], src))));
+  let last = null;
+  for (let pass = 0; pass < (dynamic ? 6 : 1); pass++) {
+    for (const r of routers.values()) r.issues = [];
+    computeOspf(routers, issue);
+    computeRip(routers, issue);
+    computeEigrp(routers, issue);
+    // Table « IGP » : connecté, statique, OSPF, RIP, EIGRP (sert à BGP)
+    for (const r of routers.values()) {
+      r.rib = new Map();
+      for (const route of [...r.connected.values(), ...r.statics, ...r.ospf.routes, ...r.rip.routes, ...r.eigrp.routes]) pick(r.rib, route);
+    }
+    computeBgp(routers, issue, doc, topo);
+    for (const r of routers.values()) for (const route of r.bgp.routes) pick(r.rib, route);
+    if (!dynamic) break;
+    const sig = JSON.stringify([...routers.values()].map((r) => [...r.rib.values()].map((x) => `${x.net}/${x.mask}${x.proto}${x.metric}${x.nextHop}`).sort()));
+    if (sig === last) break;
+    last = sig;
+    for (const r of routers.values()) r.previous = { rib: new Map(r.rib), nets: protocolNets(r) };
   }
-
-  computeBgp(routers, issue, doc, topo);
-  for (const r of routers.values()) for (const route of r.bgp.routes) pick(r.rib, route);
 
   // IPv6 : connecté, statique, OSPFv3
   for (const r of routers.values()) {
@@ -231,7 +271,9 @@ function computeOspf(routers, issue) {
       if (iface.mask !== peerIface.mask) { fail(`masques différents (/${iface.mask} et /${peerIface.mask})`); continue; }
       if (mine.area !== theirs.area) { fail(`zones différentes (${mine.area} et ${theirs.area})`); continue; }
       if (r.ospf.routerId === peer.ospf.routerId) { fail(`même router-id ${r.ospf.routerId}`); continue; }
-      r.ospf.neighbors.push({ peer, iface, peerIface, area: mine.area, cost: mine.cost, p2p });
+      const type = (i) => i.ospfNetwork ?? (p2p ? 'point-to-point' : 'broadcast');
+      if (type(iface) !== type(peerIface)) issue(r, `OSPF : ${where} : types de réseau différents (${type(iface)} et ${type(peerIface)}) : l'adjacence monte mais les routes peuvent manquer (ip ospf network).`);
+      r.ospf.neighbors.push({ peer, iface, peerIface, area: mine.area, cost: mine.cost, p2p: p2p || type(iface) === 'point-to-point' });
     }
   }
 
@@ -249,7 +291,8 @@ function computeOspf(routers, issue) {
   for (const r of routers.values()) {
     if (!r.ospf.enabled) continue;
     r.ospf.stubs = r.ospf.ifaces.map(({ iface, area, cost }) => {
-      const mask = iface.loopback ? 32 : iface.mask;
+      // Loopback en /32, sauf « ip ospf network point-to-point » (masque configuré annoncé)
+      const mask = iface.loopback && iface.ospfNetwork !== 'point-to-point' ? 32 : iface.mask;
       return { net: networkOf(iface.ip, mask), mask, area, cost };
     });
     r.ospf.externals = [];
@@ -257,12 +300,20 @@ function computeOspf(routers, issue) {
     const hasDefault = r.statics.some((s) => s.mask === 0);
     if (o.defaultOriginate === 'always' || (o.defaultOriginate && hasDefault)) r.ospf.externals.push({ net: 0, mask: 0, metric: 1 });
     else if (o.defaultOriginate) issue(r, `${r.label} : « default-information originate » sans route par défaut : rien n'est annoncé (ajoute « always » ou une route 0.0.0.0/0).`);
-    if (o.redistribute?.static) for (const s of r.statics) if (s.mask > 0) r.ospf.externals.push({ net: s.net, mask: s.mask, metric: 20 });
-    if (o.redistribute?.connected) {
-      for (const c of r.connected.values()) {
-        if (c.proto !== 'C' || r.ospf.stubs.some((x) => x.net === c.net && x.mask === c.mask)) continue;
-        r.ospf.externals.push({ net: c.net, mask: c.mask, metric: 20 });
+    for (const source of redistSources(o).filter((x) => x !== 'ospf')) {
+      const v = redistOf(o, source);
+      const metric = v.metric ?? (o.defaultMetric !== undefined ? Number(o.defaultMetric) : source === 'bgp' ? 1 : 20);
+      const skipped = [];
+      for (const x of redistSource(r, source, 'ospf', issue)) {
+        if (x.mask === 0 || r.ospf.stubs.some((y) => y.net === x.net && y.mask === x.mask) || r.ospf.externals.some((y) => y.net === x.net && y.mask === x.mask)) continue;
+        // Sans « subnets », IOS ne redistribue que les réseaux pris avec le masque de leur classe
+        if (!v.subnets && classful(formatIp(x.net)).mask !== x.mask) {
+          skipped.push(prefixText(x.net, x.mask));
+          continue;
+        }
+        r.ospf.externals.push({ net: x.net, mask: x.mask, metric, type: v.metricType === 1 ? 1 : 2 });
       }
+      if (skipped.length) issue(r, `${r.label} : « redistribute ${source} » sans « subnets » : seuls les réseaux par classe passent dans OSPF, ${skipped.length} sous-réseau(x) ignoré(s) (${skipped.slice(0, 3).join(', ')}${skipped.length > 3 ? '…' : ''}). Ajoute « subnets ».`);
     }
   }
 
@@ -359,7 +410,7 @@ function spf(routers, key, hopOf, connected) {
     const offer = (route) => {
       const k = prefixKey(route.net, route.mask);
       const cur = best.get(k);
-      const rank = (x) => ({ O: 0, 'O IA': 1, 'O E2': 2, 'O*E2': 2 })[x.proto];
+      const rank = (x) => ({ O: 0, 'O IA': 1, 'O E1': 2, 'O E2': 3, 'O*E2': 3 })[x.proto];
       if (!cur || rank(route) < rank(cur) || (rank(route) === rank(cur) && (route.metric < cur.metric || (route.metric === cur.metric && route.fwd < cur.fwd)))) best.set(k, route);
     };
     for (const st of done.values()) {
@@ -370,7 +421,9 @@ function spf(routers, key, hopOf, connected) {
         offer({ net: stub.net, mask: stub.mask, proto: st.inter ? 'O IA' : 'O', ad: AD.O, metric: st.d + stub.cost, fwd: st.d, ...hop });
       }
       for (const ext of st.r[key].externals) {
-        offer({ net: ext.net, mask: ext.mask, proto: ext.mask === 0 ? 'O*E2' : 'O E2', ad: AD.O, metric: ext.metric, fwd: st.d, ...hop });
+        // E1 : métrique externe + coût jusqu'à l'ASBR ; E2 : métrique externe seule
+        const e1 = ext.type === 1;
+        offer({ net: ext.net, mask: ext.mask, proto: ext.mask === 0 ? 'O*E2' : e1 ? 'O E1' : 'O E2', ad: AD.O, metric: e1 ? ext.metric + st.d : ext.metric, fwd: st.d, ...hop });
       }
     }
     // Les réseaux connectés restent connectés (distance 0)
@@ -405,7 +458,18 @@ function computeRip(routers, issue) {
       r.rip.table.set(prefixKey(net, mask), { net, mask, metric: 0, via: null });
     }
     if (c.defaultOriginate) r.rip.table.set(prefixKey(0, 0), { net: 0, mask: 0, metric: 0, via: null });
-    if (c.redistribute?.static) for (const s of r.statics) r.rip.table.set(prefixKey(s.net, s.mask), { net: s.net, mask: s.mask, metric: 0, via: null });
+    // Redistribution : la métrique d'amorce est celle que reçoivent les voisins (statique, connecté : 1 ;
+    // autre protocole sans « metric » ni « default-metric » : 16, donc injoignable)
+    for (const source of redistSources(c).filter((x) => x !== 'rip')) {
+      const v = redistOf(c, source);
+      const seed = v.metric ?? (c.defaultMetric !== undefined ? Number(c.defaultMetric) : ['static', 'connected'].includes(source) ? 1 : RIP_INFINITY);
+      const routes = redistSource(r, source, 'rip', issue).filter((x) => !r.rip.table.has(prefixKey(x.net, x.mask)));
+      if (seed >= RIP_INFINITY) {
+        if (routes.length) issue(r, `${r.label} : « redistribute ${source} » dans RIP sans « metric » ni « default-metric » : ${routes.length} route(s) annoncée(s) à 16 sauts, donc injoignables (ajoute « metric 2 » par exemple).`);
+        continue;
+      }
+      for (const x of routes) r.rip.table.set(prefixKey(x.net, x.mask), { net: x.net, mask: x.mask, metric: Math.max(0, seed - 1), via: null, redistributed: true });
+    }
   }
 
   // Annonces directionnelles A -> B
@@ -433,7 +497,7 @@ function computeRip(routers, issue) {
         const metric = e.metric + 1;
         if (metric >= RIP_INFINITY) continue;
         const cur = b.rip.table.get(k);
-        if (cur && cur.metric === 0) continue;
+        if (cur && !cur.via) continue; // réseau local ou redistribué par b
         if (!cur || metric < cur.metric || (metric === cur.metric && byIp(aIface.ip, cur.via.nextHop) < 0)) {
           b.rip.table.set(k, { net: e.net, mask: e.mask, metric, via: { nextHop: aIface.ip, iface: bIface.name, link: bIface.link } });
           changed = true;
@@ -444,7 +508,7 @@ function computeRip(routers, issue) {
   }
   for (const r of routers.values()) {
     r.rip.routes = [...r.rip.table.values()]
-      .filter((e) => e.metric > 0 && !r.connected.has(prefixKey(e.net, e.mask)))
+      .filter((e) => e.via && !r.connected.has(prefixKey(e.net, e.mask)))
       .map((e) => ({ net: e.net, mask: e.mask, proto: e.mask === 0 ? 'R*' : 'R', ad: AD.R, metric: e.metric, ...e.via }));
   }
 }
@@ -502,11 +566,21 @@ function computeEigrp(routers, issue) {
       const net = networkOf(iface.ip, mask);
       r.eigrp.table.set(prefixKey(net, mask), { net, mask, bw: eigrpBandwidth(iface), delay: eigrpDelay(iface), external: false, via: null, local: true });
     }
-    if (c.redistribute?.static) {
-      for (const st of r.statics) {
-        const out = r.ifaces.find((i) => i.name === st.iface);
-        if (!out) continue;
-        r.eigrp.table.set(prefixKey(st.net, st.mask), { net: st.net, mask: st.mask, bw: eigrpBandwidth(out), delay: eigrpDelay(out), external: true, via: null, local: true });
+    // Redistribution : statique et connecté prennent la métrique de leur interface ; un autre protocole
+    // exige « metric bw delay fiabilité charge mtu » ou « default-metric », sinon rien n'est redistribué
+    for (const source of redistSources(c).filter((x) => x !== 'eigrp')) {
+      const v = redistOf(c, source);
+      const seed = v.metric ?? c.defaultMetric ?? null;
+      const routes = redistSource(r, source, 'eigrp', issue).filter((x) => !r.eigrp.table.has(prefixKey(x.net, x.mask)));
+      if (!seed && !['static', 'connected'].includes(source)) {
+        if (routes.length) issue(r, `${r.label} : « redistribute ${source} » dans EIGRP sans « metric » ni « default-metric » : aucune route redistribuée (ex. « metric 100000 100 255 1 1500 »).`);
+        continue;
+      }
+      for (const x of routes) {
+        const out = r.ifaces.find((i) => i.name === x.iface);
+        const [bw, delay] = seed ? [Number(seed[0]), Number(seed[1])] : out ? [eigrpBandwidth(out), eigrpDelay(out)] : [null, null];
+        if (!bw) continue;
+        r.eigrp.table.set(prefixKey(x.net, x.mask), { net: x.net, mask: x.mask, bw, delay, external: true, via: null, local: true });
       }
     }
   }
@@ -646,9 +720,20 @@ function computeBgp(routers, issue, doc, topo) {
         r.bgp.local.push({ net: x.net, mask: x.mask, asPath: [], nextHop: '0.0.0.0', local: true, origin: '?' });
       }
     };
-    if (c.redistribute?.connected) redistribute([...r.connected.values()].filter((x) => x.proto === 'C'));
-    if (c.redistribute?.static) redistribute(r.statics);
-    if (c.redistribute?.ospf) redistribute(r.ospf.routes);
+    // IGP vers BGP : routes de la table (même passe) et réseaux des interfaces du protocole
+    for (const source of redistSources(c).filter((x) => x !== 'bgp')) {
+      if (['static', 'connected'].includes(source)) redistribute(redistSource(r, source, 'bgp', issue));
+      else {
+        const v = redistOf(c, source);
+        const own = { ospf: r.cfg.ospf ? Number(r.cfg.ospf.processId ?? 1) : null, eigrp: r.cfg.eigrp?.asn ? Number(r.cfg.eigrp.asn) : null, rip: r.cfg.rip ? 0 : null }[source];
+        if (own === null || (v.process && Number(v.process) !== own)) {
+          issue(r, `${r.label} : « redistribute ${source}${v.process ? ` ${v.process}` : ''} » dans BGP, mais ${own === null ? `${source.toUpperCase()} n'est pas configuré` : `le processus est ${own}`}.`);
+          continue;
+        }
+        const nets = protocolNets(r)[source];
+        redistribute([...[...r.rib.values()].filter((x) => PROTO_OF[source].test(x.proto)), ...nets]);
+      }
+    }
     r.bgp.adjIn = new Map(); // peerId -> Map prefixKey -> path
     for (const p of r.bgp.local) r.bgp.table.set(prefixKey(p.net, p.mask), [p]);
   }
@@ -661,7 +746,10 @@ function computeBgp(routers, issue, doc, topo) {
     return Boolean(lookup(r.rib, p.nextHop, (x) => x.proto !== 'B'));
   };
   const better = (r, x, y) => {
-    // Locale, puis AS_PATH le plus court, puis eBGP avant iBGP, puis plus petit router-id
+    // Weight (Cisco, local au routeur ; 32768 pour ses propres routes), locale, AS_PATH le plus court,
+    // eBGP avant iBGP, puis plus petit router-id
+    const w = (p) => (p.local ? 32768 : Number(p.weight) || 0);
+    if (w(x) !== w(y)) return w(x) > w(y);
     if (x.local !== y.local) return x.local;
     if (x.asPath.length !== y.asPath.length) return x.asPath.length < y.asPath.length;
     if (Boolean(x.ebgp) !== Boolean(y.ebgp)) return Boolean(x.ebgp);
@@ -689,7 +777,7 @@ function computeBgp(routers, issue, doc, topo) {
           const self = best.local || s.cfg.nextHopSelf;
           path = { net: best.net, mask: best.mask, asPath: best.asPath, nextHop: self ? s.source : best.nextHop, ebgp: false, origin: best.origin };
         }
-        out.set(k, { ...path, from: a.id, peerRouterId: a.bgp.routerId, peerIp: s.source });
+        out.set(k, { ...path, from: a.id, peerRouterId: a.bgp.routerId, peerIp: s.source, ...(back.cfg.weight ? { weight: Number(back.cfg.weight) } : {}) });
       }
       const prev = b.bgp.adjIn.get(a.id);
       if (JSON.stringify(prev ? [...prev] : null) !== JSON.stringify([...out])) {

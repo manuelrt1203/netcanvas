@@ -773,6 +773,7 @@ function lineTree(dev) {
     children: [
       accept('password', 'Set a password'),
       kw('login', 'Enable password checking', { run() {}, children: [rest('x', 'LINE', '', () => {})] }),
+      kw('no', 'Negate a command or set its defaults', { children: [rest('x', 'LINE', '', () => {})] }),
       accept('logging', 'Modify message logging facilities'),
       accept('exec-timeout', 'Set the EXEC timeout'),
       accept('transport', 'Define transport protocols for line'),

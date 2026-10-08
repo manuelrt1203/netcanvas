@@ -5,6 +5,7 @@ import { computeRouting, eigrpMetric, prefixText, wildcardToCidr } from '../net/
 import { cidrToMask, formatIp, isValidIp, networkOf } from '../net/ip.js';
 import { iosLongName } from '../export/cisco.js';
 import { parseInterfaces } from './ios.js';
+import { SOURCES, WITH_PROCESS, parseRedistOptions } from '../net/redistribute.js';
 
 const isIp = (t) => isValidIp(t);
 const isNum = (min, max) => (t) => /^\d+$/.test(t) && Number(t) >= min && Number(t) <= max;
@@ -195,6 +196,48 @@ function passive(get, add) {
   });
 }
 
+// « redistribute <source> [process] [metric …] [metric-type 1|2] [subnets] » dans OSPF, RIP, EIGRP ou BGP
+const SOURCE_HELP = {
+  static: 'Static routes', connected: 'Connected', ospf: 'Open Shortest Path First (OSPF)', rip: 'Routing Information Protocol (RIP)',
+  eigrp: 'Enhanced Interior Gateway Routing Protocol (EIGRP)', bgp: 'Border Gateway Protocol (BGP)',
+};
+function redistributeCmd(get, target, add) {
+  const set = (c, source) => {
+    const conf = get(c);
+    if (!add) {
+      if (conf.redistribute) delete conf.redistribute[source];
+      if (conf.redistribute && !Object.keys(conf.redistribute).length) delete conf.redistribute;
+      return touch(c);
+    }
+    const r = parseRedistOptions((c.args.opts ?? '').trim().split(/\s+/).filter(Boolean), target);
+    if (r.error) return c.out.push(r.error, '');
+    const v = { ...(c.args.pid ? { process: Number(c.args.pid) } : {}), ...r.opts };
+    (conf.redistribute ??= {})[source] = Object.keys(v).length ? v : true;
+    if (target === 'ospf' && !v.subnets) c.out.push('% Only classful networks will be redistributed');
+    c.out.push(...r.notes);
+    return touch(c);
+  };
+  const leaf = (source) => ({ run: (c) => set(c, source), children: add ? [rest('opts', 'LINE', 'metric, metric-type, subnets', (c) => set(c, source))] : [] });
+  return kw('redistribute', 'Redistribute information from another routing protocol', {
+    children: SOURCES.filter((x) => x !== target).map((x) => kw(x, SOURCE_HELP[x], WITH_PROCESS.has(x)
+      ? { children: [arg('pid', '<1-65535>', x === 'ospf' ? 'Process ID' : 'Autonomous system number', isNum(1, 4294967295), leaf(x))] }
+      : leaf(x))),
+  });
+}
+// « default-metric » : un nombre (RIP, OSPF) ou bande passante, délai, fiabilité, charge, MTU (EIGRP)
+function defaultMetricCmd(get, target, add) {
+  if (!add) return kw('default-metric', '', { run: (c) => { delete get(c).defaultMetric; touch(c); }, children: [rest('x', 'LINE', '', (c) => { delete get(c).defaultMetric; touch(c); })] });
+  return kw('default-metric', 'Set metric of redistributed routes', {
+    children: [rest('m', target === 'eigrp' ? '<1-4294967295>' : '<1-16777214>', 'Default metric', (c) => {
+      const vals = c.args.m.trim().split(/\s+/).map(Number);
+      if (target === 'eigrp' ? vals.length !== 5 : vals.length !== 1) return c.out.push('% Incomplete command.', '');
+      if (vals.some((v) => !Number.isInteger(v) || v < 0)) return c.out.push("% Invalid input detected at '^' marker.", '');
+      get(c).defaultMetric = target === 'eigrp' ? vals : vals[0];
+      return touch(c);
+    })],
+  });
+}
+
 const leaveRouter = () => kw('exit', 'Exit from routing protocol configuration mode', { run: (c) => { c.s.mode = 'config'; } });
 
 export function ospfTree(common) {
@@ -228,13 +271,7 @@ export function ospfTree(common) {
       children: add ? [kw('always', 'Always advertise default route', { run: (c) => { ospfOf(c).defaultOriginate = 'always'; touch(c); } })] : [],
     })],
   });
-  const redistribute = (add) => kw('redistribute', 'Redistribute information from another routing protocol', {
-    children: ['static', 'connected'].map((p) => kw(p, `${p === 'static' ? 'Static' : 'Connected'} routes`, {
-      run: (c) => { (ospfOf(c).redistribute ??= {})[p] = add; touch(c); },
-      children: [kw('subnets', 'Consider subnets for redistribution into OSPF', { run: (c) => { (ospfOf(c).redistribute ??= {})[p] = add; touch(c); } }),
-        rest('x', 'LINE', '', (c) => { (ospfOf(c).redistribute ??= {})[p] = add; touch(c); })],
-    })),
-  });
+  const redistribute = (add) => redistributeCmd(ospfOf, 'ospf', add);
   return {
     children: [
       network(true),
@@ -242,11 +279,12 @@ export function ospfTree(common) {
       passive(ospfOf, true),
       defaultInfo(true),
       redistribute(true),
+      defaultMetricCmd(ospfOf, 'ospf', true),
       accept('log-adjacency-changes', 'Log changes in adjacency state'),
       accept('auto-cost', 'Calculate OSPF interface cost according to bandwidth'),
       accept('area', 'OSPF area parameters'),
       kw('no', 'Negate a command or set its defaults', {
-        children: [network(false), passive(ospfOf, false), defaultInfo(false), redistribute(false),
+        children: [network(false), passive(ospfOf, false), defaultInfo(false), redistribute(false), defaultMetricCmd(ospfOf, 'ospf', false),
           kw('router-id', '', { run: (c) => { delete ospfOf(c).routerId; touch(c); } }), accept('log-adjacency-changes', '')],
       }),
       leaveRouter(),
@@ -280,15 +318,15 @@ export function ripTree(common) {
       passive(ripOf, true),
       kw('auto-summary', 'Enable automatic network number summarization', { run: (c) => { ripOf(c).autoSummary = true; touch(c); c.out.push('% NetCanvas : le résumé automatique n\'est pas simulé (routes calculées sans résumé).', ''); } }),
       kw('default-information', 'Control distribution of default information', { children: [kw('originate', 'Distribute a default route', { run: (c) => { ripOf(c).defaultOriginate = true; touch(c); } })] }),
-      kw('redistribute', 'Redistribute information from another routing protocol', {
-        children: [kw('static', 'Static routes', { run: (c) => { (ripOf(c).redistribute ??= {}).static = true; touch(c); }, children: [rest('x', 'LINE', '', (c) => { (ripOf(c).redistribute ??= {}).static = true; touch(c); })] })],
-      }),
+      redistributeCmd(ripOf, 'rip', true),
+      defaultMetricCmd(ripOf, 'rip', true),
       kw('no', 'Negate a command or set its defaults', {
         children: [
           network(false), passive(ripOf, false),
           kw('auto-summary', 'Enable automatic network number summarization', { run: (c) => { ripOf(c).autoSummary = false; touch(c); } }),
           kw('default-information', '', { children: [kw('originate', '', { run: (c) => { delete ripOf(c).defaultOriginate; touch(c); } })] }),
-          kw('redistribute', '', { children: [kw('static', '', { run: (c) => { delete ripOf(c).redistribute; touch(c); } })] }),
+          redistributeCmd(ripOf, 'rip', false),
+          defaultMetricCmd(ripOf, 'rip', false),
         ],
       }),
       leaveRouter(),
@@ -325,6 +363,9 @@ export function bgpTree(common) {
         touch(c);
       })]),
       option('next-hop-self', 'Disable the next hop calculation for this neighbor', (c, n) => { n.nextHopSelf = true; }),
+      option('weight', 'Set default weight for routes from this neighbor', null, [arg('w', '<0-65535>', 'default weight', isNum(0, 65535), {
+        run: (c) => { const n = neighborOf(c); if (!n) return c.out.push('% Specify remote-as or peer-group commands first', ''); if (Number(c.args.w)) n.weight = Number(c.args.w); else delete n.weight; return touch(c); },
+      })]),
       option('ebgp-multihop', 'Allow EBGP neighbors not on directly connected networks', (c, n) => { n.ebgpMultihop = 255; },
         [arg('ttl', '<1-255>', 'maximum hop count', isNum(1, 255), { run: (c) => { const n = neighborOf(c); if (!n) return c.out.push('% Specify remote-as or peer-group commands first', ''); n.ebgpMultihop = Number(c.args.ttl); touch(c); } })]),
       accept('description', 'Neighbor specific description'),
@@ -337,6 +378,7 @@ export function bgpTree(common) {
       kw('next-hop-self', '', { run: (c) => { const n = neighborOf(c); if (n) delete n.nextHopSelf; touch(c); } }),
       kw('update-source', '', { run: (c) => { const n = neighborOf(c); if (n) delete n.updateSource; touch(c); } }),
       kw('ebgp-multihop', '', { run: (c) => { const n = neighborOf(c); if (n) delete n.ebgpMultihop; touch(c); } }),
+      kw('weight', '', { run: (c) => { const n = neighborOf(c); if (n) delete n.weight; touch(c); }, children: [rest('x', 'LINE', '', (c) => { const n = neighborOf(c); if (n) delete n.weight; touch(c); })] }),
     ],
   });
   const network = (add) => kw('network', 'Specify a network to announce via BGP', {
@@ -354,13 +396,7 @@ export function bgpTree(common) {
       })],
     })],
   });
-  const redistribute = (add) => kw('redistribute', 'Redistribute information from another routing protocol', {
-    children: [
-      kw('connected', 'Connected', { run: (c) => { (bgpOf(c).redistribute ??= {}).connected = add; touch(c); } }),
-      kw('static', 'Static routes', { run: (c) => { (bgpOf(c).redistribute ??= {}).static = add; touch(c); } }),
-      kw('ospf', 'Open Shortest Path First (OSPF)', { children: [rest('x', '<1-65535>', 'Process ID', (c) => { (bgpOf(c).redistribute ??= {}).ospf = add; touch(c); })] }),
-    ],
-  });
+  const redistribute = (add) => redistributeCmd(bgpOf, 'bgp', add);
   return {
     children: [
       kw('neighbor', 'Specify a neighbor router', { children: [neighbor] }),
@@ -373,6 +409,7 @@ export function bgpTree(common) {
       }),
       redistribute(true),
       accept('synchronization', 'Perform IGP synchronization'),
+      accept('table-map', 'Map external entry attributes into routing table'),
       accept('auto-summary', 'Enable automatic network number summarization'),
       kw('no', 'Negate a command or set its defaults', {
         children: [kw('neighbor', 'Specify a neighbor router', { children: [noNeighbor] }), network(false), redistribute(false),
@@ -453,6 +490,14 @@ export function interfaceRoutingCommands(forIfaces) {
             })],
           })],
         }),
+        kw('network', 'Network type', {
+          children: ['point-to-point', 'broadcast', 'non-broadcast', 'point-to-multipoint'].map((t) => kw(t, `Specify OSPF ${t} network`, {
+            run: (c) => {
+              if (!['point-to-point', 'broadcast'].includes(t)) c.out.push(`% NetCanvas : le type ${t} est noté mais calculé comme broadcast.`, '');
+              forIfaces(c, (e) => { e.ospfNetwork = t; });
+            },
+          })),
+        }),
         accept('hello-interval', 'Time between HELLO packets'),
         accept('dead-interval', 'Interval after which a neighbor is declared dead'),
         accept('priority', 'Router priority'),
@@ -461,6 +506,7 @@ export function interfaceRoutingCommands(forIfaces) {
     noIpOspf: kw('ospf', '', {
       children: [
         kw('cost', '', { run: (c) => forIfaces(c, (e) => { delete e.ospfCost; }) }),
+        kw('network', '', { run: (c) => forIfaces(c, (e) => { delete e.ospfNetwork; }), children: [rest('x', 'LINE', '', (c) => forIfaces(c, (e) => { delete e.ospfNetwork; }))] }),
         rest('x', 'LINE', '', (c) => {
           const o = c.dev.config.ospf;
           if (o?.interfaces) o.interfaces = o.interfaces.filter((x) => !c.s.ifaces.includes(x.name));
@@ -566,17 +612,13 @@ export function eigrpTree(common) {
       children: [arg('wc', 'A.B.C.D', 'EIGRP wild card bits', isIp, { run: (c) => setEigrpNetwork(c, add, c.args.wc) })],
     })],
   });
-  const redistribute = (add) => kw('redistribute', 'Redistribute IPv4 routes from another routing protocol', {
-    children: [kw('static', 'Static routes', {
-      run: (c) => { if (add) (eigrpOf(c).redistribute ??= {}).static = true; else delete eigrpOf(c).redistribute; touch(c); },
-      children: [rest('x', 'LINE', '', (c) => { if (add) (eigrpOf(c).redistribute ??= {}).static = true; else delete eigrpOf(c).redistribute; touch(c); })],
-    })],
-  });
+  const redistribute = (add) => redistributeCmd(eigrpOf, 'eigrp', add);
   return {
     children: [
       network(true),
       passive(eigrpOf, true),
       redistribute(true),
+      defaultMetricCmd(eigrpOf, 'eigrp', true),
       kw('eigrp', 'EIGRP specific commands', {
         children: [kw('router-id', 'router-id for this EIGRP process', { children: [arg('rid', 'A.B.C.D', 'EIGRP Router-ID in IP address format', isIp, { run: (c) => { eigrpOf(c).routerId = c.args.rid; touch(c); } })] })],
       }),
@@ -584,7 +626,7 @@ export function eigrpTree(common) {
       accept('metric', 'Modify metrics and parameters for advertisement'),
       accept('variance', 'Control load balancing variance'),
       kw('no', 'Negate a command or set its defaults', {
-        children: [network(false), passive(eigrpOf, false), redistribute(false),
+        children: [network(false), passive(eigrpOf, false), redistribute(false), defaultMetricCmd(eigrpOf, 'eigrp', false),
           kw('auto-summary', 'Enable automatic network number summarization', { run() {} }),
           kw('eigrp', '', { children: [kw('router-id', '', { run: (c) => { delete eigrpOf(c).routerId; touch(c); } })] })],
       }),

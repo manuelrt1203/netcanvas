@@ -60,7 +60,7 @@ function routerosLines(text) {
 // Première ligne d'erreur d'une sortie de terminal. IOS : « % message » ou « %Message » (pas les messages
 // système « %LINK-5-CHANGED: … », ni l'information « Access VLAN does not exist. Creating vlan ») ;
 // RouterOS : « bad command… », « failure… »
-const IOS_INFO = /^% Access VLAN does not exist|^%\s*Warning:/;
+const IOS_INFO = /^% Access VLAN does not exist|^%\s*Warning:|^% Only classful networks will be redistributed/;
 const SYSLOG = /^%[A-Z0-9_]+-\d-[A-Z0-9_]+:/;
 function errorOf(out) {
   return out.find((l) => (/^%/.test(l) && !SYSLOG.test(l) && !IOS_INFO.test(l)) || /^(bad command|syntax error|expected|failure|input does not match|no such item|invalid)/i.test(l)) ?? null;

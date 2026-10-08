@@ -2,6 +2,7 @@
 //   target 'packet-tracer' : scripts à coller dans le CLI (routeur 2911, switch 2960, PC configurés à la main)
 //   target 'gns3'          : startup-config de routeurs c7200 (Dynamips), ports du switch intégré, scripts VPCS
 import { formatVlanList, psOf } from '../net/switching.js';
+import { redistLines } from '../net/redistribute.js';
 import { isValidIp6, normIp6 } from '../net/ip6.js';
 import { rule6Text } from '../net/acl6.js';
 
@@ -320,6 +321,7 @@ export function iosInterfaceExtras(cfg, entry) {
   const out = [];
   if (entry?.bandwidth) out.push(` bandwidth ${entry.bandwidth}`);
   if (entry?.delay) out.push(` delay ${entry.delay}`);
+  if (entry?.ospfNetwork) out.push(` ip ospf network ${entry.ospfNetwork}`);
   if (entry?.ospfCost) out.push(` ip ospf cost ${entry.ospfCost}`);
   const o = cfg.ospf?.interfaces?.find((x) => x.name === entry?.name);
   if (o) out.push(` ip ospf ${cfg.ospf.processId ?? 1} area ${o.area}`);
@@ -332,6 +334,9 @@ export function iosInterfaceExtras(cfg, entry) {
 }
 
 // Blocs « router ospf / rip / bgp » ; ifName traduit les noms d'interfaces (GNS3 renumérote)
+// N° de processus par défaut d'une source redistribuée (anciens schémas : « redistribute ospf » sans numéro)
+const processes = (cfg) => ({ ospf: cfg.ospf?.processId ?? 1, eigrp: cfg.eigrp?.asn, bgp: cfg.bgp?.asn });
+
 export function iosRoutingLines(cfg, ifName = iosLongName) {
   const out = [];
   const o = cfg.ospf;
@@ -339,8 +344,7 @@ export function iosRoutingLines(cfg, ifName = iosLongName) {
     out.push(`router ospf ${o.processId ?? 1}`);
     if (o.routerId) out.push(` router-id ${o.routerId}`);
     out.push(' log-adjacency-changes');
-    if (o.redistribute?.connected) out.push(' redistribute connected subnets');
-    if (o.redistribute?.static) out.push(' redistribute static subnets');
+    out.push(...redistLines(o, 'ospf', processes(cfg)));
     for (const p of o.passive ?? []) out.push(` passive-interface ${ifName(p)}`);
     for (const n of o.networks ?? []) out.push(` network ${n.network} ${n.wildcard} area ${n.area}`);
     if (o.defaultOriginate) out.push(` default-information originate${o.defaultOriginate === 'always' ? ' always' : ''}`);
@@ -350,7 +354,7 @@ export function iosRoutingLines(cfg, ifName = iosLongName) {
   if (r) {
     out.push('router rip');
     if (r.version) out.push(` version ${r.version}`);
-    if (r.redistribute?.static) out.push(' redistribute static');
+    out.push(...redistLines(r, 'rip', processes(cfg)));
     for (const p of r.passive ?? []) out.push(` passive-interface ${ifName(p)}`);
     for (const n of r.networks ?? []) out.push(` network ${n}`);
     if (r.defaultOriginate) out.push(' default-information originate');
@@ -361,7 +365,7 @@ export function iosRoutingLines(cfg, ifName = iosLongName) {
   if (e?.asn) {
     out.push(`router eigrp ${e.asn}`);
     if (e.routerId) out.push(` eigrp router-id ${e.routerId}`);
-    if (e.redistribute?.static) out.push(' redistribute static');
+    out.push(...redistLines(e, 'eigrp', processes(cfg)));
     for (const p of e.passive ?? []) out.push(` passive-interface ${ifName(p)}`);
     for (const n of e.networks ?? []) out.push(` network ${n.network}${n.wildcard ? ` ${n.wildcard}` : ''}`);
     out.push(' no auto-summary', '!');
@@ -376,10 +380,10 @@ export function iosRoutingLines(cfg, ifName = iosLongName) {
       if (n.ebgpMultihop) out.push(` neighbor ${n.ip} ebgp-multihop ${n.ebgpMultihop}`);
       if (n.updateSource) out.push(` neighbor ${n.ip} update-source ${ifName(n.updateSource)}`);
       if (n.nextHopSelf) out.push(` neighbor ${n.ip} next-hop-self`);
+      if (n.weight) out.push(` neighbor ${n.ip} weight ${n.weight}`);
     }
     for (const n of b.networks ?? []) out.push(` network ${n.network} mask ${cidrToMask(n.mask)}`);
-    for (const p of ['connected', 'static']) if (b.redistribute?.[p]) out.push(` redistribute ${p}`);
-    if (b.redistribute?.ospf) out.push(` redistribute ospf ${cfg.ospf?.processId ?? 1}`);
+    out.push(...redistLines(b, 'bgp', processes(cfg)));
     out.push('!');
   }
   return out;

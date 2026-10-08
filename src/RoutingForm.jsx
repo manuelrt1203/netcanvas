@@ -5,6 +5,7 @@ import { Ipv6IfaceFields } from './Ipv6Form.jsx';
 import { cidrToWildcard, wildcardToCidr } from './net/routing.js';
 import { isValidIp } from './net/ip.js';
 import { isFrr, isMikrotik } from './net/catalog.js';
+import { SOURCES, redistOf } from './net/redistribute.js';
 
 const num = (v) => (v === '' || v === null || v === undefined ? '' : Number(v));
 
@@ -23,6 +24,67 @@ function Check({ label, checked, onChange }) {
     <label className="check">
       <input type="checkbox" checked={Boolean(checked)} onChange={(e) => onChange(e.target.checked)} /> {label}
     </label>
+  );
+}
+
+// Redistribution dans un protocole (target) : une case par source, puis ses options ; default-metric (RIP, EIGRP)
+const SOURCE_LABEL = { static: 'routes statiques', connected: 'réseaux connectés', ospf: 'OSPF', rip: 'RIP', eigrp: 'EIGRP', bgp: 'BGP (eBGP)' };
+function Redistribution({ target, conf, onChange, available }) {
+  const id = useId();
+  const setSource = (source, value) => onChange((c) => {
+    const redistribute = { ...c.redistribute, [source]: value };
+    if (!value) delete redistribute[source];
+    return { ...c, redistribute: Object.keys(redistribute).length ? redistribute : undefined };
+  });
+  const patch = (source, v) => setSource(source, { ...redistOf(conf, source), ...v });
+  const eigrpMetric = (m, onSet) => (
+    <>
+      <Input label="Bande passante (kbit/s)" type="number" min="1" value={m?.[0] ?? ''} onChange={(e) => onSet(e.target.value ? [Number(e.target.value), m?.[1] ?? 100, 255, 1, 1500] : undefined)} />
+      <Input label="Délai (×10 µs)" type="number" min="0" className="cidr" value={m?.[1] ?? ''} onChange={(e) => onSet(m ? [m[0], Number(e.target.value) || 0, 255, 1, 1500] : undefined)} />
+    </>
+  );
+  return (
+    <>
+      <p className="label">Redistribution</p>
+      {SOURCES.filter((x) => x !== target && available.includes(x)).map((source) => {
+        const v = redistOf(conf, source);
+        return (
+          <div key={source} className="redist">
+            <Check label={`Redistribuer : ${SOURCE_LABEL[source]}`} checked={v} onChange={(on) => setSource(source, on ? (target === 'ospf' ? { subnets: true } : true) : undefined)} />
+            {v && (
+              <div className="field-row">
+                {target === 'eigrp' ? eigrpMetric(v.metric, (m) => patch(source, { metric: m }))
+                  : target !== 'bgp' && <Input label="Métrique" type="number" min="1" className="cidr" placeholder={target === 'ospf' ? (source === 'bgp' ? '1' : '20') : ['static', 'connected'].includes(source) ? '1' : '16 !'}
+                    value={v.metric ?? ''} onChange={(e) => patch(source, { metric: e.target.value ? Number(e.target.value) : undefined })} />}
+                {target === 'ospf' && (
+                  <div className="field">
+                    <label htmlFor={`${id}-${source}-type`}>Type</label>
+                    <select id={`${id}-${source}-type`} value={v.metricType ?? 2} onChange={(e) => patch(source, { metricType: Number(e.target.value) === 1 ? 1 : undefined })}>
+                      <option value="2">E2</option>
+                      <option value="1">E1</option>
+                    </select>
+                  </div>
+                )}
+                {target === 'ospf' && <Check label="subnets" checked={v.subnets} onChange={(on) => patch(source, { subnets: on || undefined })} />}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {(target === 'rip' || target === 'eigrp') && (
+        <div className="field-row">
+          {target === 'rip'
+            ? <Input label="default-metric" type="number" min="1" max="16" className="cidr" placeholder="aucune" value={conf.defaultMetric ?? ''} onChange={(e) => onChange((c) => ({ ...c, defaultMetric: e.target.value ? Number(e.target.value) : undefined }))} />
+            : eigrpMetric(conf.defaultMetric, (m) => onChange((c) => ({ ...c, defaultMetric: m })))}
+        </div>
+      )}
+      <p className="hint">
+        {target === 'ospf' && 'Sans « subnets », seuls les réseaux par classe passent. E2 garde la métrique externe ; E1 y ajoute le coût jusqu\'à ce routeur.'}
+        {target === 'rip' && 'Depuis un autre protocole, sans métrique ni default-metric, les routes partent à 16 sauts : injoignables.'}
+        {target === 'eigrp' && 'Depuis un autre protocole, il faut une métrique (ou default-metric), sinon rien n\'est redistribué.'}
+        {target === 'bgp' && 'Les routes de la table apprises par ce protocole, et les réseaux de ses interfaces.'}
+      </p>
+    </>
   );
 }
 
@@ -137,6 +199,8 @@ export function RoutingForm({ node, update, ports, state }) {
   const d = node.data;
   const mk = isMikrotik({ type: node.type, model: d.model });
   const set = (key, fn) => update((x) => ({ ...x, [key]: fn(x[key]) }));
+  // Sources de redistribution : statique et connecté, plus les protocoles activés sur ce routeur
+  const available = ['static', 'connected', ...['ospf', 'rip', 'eigrp', 'bgp'].filter((p) => d[p])];
   const toggle = (key, init) => (on) => update((x) => {
     const copy = { ...x };
     if (on) copy[key] = init;
@@ -193,10 +257,7 @@ export function RoutingForm({ node, update, ports, state }) {
                 <option value="always">Toujours (… always)</option>
               </select>
             </div>
-            <div className="checks">
-              <Check label="Redistribuer les routes statiques" checked={d.ospf.redistribute?.static} onChange={(v) => set('ospf', (o) => ({ ...o, redistribute: { ...o.redistribute, static: v } }))} />
-              <Check label="Redistribuer les réseaux connectés" checked={d.ospf.redistribute?.connected} onChange={(v) => set('ospf', (o) => ({ ...o, redistribute: { ...o.redistribute, connected: v } }))} />
-            </div>
+            <Redistribution target="ospf" conf={d.ospf} onChange={(fn) => set('ospf', fn)} available={available} />
           </>
         )}
       </details>
@@ -225,6 +286,7 @@ export function RoutingForm({ node, update, ports, state }) {
             <p className="label">Interfaces passives</p>
             <div className="checks">{passiveBoxes('rip')}</div>
             <Check label="Annoncer la route par défaut" checked={d.rip.defaultOriginate} onChange={(v) => set('rip', (r) => ({ ...r, defaultOriginate: v || undefined }))} />
+            <Redistribution target="rip" conf={d.rip} onChange={(fn) => set('rip', fn)} available={available} />
           </>
         )}
       </details>
@@ -260,7 +322,7 @@ export function RoutingForm({ node, update, ports, state }) {
               }} />
             <p className="label">Interfaces passives</p>
             <div className="checks">{passiveBoxes('eigrp')}</div>
-            <Check label="Redistribuer les routes statiques (D EX)" checked={d.eigrp.redistribute?.static} onChange={(v) => set('eigrp', (x) => ({ ...x, redistribute: v ? { static: true } : undefined }))} />
+            <Redistribution target="eigrp" conf={d.eigrp} onChange={(fn) => set('eigrp', fn)} available={available} />
             <p className="hint">Métrique : 256 × (10⁷ / bande passante minimale + somme des délais). Bande passante et délai se règlent sur chaque interface.</p>
           </>
         )}
@@ -323,6 +385,7 @@ export function RoutingForm({ node, update, ports, state }) {
                 );
               }} />
             <p className="hint">Comme sur IOS, un réseau n'est annoncé que s'il est exactement dans la table de routage.</p>
+            <Redistribution target="bgp" conf={d.bgp} onChange={(fn) => set('bgp', fn)} available={available} />
           </>
         )}
       </details>

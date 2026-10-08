@@ -62,7 +62,7 @@ NetCanvas calcule la table de routage de chaque routeur à l'**état convergé**
 
 | Protocole | Ce qui est calculé |
 |---|---|
-| OSPF | voisins découverts sur le domaine de diffusion (mêmes zone, masque et sous-réseau, pas de `passive-interface`), DR/BDR, SPF de Dijkstra, routes `O` / `O IA` (seulement à travers la zone 0) / `O E2` (`redistribute static|connected`, `default-information originate [always]`) ; coût = 10⁸ / débit (`bandwidth`) ou `ip ospf cost` ; router-id configuré, sinon plus grande loopback |
+| OSPF | voisins découverts sur le domaine de diffusion (mêmes zone, masque et sous-réseau, pas de `passive-interface`), DR/BDR, SPF de Dijkstra, routes `O` / `O IA` (seulement à travers la zone 0) / `O E1` / `O E2` (redistribution, `default-information originate [always]`) ; coût = 10⁸ / débit (`bandwidth`) ou `ip ospf cost` ; router-id configuré, sinon plus grande loopback |
 | RIP v2 | Bellman-Ford, split horizon, 15 sauts maximum, `passive-interface`, `default-information originate`, `redistribute static`, versions incompatibles |
 | BGP | sessions vérifiées : adresse et AS du voisin, `update-source`, `ebgp-multihop`, joignabilité par un vrai ping dans les deux sens. Propagation avec AS_PATH (boucle rejetée), pas de relais iBGP → iBGP, next-hop conservé en iBGP (sauf `next-hop-self`) et résolu par l'IGP, `network` seulement si la route exacte est dans la table, `redistribute connected|static|ospf` |
 | Choix final | plus long préfixe, puis distance administrative : connecté 0, statique 1, eBGP 20, OSPF 110, RIP 120, iBGP 200 |
@@ -76,7 +76,16 @@ On configure le routage dans le **formulaire** (sections OSPF / RIP / BGP, avec 
 
 Cisco et MikroTik se parlent : adjacence OSPF ou session BGP entre un 2911 et un RB4011.
 
-Pas simulé : EIGRP, OSPF de type NSSA/stub et liens virtuels, résumé de routes, attributs BGP au-delà de l'AS_PATH (local-preference, MED, communautés), route-maps et filtres.
+### Redistribution (`src/net/redistribute.js`)
+
+`redistribute static|connected|ospf N|rip|eigrp AS|bgp AS` dans OSPF, RIP, EIGRP et BGP, avec `metric`, `metric-type 1|2`, `subnets`, et `default-metric`. Les routes redistribuées sont celles de la table de routage apprises par ce protocole, plus les réseaux de ses interfaces (comme IOS) ; BGP vers un IGP ne passe que l'eBGP. Quand un IGP redistribue un autre protocole dynamique, le calcul est repris jusqu'à ce que les tables ne bougent plus. Les pièges d'IOS sont reproduits et expliqués :
+- vers OSPF sans `subnets`, seuls les réseaux pris avec le masque de leur classe passent (`% Only classful networks will be redistributed`) ; métrique 20 par défaut (1 depuis BGP), `O E2` (métrique externe seule) ou `O E1` (plus le coût jusqu'à l'ASBR) ;
+- vers RIP sans `metric` ni `default-metric`, les routes d'un autre protocole partent à 16 sauts : injoignables ;
+- vers EIGRP, il faut `metric bande-passante délai fiabilité charge MTU` (ou `default-metric`), sinon rien n'est redistribué ; les routes arrivent en `D EX`.
+
+Aussi : `ip ospf network point-to-point` (loopback annoncée avec son masque, pas de DR/BDR), `neighbor … weight` en BGP (préféré avant l'AS_PATH). Vérifié sur des TP de BUT R&T faits sous GNS3 : redistribution mutuelle OSPF ↔ RIP, BGP vers OSPF en `metric-type 1`.
+
+Pas simulé : OSPF de type NSSA/stub et liens virtuels, résumé de routes (`auto-summary`), attributs BGP au-delà du weight et de l'AS_PATH (local-preference, MED, communautés), route-maps et filtres.
 
 
 ### EIGRP
@@ -404,7 +413,7 @@ Les fichiers v1 et v2 s'importent toujours : le modèle est déduit des ports ut
 ## Tests
 
 ```bash
-npm test           # 247 tests : calculs IP, ping, validation, JSON, TP, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
+npm test           # 253 tests : calculs IP, ping, validation, JSON, TP, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
 npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : édition, contrôles, ping, persistance, exports, câblage, terminaux (IOS, RouterOS, PC), démos OSPF et BGP (show ip ospf neighbor, next-hop-self retiré)
 npm run test:gns3     # navigateur réel : import d'un .gns3project et d'un dossier de projet, export .gns3project
 npm run test:gns3-real   # vrai serveur GNS3 (GNS3_URL) : projet exporté importé, démarré, ping de bout en bout
