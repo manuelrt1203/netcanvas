@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -207,8 +207,14 @@ function Editor() {
     document.title = `${dirty ? '• ' : ''}${file?.name ?? name} — NetCanvas`;
     desktop?.setDirty(dirty);
   }, [dirty, file, name]);
-  // Document effectif (clients DHCP avec leur bail), topologie et routage : calculés une fois par modification
-  const live = useMemo(() => withLeases(doc), [doc]);
+  // Document effectif (clients DHCP avec leur bail), topologie et routage : calculés une fois par modification,
+  // en priorité basse (la saisie reste fluide sur un grand schéma, les contrôles suivent juste après)
+  // Seulement sur un grand schéma (au-delà de 150 équipements, le calcul dépasse une image) et pour une
+  // modification de contenu : un équipement ou un câble ajouté doit exister tout de suite
+  const deferredDoc = useDeferredValue(doc);
+  const shape = (d) => `${d.devices.map((x) => x.id).join()}|${d.links.map((x) => x.id).join()}`;
+  const calcDoc = doc.devices.length > 150 && deferredDoc !== doc && shape(deferredDoc) === shape(doc) ? deferredDoc : doc;
+  const live = useMemo(() => withLeases(calcDoc), [calcDoc]);
   // Les baux calculés (renouvelés, expirés, d'hôtes partis) sont enregistrés dans l'état d'exécution
   useEffect(() => {
     const next = live.runtime?.leases ?? {};
@@ -218,7 +224,7 @@ function Editor() {
   const routing = useMemo(() => computeRouting(live, topo), [live, topo]);
   const issues = useMemo(() => validate(live, { topo, routing }), [live, topo, routing]);
   // Objectifs du TP, revérifiés à chaque modification (pings simulés compris)
-  const tpResults = useMemo(() => evaluateExercise(doc, { live, topo, routing, issues }), [doc, live, topo, routing, issues]);
+  const tpResults = useMemo(() => evaluateExercise(calcDoc, { live, topo, routing, issues }), [calcDoc, live, topo, routing, issues]);
   const linkStatus = topo.status;
   const labels = useMemo(() => new Map(nodes.map((n) => [n.id, n.data.label])), [nodes]);
   const selectedNodes = nodes.filter((n) => n.selected);

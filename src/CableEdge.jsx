@@ -1,9 +1,19 @@
 import { memo, useEffect, useState } from 'react';
-import { BaseEdge, EdgeLabelRenderer, getStraightPath, useNodesData } from '@xyflow/react';
+import { BaseEdge, getStraightPath, useNodesData } from '@xyflow/react';
 import { useLinkStatus, useSim } from './SimContext.js';
 import { isHost } from './net/topology.js';
 
 export const HOP_MS = 550;
+
+// Étiquette HTML posée dans le SVG du câble. (EdgeLabelRenderer de React Flow refait un querySelector
+// pour chaque câble à chaque mise à jour : trop lent sur un grand schéma.)
+function Label({ x, y, className, children }) {
+  return (
+    <foreignObject x={x - 70} y={y - 11} width={140} height={22} className="label-fo">
+      <div className="label-center"><div className={className}>{children}</div></div>
+    </foreignObject>
+  );
+}
 
 // Paquet qui glisse d'une extrémité à l'autre du câble pendant HOP_MS
 function Packet({ x1, y1, x2, y2, phase }) {
@@ -84,18 +94,8 @@ function CableEdge({ id, source, target, sourceX, sourceY, targetX, targetY, sel
             : { x1: targetX, y1: targetY, x2: sourceX, y2: sourceY })}
         />
       )}
-      <EdgeLabelRenderer>
-        {tag && (
-          <div className="edge-tag" style={{ transform: `translate(-50%, -50%) translate(${midX}px, ${midY}px)` }}>
-            {tag}
-          </div>
-        )}
-        {portLabels.map(([name, [x, y]], i) => (
-          <div key={i} className="port-label" style={{ transform: `translate(-50%, -50%) translate(${x}px, ${y}px)` }}>
-            {name}
-          </div>
-        ))}
-      </EdgeLabelRenderer>
+      {tag && <Label x={midX} y={midY} className="edge-tag">{tag}</Label>}
+      {portLabels.map(([name, [x, y]], i) => <Label key={i} x={x} y={y} className="port-label">{name}</Label>)}
     </>
   );
 }
