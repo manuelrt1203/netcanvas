@@ -1,6 +1,7 @@
 // Niveau 2 : parcours en largeur du domaine de diffusion depuis un câble.
 // Sert à la résolution ARP du ping et à la découverte des voisins OSPF / RIP.
-import { NATIVE_VLAN } from './topology.js';
+import { macOf } from './mac.js';
+import { macText, nativeOf } from './switching.js';
 
 // Renvoie les équipements de niveau 3 (hôtes, routeurs) atteints par une trame non étiquetée,
 // dans l'ordre du parcours, avec le chemin suivi ; et les trames perdues en route.
@@ -18,6 +19,9 @@ export function flood(topo, fromId, linkId, startTag = null, sviVlan = null) {
   const switches = []; // switches atteints par la diffusion : { device, inLink, vlan } (apprentissage MAC)
   const traversed = queue[0].hops.slice(); // tous les câbles parcourus par la diffusion (simulation pas à pas)
   let storm = null; // boucle sans STP atteinte : tempête de diffusion
+  // MAC source (port-security) : carte de l'émetteur sur ce câble, ou son interface VLAN
+  const src = topo.devices.get(fromId);
+  const srcMac = src && (linkId != null || sviVlan != null) ? macText(macOf(src, linkId != null ? topo.portName(linkId, fromId) : `Vlan${sviVlan}`)) : null;
 
   while (queue.length) {
     const { device, inLink, tag, vlan, hops, internal } = queue.shift();
@@ -31,7 +35,7 @@ export function flood(topo, fromId, linkId, startTag = null, sviVlan = null) {
       for (const out of topo.linksOf.get(device)) {
         if (out === inLink) continue;
         if (!topo.isUp(out)) {
-          drops.push(`câble ${dev.label} ${topo.portName(out, device)} hors service`);
+          drops.push(`câble ${dev.label} ${topo.portName(out, device)} hors service : ${topo.status.get(out).reason}`);
           continue;
         }
         const next = topo.other(out, device);
@@ -46,11 +50,16 @@ export function flood(topo, fromId, linkId, startTag = null, sviVlan = null) {
       let v;
       if (internal) v = vlan;
       else {
-        const port = topo.switchPort(device, inLink);
-        if (tag == null) v = port.mode === 'trunk' ? NATIVE_VLAN : Number(port.vlan) || NATIVE_VLAN;
-        else if (port.mode === 'trunk') v = tag;
-        else {
-          drops.push(`${dev.label} ${port.name} (access) jette une trame étiquetée VLAN ${tag}`);
+        const r = topo.ingress(device, inLink, tag);
+        if (r.drop) {
+          drops.push(r.drop);
+          continue;
+        }
+        v = r.vlan;
+        // Port-security en restrict / protect : MAC en trop jetée
+        const ps = srcMac && topo.psDrop?.(device, inLink, srcMac);
+        if (ps) {
+          drops.push(ps);
           continue;
         }
       }
@@ -67,13 +76,24 @@ export function flood(topo, fromId, linkId, startTag = null, sviVlan = null) {
         endpoints.push({ device, inLink, tag: null, svi: v, hops, vlan: v });
       }
 
-      for (const out of topo.linksOf.get(device)) {
+      for (const out of topo.l2Links(device)) {
         if (out === inLink) continue;
         const p = topo.switchPort(device, out);
-        let outTag;
-        if (p.mode === 'trunk') outTag = v === NATIVE_VLAN ? null : v;
-        else if ((Number(p.vlan) || NATIVE_VLAN) === v) outTag = null;
-        else continue;
+        if (!topo.carries(device, out, v)) {
+          // Trunk qui refuse ce VLAN : on le dit (un port access d'un autre VLAN, c'est normal)
+          if (p.mode === 'trunk' && topo.isUp(out)) drops.push(topo.vlanExists(device, v) ? `${dev.label} ${p.name} : le VLAN ${v} n'est pas autorisé sur ce trunk (switchport trunk allowed vlan)` : `${dev.label} (client VTP) ne connaît pas le VLAN ${v}`);
+          continue;
+        }
+        const outTag = topo.egressTag(device, out, v);
+        // Trunk entre deux switches avec des VLAN natifs différents : PVST+ bloque ces deux VLAN (PVID inconsistent)
+        const peer = topo.devices.get(topo.other(out, device));
+        if (p.mode === 'trunk' && peer.type === 'switch') {
+          const q = topo.switchPort(peer.id, out);
+          if (q.mode === 'trunk' && nativeOf(q) !== nativeOf(p) && [nativeOf(p), nativeOf(q)].includes(v)) {
+            drops.push(`${dev.label} ${p.name} ↔ ${peer.label} ${q.name} : VLAN natifs différents (${nativeOf(p)} et ${nativeOf(q)}), le trunk est bloqué (%CDP-4-NATIVE_VLAN_MISMATCH)`);
+            continue;
+          }
+        }
         if (topo.stp?.blocked(device, out, v)) continue;
         if (!topo.isUp(out)) {
           drops.push(`câble ${dev.label} ${p.name} hors service : ${topo.status.get(out).reason}`);

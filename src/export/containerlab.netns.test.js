@@ -8,7 +8,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { httpGet, resolveName } from '../net/services.js';
-import { BGP_DEMO, DEMO, DHCP_DEMO, EIGRP_DEMO, IPV6_DEMO, OSPF6_DEMO, SERVICES_DEMO, L3_DEMO, NAT_DEMO, OSPF_DEMO, ROAS_DEMO, STP_DEMO } from '../examples.js';
+import { BGP_DEMO, CAMPUS_DEMO, TP_CAMPUS, DEMO, DHCP_DEMO, EIGRP_DEMO, IPV6_DEMO, OSPF6_DEMO, SERVICES_DEMO, L3_DEMO, NAT_DEMO, OSPF_DEMO, ROAS_DEMO, STP_DEMO } from '../examples.js';
 import { buildTopology } from '../net/topology.js';
 import { isRouting, v6Forwarding } from '../net/topology.js';
 import { simulatePing } from '../net/simulate.js';
@@ -223,6 +223,16 @@ test('containerlab : STP du noyau Linux, même port bloqué que NetCanvas, ping 
   const blocking = Object.entries(res).filter(([k]) => k.startsWith('stp-'))
     .flatMap(([k, v]) => [...v.matchAll(/(eth\d+)@?\S*:.*?state blocking/g)].map((m) => `${k.slice(4)}|${m[1]}`));
   assert.deepEqual(blocking, [`${sw}|${eth}`]);
+});
+
+test('containerlab : campus (VLAN natif 99, VLAN autorisés, EtherChannel, VTP) sur un vrai réseau', { skip }, () => {
+  assertMatchesSimulator(structuredClone(CAMPUS_DEMO), [['pa1', '192.168.10.21', true], ['pa2', '192.168.20.21', true], ['pb2', '192.168.20.11', true]]);
+  // TP : client VTP sans VLAN (ports éteints), VLAN 20 refusé sur le trunk
+  assertMatchesSimulator(structuredClone(TP_CAMPUS), [['pa1', '192.168.10.21', false], ['pa2', '192.168.20.21', false]]);
+  // VLAN 20 seul refusé : le VLAN 10 passe, le 20 non
+  const allowed = structuredClone(CAMPUS_DEMO);
+  allowed.devices.find((d) => d.id === 'core').config.ports.find((p) => p.name === 'Fa0/24').allowedVlans = [10, 99];
+  assertMatchesSimulator(allowed, [['pa1', '192.168.10.21', true], ['pa2', '192.168.20.21', false]]);
 });
 
 test('containerlab : IPv6 sur un vrai réseau (SLAAC calculé, passerelle link-local, routes IPv6)', { skip }, () => {

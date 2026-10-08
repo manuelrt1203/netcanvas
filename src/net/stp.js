@@ -31,14 +31,10 @@ function cmpVector(a, b) {
 export const stpEnabled = (dev, vlan) => !(dev.config?.stp?.disabled ?? []).map(Number).includes(Number(vlan));
 export const bridgePriority = (dev, vlan) => Number(dev.config?.stp?.priority?.[vlan] ?? DEFAULT_BRIDGE_PRIORITY);
 
-// Le port transporte-t-il ce VLAN, et les deux bouts s'entendent-ils sur l'étiquette ?
-function carries(p, vlan) {
-  return p.mode === 'trunk' || (Number(p.vlan) || 1) === vlan;
-}
-function compatible(a, b, vlan) {
-  if (!carries(a, vlan) || !carries(b, vlan)) return false;
-  if (a.mode === b.mode) return true;
-  return vlan === 1; // trunk <-> access : seul le VLAN natif passe (non étiqueté)
+// Les deux bouts transportent-ils ce VLAN, avec la même étiquette (natif non étiqueté) ?
+function compatible(topo, a, b, link, vlan) {
+  if (!topo.carries(a, link, vlan) || !topo.carries(b, link, vlan)) return false;
+  return topo.egressTag(a, link, vlan) === topo.egressTag(b, link, vlan);
 }
 
 export function computeStp(topo) {
@@ -46,9 +42,10 @@ export function computeStp(topo) {
   const vlans = new Set([1]);
   for (const s of switches) {
     for (const v of s.config?.vlans ?? []) vlans.add(Number(v.id));
-    for (const l of topo.linksOf.get(s.id)) {
+    for (const l of topo.l2Links(s.id)) {
       const p = topo.switchPort(s.id, l);
       if (p.mode !== 'trunk') vlans.add(Number(p.vlan) || 1);
+      else if (p.nativeVlan) vlans.add(Number(p.nativeVlan));
     }
   }
   const portIndex = (id, link) => topo.ports.get(id).findIndex((p) => p.name === topo.portName(link, id)) + 1;
@@ -57,7 +54,7 @@ export function computeStp(topo) {
   const blockedSet = new Set(); // `${device}|${link}|${vlan}`
 
   for (const vlan of [...vlans].sort((a, b) => a - b)) {
-    const members = switches.filter((s) => topo.linksOf.get(s.id).some((l) => topo.isUp(l) && carries(topo.switchPort(s.id, l), vlan)));
+    const members = switches.filter((s) => topo.l2Links(s.id).some((l) => topo.isUp(l) && topo.carries(s.id, l, vlan)));
     if (!members.length) continue;
     const enabled = new Set(members.filter((s) => stpEnabled(s, vlan)).map((s) => s.id));
     const info = new Map(); // switch -> { bridge, priority, best, rootPort }
@@ -69,12 +66,12 @@ export function computeStp(topo) {
     // Câbles entre deux switches du VLAN (tous, pour détecter les boucles)
     const segments = [];
     for (const s of members) {
-      for (const l of topo.linksOf.get(s.id)) {
+      for (const l of topo.l2Links(s.id)) {
         const o = topo.other(l, s.id);
         if (o < s.id || !info.has(o) || !topo.isUp(l)) continue;
         const pa = topo.switchPort(s.id, l);
         const pb = topo.switchPort(o, l);
-        if (!compatible(pa, pb, vlan)) continue;
+        if (!compatible(topo, s.id, o, l, vlan)) continue;
         segments.push({ link: l, a: s.id, b: o, pa, pb });
       }
     }
@@ -132,10 +129,10 @@ export function computeStp(topo) {
     // Rôles des ports : désigné par défaut (vers un hôte, un routeur…)
     const ports = new Map(); // `${switch}|${link}` -> { role, state, cost, portId }
     for (const s of members) {
-      for (const l of topo.linksOf.get(s.id)) {
+      for (const l of topo.l2Links(s.id)) {
         if (!topo.isUp(l)) continue;
         const p = topo.switchPort(s.id, l);
-        if (!carries(p, vlan)) continue;
+        if (!topo.carries(s.id, l, vlan)) continue;
         ports.set(`${s.id}|${l}`, { role: 'designated', state: 'forwarding', cost: cost(p), portId: portId(s.id, l, p), name: p.name, link: l, portfast: Boolean(p.portfast) });
       }
     }

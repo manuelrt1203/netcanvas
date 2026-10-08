@@ -1,6 +1,7 @@
 // Génération de configurations Cisco IOS.
 //   target 'packet-tracer' : scripts à coller dans le CLI (routeur 2911, switch 2960, PC configurés à la main)
 //   target 'gns3'          : startup-config de routeurs c7200 (Dynamips), ports du switch intégré, scripts VPCS
+import { formatVlanList, psOf } from '../net/switching.js';
 import { isValidIp6, normIp6 } from '../net/ip6.js';
 import { rule6Text } from '../net/acl6.js';
 
@@ -136,19 +137,26 @@ function routerConfig(d, rows, { target, table, topo }) {
 
 function switchConfig(d, rows) {
   const warnings = genericWarning(d);
-  const lines = [];
-  for (const v of switchVlans(rows)) lines.push(`vlan ${v}`, ` name VLAN${v}`, ' exit');
+  const lines = [...iosVtpLines(d.config ?? {}, { all: true })];
+  // Un client VTP reçoit ses VLAN du serveur : il ne les crée pas
+  if (d.config?.vtp?.mode !== 'client') {
+    const names = new Map((d.config?.vlans ?? []).map((v) => [Number(v.id), v.name]));
+    const ids = [...new Set([...switchVlans(rows), ...names.keys()])].filter((v) => v !== 1).sort((a, b) => a - b);
+    for (const v of ids) lines.push(`vlan ${v}`, ` name ${names.get(v) ?? `VLAN${v}`}`, ' exit');
+  }
   for (const row of rows) {
     const ifname = iosInterfaceName(row.name) ?? row.name;
     lines.push(`interface ${ifname}`);
     const description = desc(row);
     if (description) lines.push(description);
-    if (row.mode === 'trunk') lines.push(' switchport mode trunk');
+    const extra = iosSwitchPortLines(row);
+    if (row.mode === 'trunk') lines.push(...extra.filter((l) => l.startsWith(' switchport trunk')), ' switchport mode trunk');
     else {
       lines.push(' switchport mode access');
       const vlan = Number(row.vlan) || 1;
       if (vlan !== 1) lines.push(` switchport access vlan ${vlan}`);
     }
+    lines.push(...extra.filter((l) => !l.startsWith(' switchport trunk')));
     lines.push(...iosStpPortLines(row));
     if (row.shutdown) lines.push(' shutdown');
     lines.push(' exit');
@@ -181,7 +189,7 @@ function gns3Switch(d, rows, table) {
   ];
   for (const r of rows) {
     const type = r.mode === 'trunk' ? 'dot1q' : 'access';
-    const vlan = r.mode === 'trunk' ? 1 : Number(r.vlan) || 1;
+    const vlan = r.mode === 'trunk' ? Number(r.nativeVlan) || 1 : Number(r.vlan) || 1;
     const peer = r.peer ? `${ascii(r.peer.label)} ${gns3PortName(table, r.peer, r.link)}` : '';
     lines.push(`${String(r.index).padEnd(6)}${type.padEnd(8)}${String(vlan).padEnd(6)}${peer}`);
   }
@@ -465,6 +473,39 @@ export function iosStpLines(cfg) {
   for (const v of [...(stp.disabled ?? [])].sort((a, b) => a - b)) lines.push(`no spanning-tree vlan ${v}`);
   for (const [v, p] of Object.entries(stp.priority ?? {}).sort(([a], [b]) => a - b)) lines.push(`spanning-tree vlan ${v} priority ${p}`);
   return lines;
+}
+
+// Switch : trunk (natif, VLAN autorisés), port-security, EtherChannel ; VTP
+export function iosSwitchPortLines(e) {
+  if (!e) return [];
+  const lines = [];
+  if (e.mode === 'trunk') {
+    if (e.nativeVlan && Number(e.nativeVlan) !== 1) lines.push(` switchport trunk native vlan ${e.nativeVlan}`);
+    if (Array.isArray(e.allowedVlans)) lines.push(` switchport trunk allowed vlan ${e.allowedVlans.length ? formatVlanList(e.allowedVlans) : 'none'}`);
+  }
+  if (e.ps) {
+    const ps = psOf(e);
+    if (ps.max !== 1) lines.push(` switchport port-security maximum ${ps.max}`);
+    if (ps.enabled) lines.push(' switchport port-security');
+    if (ps.violation !== 'shutdown') lines.push(` switchport port-security violation ${ps.violation}`);
+    for (const m of ps.macs) lines.push(` switchport port-security mac-address ${m}`);
+    if (ps.sticky) lines.push(' switchport port-security mac-address sticky');
+    for (const m of ps.stickyMacs) lines.push(` switchport port-security mac-address sticky ${m}`);
+  }
+  if (e.channelGroup) lines.push(` channel-group ${e.channelGroup} mode ${e.channelMode ?? 'on'}`);
+  return lines;
+}
+
+// VTP : IOS ne l'écrit dans la config qu'en mode transparent (sinon vlan.dat) ; l'export l'écrit toujours
+export function iosVtpLines(cfg, { all = false } = {}) {
+  const v = cfg.vtp;
+  if (!v || (!all && v.mode !== 'transparent')) return [];
+  return [
+    ...(v.domain ? [`vtp domain ${v.domain}`] : []),
+    ...(all && v.password ? [`vtp password ${v.password}`] : []),
+    ...(all && v.version && Number(v.version) !== 1 ? [`vtp version ${v.version}`] : []),
+    ...(v.mode && (all || v.mode === 'transparent') ? [`vtp mode ${v.mode}`] : []),
+  ];
 }
 
 export function iosStpPortLines(e) {

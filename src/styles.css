@@ -553,3 +553,6 @@ button.link { background: none; border: 0; padding: 0; color: var(--primary); fo
 .people { display: inline-flex; gap: 4px; align-items: center; }
 .person { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 11px; color: #fff; font-size: .75rem; font-weight: 600; }
 .device { position: relative; }
+.mac-list { list-style: none; margin: 4px 0 8px; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.mac-list li { display: flex; align-items: center; gap: 8px; }
+.proto h4 { margin: 12px 0 4px; font-size: 13px; }

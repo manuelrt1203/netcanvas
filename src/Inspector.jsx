@@ -9,6 +9,7 @@ import { InterfaceSecurity, SecurityForm } from './SecurityForm.jsx';
 import { DhcpClientStatus, DhcpServerForm } from './DhcpForm.jsx';
 import { RouterDnsForm, ServicesForm } from './ServicesForm.jsx';
 import { HostIpv6Form, Ipv6IfaceFields, Ipv6RoutingForm } from './Ipv6Form.jsx';
+import { ChannelFields, PortSecurityFields, TrunkFields, VtpForm } from './SwitchingForm.jsx';
 
 const otherEnd = (e, id) => (e.source === id ? e.target : e.source);
 // Côté DCE d'une liaison série : l'équipement source, sauf indication contraire
@@ -292,7 +293,7 @@ function StpForm({ node, ports, update }) {
   );
 }
 
-function SwitchForm({ node, edges, labels, update, routing }) {
+function SwitchForm({ node, edges, labels, update, routing, topo }) {
   const l3 = MODELS[modelId({ type: node.type, model: node.data.model })].l3;
   const ports = portsOf(node, edges);
   const patchPort = (p, patch) =>
@@ -322,16 +323,20 @@ function SwitchForm({ node, edges, labels, update, routing }) {
                   onChange={(e) => patchPort(p, { vlan: Math.max(1, Math.min(4094, Math.trunc(Number(e.target.value)) || 1)) })} />
               )}
             </div>
+            {mode === 'trunk' && <TrunkFields p={p} patchPort={patchPort} />}
             {mode === 'access' && (
               <label className="check">
                 <input type="checkbox" checked={Boolean(p.portfast)} onChange={(e) => patchPort(p, { portfast: e.target.checked || undefined })} />
                 PortFast (poste de travail : transmet tout de suite, sans attendre STP)
               </label>
             )}
+            <ChannelFields p={p} patchPort={patchPort} />
+            {mode === 'access' && <PortSecurityFields p={p} patchPort={patchPort} state={topo?.security?.get(`${node.id}|${p.link}`)} />}
           </fieldset>
         );
       })}
-      <p className="hint">Un trunk transporte tous les VLAN ; le VLAN 1 (natif) passe sans étiquette.</p>
+      <p className="hint">Un trunk transporte les VLAN autorisés (tous par défaut) ; le VLAN natif passe sans étiquette et doit être le même des deux côtés.</p>
+      <VtpForm node={node} update={update} db={topo?.vtp?.get(node.id)} labelOf={(id) => topo?.devices.get(id)?.label ?? id} />
       <StpForm node={node} ports={ports} update={update} />
       <SviForm node={node} update={update} />
       {l3 && (
@@ -461,7 +466,7 @@ function ModeSwitch({ mode, onMode, vendor }) {
   );
 }
 
-export function DeviceInspector({ node, edges, labels, update, onDelete, mode, onMode, terminal, importer, routing, issues, live, live6 = new Map() }) {
+export function DeviceInspector({ node, edges, labels, update, onDelete, mode, onMode, terminal, importer, routing, issues, live, live6 = new Map(), topo }) {
   const Form = HOST_TYPES.has(node.type) ? HostForm : node.type === 'router' ? RouterForm : node.type === 'switch' ? SwitchForm : null;
   const vendor = HOST_TYPES.has(node.type) ? node.type : MODELS[modelId({ type: node.type, model: node.data.model })].vendor;
   if (terminal && mode === 'terminal') {
@@ -482,7 +487,7 @@ export function DeviceInspector({ node, edges, labels, update, onDelete, mode, o
       {importer}
       <Field label="Nom" value={node.data.label} onChange={(e) => update((d) => ({ ...d, label: e.target.value }))} />
       <Hardware node={node} edges={edges} update={update} />
-      {Form ? <Form node={node} edges={edges} labels={labels} update={update} routing={routing} issues={issues} live={live} live6={live6} /> : <p className="hint">Un hub répète chaque trame sur tous ses ports : rien à configurer.</p>}
+      {Form ? <Form node={node} edges={edges} labels={labels} update={update} routing={routing} issues={issues} live={live} live6={live6} topo={topo} /> : <p className="hint">Un hub répète chaque trame sur tous ses ports : rien à configurer.</p>}
       <button type="button" className="danger" onClick={onDelete}>Supprimer l'équipement</button>
     </>
   );

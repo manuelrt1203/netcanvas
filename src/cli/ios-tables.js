@@ -1,5 +1,6 @@
 // Terminal IOS : tables ARP et MAC, détail des interfaces (adresse MAC, état, débit).
 import { kw, rest } from './engine.js';
+import { interfacesShows } from './ios-switch.js';
 import { pad, getEntry, linkOf } from './device.js';
 import { arpRows, clearArp, clearMac, macRows } from '../net/tables.js';
 import { macCisco, macOf } from '../net/mac.js';
@@ -71,7 +72,7 @@ export function tableShows(dev, parseInterfaces) {
     kw('arp', 'ARP table', { run: (c) => c.out.push(...showArp(c.dev, c.doc)) }),
     kw('interfaces', 'Interface status and configuration', {
       run: (c) => c.out.push(...showInterfaces(c.dev, c.doc)),
-      children: [rest('ifname', 'WORD', 'Interface', (c) => {
+      children: [...(isSwitch ? interfacesShows() : []), rest('ifname', 'WORD', 'Interface', (c) => {
         const r = parseInterfaces(c.args.ifname, c.dev);
         if (r.error) return c.out.push(r.error, '');
         return c.out.push(...showInterfaces(c.dev, c.doc, r.names[0]));

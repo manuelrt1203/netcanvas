@@ -60,7 +60,7 @@ function routerosLines(text) {
 // Première ligne d'erreur d'une sortie de terminal. IOS : « % message » ou « %Message » (pas les messages
 // système « %LINK-5-CHANGED: … », ni l'information « Access VLAN does not exist. Creating vlan ») ;
 // RouterOS : « bad command… », « failure… »
-const IOS_INFO = /^% Access VLAN does not exist/;
+const IOS_INFO = /^% Access VLAN does not exist|^%\s*Warning:/;
 const SYSLOG = /^%[A-Z0-9_]+-\d-[A-Z0-9_]+:/;
 function errorOf(out) {
   return out.find((l) => (/^%/.test(l) && !SYSLOG.test(l) && !IOS_INFO.test(l)) || /^(bad command|syntax error|expected|failure|input does not match|no such item|invalid)/i.test(l)) ?? null;
@@ -74,6 +74,7 @@ export function importConfig(device, doc, text) {
   const dev = structuredClone(device);
   const docOf = () => ({ ...doc, devices: doc.devices.map((d) => (d.id === dev.id ? dev : d)) });
   const session = shell.newSession(dev);
+  session.importing = true; // config collée : pas d'apprentissage (MAC sticky…), seulement ce qui est écrit
   // FRR n'affiche « no ipv6 forwarding » que si le routage IPv6 est coupé : un show run complet sans cette ligne le rétablit
   if (isFrr(dev) && /^(frr version|Current configuration)/m.test(text) && !/^no ipv6 forwarding$/m.test(text)) (dev.config ??= {}).ipv6Routing = true;
   if (!mk) {

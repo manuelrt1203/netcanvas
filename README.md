@@ -36,6 +36,7 @@ Menu **Fichier > Accueil et exemples** :
 - **Double pile IPv4 / IPv6** : SLAAC sur les VLAN de R1, passerelles link-local fe80::1, routes statiques IPv6 ;
 - **OSPFv3 2 zones** : la démo OSPF en IPv6, liens entre routeurs en link-local seulement, route par défaut annoncée par le MikroTik ;
 - **DNS et web** : le serveur résout `www.entreprise.lan` et sert l'intranet ; une ACL étendue laisse passer DNS et web depuis le VLAN 20, mais pas le ping ;
+- **Campus** : EtherChannel LACP entre le cœur et le bâtiment A, VLAN du serveur VTP, trunks en VLAN natif 99, port-security sticky sur les postes des profs ;
 - **OSPF 2 zones** : R1 en zone 1, R2 en ABR, un MikroTik en zone 0 qui annonce la route par défaut vers Internet ;
 - **BGP eBGP + iBGP** : AS 65001 (iBGP entre loopbacks, OSPF comme IGP) et un MikroTik dans l'AS 65002.
 
@@ -220,6 +221,17 @@ Parcours : l'enseignant règle le réseau qui marche, ajoute les objectifs (tous
 - **Suivi** : tableau des copies (note /20, objectifs atteints, durée, heure de remise, retard au-delà d'1 min de tolérance), moyenne, ouverture d'une copie, export CSV (tableur, séparateur `;`), clôture (plus aucune remise ni nouveau départ). Actualisé toutes les 15 s.
 - **Notes infalsifiables** : recalculées chez le prof à partir des schémas rendus et des objectifs **du sujet** (une copie qui modifierait ses objectifs n'y gagne rien). Base : tables `exams` et `exam_submissions`, accessibles seulement par des fonctions (départ et remise horodatés par le serveur, une seule remise par poste).
 - Test : `npm run test:exam` (navigateur, vrai Supabase, environ 2 minutes).
+## Trunk, EtherChannel, port-security, VTP (`src/net/switching.js`)
+
+Calculé avant le Spanning Tree, avec les mêmes champs pour le formulaire et le terminal IOS :
+
+- **Trunk** : `switchport trunk native vlan`, `switchport trunk allowed vlan` (liste, `add`, `remove`, `except`, `all`, `none`). Un VLAN refusé n'emprunte pas le trunk (l'explication du ping le dit). VLAN natifs différents entre deux switches : `%CDP-4-NATIVE_VLAN_MISMATCH`, et PVST+ bloque ces deux VLAN sur ce trunk ; les autres passent.
+- **EtherChannel** : `channel-group N mode on|active|passive|desirable|auto`, `interface port-channel N` (les commandes vont aux membres). Un canal négocié (on/on, LACP avec au moins un active, PAgP avec au moins un desirable) devient un seul lien : plus de port bloqué par STP, un seul câble transporte les trames. Sinon (passive/passive, on face à LACP, LACP face à PAgP, pas de channel-group en face) les câbles restent séparés et la raison est affichée. Un membre aux réglages différents (VLAN, trunk, protocole) est suspendu. Le plan affiche « Po1 · LACP » sur les câbles.
+- **Port-security** (port access seulement, `Command rejected: … is a trunk port` sinon) : `maximum`, `violation shutdown|restrict|protect`, `mac-address H.H.H`, `mac-address sticky`. Les MAC vues derrière le port (hub, switch) au-delà du maximum violent la règle : `shutdown` met le port en err-disabled (câble rouge, raison), `restrict` et `protect` jettent leurs trames. `sticky` mémorise dans la config les MAC présentes au moment de la commande. L'état est recalculé : le port revient quand la cause disparaît (IOS demande `shutdown` / `no shutdown`).
+- **VTP** : `vtp domain`, `vtp mode server|client|transparent|off`, `vtp password`, `vtp version`. Un domaine = switches reliés par des trunks, même nom et même mot de passe (un transparent du domaine relaie). La base du serveur ou client à la révision la plus haute s'impose, y compris un client qui arrive avec une révision plus haute (le piège classique). Un client n'a que ces VLAN : `vlan 30` y est refusé, et un port dans un VLAN inconnu est inactif. Chaque modification de VLAN sur un serveur augmente la révision.
+
+Affichages : `show interfaces trunk`, `show interfaces status` (connected, err-disabled, suspended, inactive), `show etherchannel summary`, `show port-security [interface|address]`, `show vtp status`, `show vlan brief` (base VTP sur un client). Exemple **Campus** et **TP : campus en panne** (mot de passe VTP faux, VLAN oublié sur un trunk). L'export Containerlab éteint les membres secondaires d'un EtherChannel et les ports err-disabled ou inactifs, et applique VLAN natif et VLAN autorisés au bridge Linux : vérifié par de vrais pings dans `containerlab.netns.test.js`.
+
 ## Spanning Tree (`src/net/stp.js`)
 
 PVST+, comme les switches Cisco par défaut : un arbre par VLAN. Le calcul échange des BPDU jusqu'à convergence :
@@ -392,7 +404,7 @@ Les fichiers v1 et v2 s'importent toujours : le modèle est déduit des ports ut
 ## Tests
 
 ```bash
-npm test           # 238 tests : calculs IP, ping, validation, JSON, TP, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
+npm test           # 247 tests : calculs IP, ping, validation, JSON, TP, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
 npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : édition, contrôles, ping, persistance, exports, câblage, terminaux (IOS, RouterOS, PC), démos OSPF et BGP (show ip ospf neighbor, next-hop-self retiré)
 npm run test:gns3     # navigateur réel : import d'un .gns3project et d'un dossier de projet, export .gns3project
 npm run test:gns3-real   # vrai serveur GNS3 (GNS3_URL) : projet exporté importé, démarré, ping de bout en bout

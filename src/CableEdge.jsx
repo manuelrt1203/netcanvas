@@ -43,7 +43,9 @@ function CableEdge({ id, source, target, sourceX, sourceY, targetX, targetY, sel
 
   const traversed = sim.edges.get(id);
   const hop = sim.hop?.edge === id ? sim.hop : sim.hops?.find((h) => h.edge === id) ?? null;
-  const tag = cable === 'console' ? null : vlanTag(ends, [data?.sourceIface, data?.targetIface]);
+  const vlan = cable === 'console' ? null : vlanTag(ends, [data?.sourceIface, data?.targetIface]);
+  // Membre d'un EtherChannel : le nom du Port-channel remplace « Trunk »
+  const tag = status?.channel && !down ? status.channel : vlan;
   const labelAt = (t) => [sourceX + (targetX - sourceX) * t, sourceY + (targetY - sourceY) * t];
 
   // Nom des ports côté routeur / switch / hub (une carte réseau d'hôte n'a qu'un port)
@@ -63,7 +65,7 @@ function CableEdge({ id, source, target, sourceX, sourceY, targetX, targetY, sel
       <BaseEdge
         id={id}
         path={path}
-        className={`cable cable-${cable}${down ? ' down' : ''}${selected ? ' selected' : ''}${traversed ? ` sim-${traversed}` : ''}${tag === 'Trunk' ? ' trunk' : ''}`}
+        className={`cable cable-${cable}${down ? ' down' : ''}${selected ? ' selected' : ''}${traversed ? ` sim-${traversed}` : ''}${vlan === 'Trunk' ? ' trunk' : ''}`}
       />
       {cable !== 'console' && lights.map(([x, y], i) => {
         const blocked = !down && blockedAt(i === 0 ? source : target);

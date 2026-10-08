@@ -465,6 +465,55 @@ export const STP_DEMO = {
   ],
 };
 
+// Campus : EtherChannel LACP entre le cœur et le bâtiment A, VTP (serveur au cœur, clients dans les bâtiments),
+// trunks en VLAN natif 99 limités aux VLAN utiles, port-security sur les postes des profs
+const campusTrunk = (link, name, extra = {}) => ({ link, name, mode: 'trunk', nativeVlan: 99, allowedVlans: [10, 20, 99], ...extra });
+const campusPort = (link, name, vlan, extra = {}) => ({ link, name, mode: 'access', vlan, portfast: true, ...extra });
+const secure = { ps: { enabled: true, max: 1, violation: 'shutdown', sticky: true, macs: [], stickyMacs: [] } };
+export const CAMPUS_DEMO = {
+  format: 'netcanvas',
+  version: 3,
+  name: 'Démo : campus (EtherChannel, VTP, port-security)',
+  devices: [
+    { id: 'core', type: 'switch', model: '2960-24TT', label: 'SW Cœur', position: { x: 320, y: 40 },
+      config: {
+        ports: [
+          campusTrunk('e1', 'G0/1', { channelGroup: 1, channelMode: 'active' }), campusTrunk('e2', 'G0/2', { channelGroup: 1, channelMode: 'active' }),
+          campusTrunk('t3', 'Fa0/24'),
+        ],
+        vlans: [{ id: 10, name: 'PROFS' }, { id: 20, name: 'ELEVES' }, { id: 99, name: 'NATIF' }],
+        vtp: { domain: 'CAMPUS', mode: 'server', password: 'iut', version: 2, revision: 3 },
+        stp: { priority: { 1: 4096, 10: 4096, 20: 4096, 99: 4096 } },
+      } },
+    { id: 'swa', type: 'switch', model: '2960-24TT', label: 'SW Bât. A', position: { x: 96, y: 260 },
+      config: {
+        ports: [
+          campusTrunk('e1', 'G0/1', { channelGroup: 1, channelMode: 'passive' }), campusTrunk('e2', 'G0/2', { channelGroup: 1, channelMode: 'passive' }),
+          campusPort('a1', 'Fa0/1', 10, secure), campusPort('a2', 'Fa0/2', 20),
+        ],
+        vtp: { domain: 'CAMPUS', mode: 'client', password: 'iut', version: 2, revision: 3 },
+      } },
+    { id: 'swb', type: 'switch', model: '2960-24TT', label: 'SW Bât. B', position: { x: 544, y: 260 },
+      config: {
+        ports: [campusTrunk('t3', 'Fa0/24'), campusPort('b1', 'Fa0/1', 10, secure), campusPort('b2', 'Fa0/2', 20)],
+        vtp: { domain: 'CAMPUS', mode: 'client', password: 'iut', version: 2, revision: 3 },
+      } },
+    pc('pa1', 'Prof A', '192.168.10.11', 24, '', 32, 460),
+    pc('pa2', 'Élève A', '192.168.20.11', 24, '', 192, 460),
+    pc('pb1', 'Prof B', '192.168.10.21', 24, '', 480, 460),
+    pc('pb2', 'Élève B', '192.168.20.21', 24, '', 640, 460),
+  ],
+  links: [
+    link('e1', 'core', 'G0/1', 'swa', 'G0/1', 'cross', ['l', 't']),
+    link('e2', 'core', 'G0/2', 'swa', 'G0/2', 'cross', ['b', 'r']),
+    link('t3', 'core', 'Fa0/24', 'swb', 'Fa0/24', 'cross', ['r', 't']),
+    link('a1', 'pa1', 'Fa0', 'swa', 'Fa0/1', 'straight', ['t', 'b']),
+    link('a2', 'pa2', 'Fa0', 'swa', 'Fa0/2', 'straight', ['t', 'b']),
+    link('b1', 'pb1', 'Fa0', 'swb', 'Fa0/1', 'straight', ['t', 'b']),
+    link('b2', 'pb2', 'Fa0', 'swb', 'Fa0/2', 'straight', ['t', 'b']),
+  ],
+};
+
 // --- TP prêts à l'emploi : un réseau en panne et des objectifs vérifiés en direct --------------
 const broken = (doc, name, exercise, breakIt) => {
   const copy = structuredClone(doc);
@@ -511,6 +560,21 @@ export const TP_OSPF = broken(OSPF_DEMO, 'TP : OSPF ne monte pas', {
   delete devOf(d, 'r3').config.ospf.defaultOriginate; // route par défaut non annoncée
 });
 
+export const TP_CAMPUS = broken(CAMPUS_DEMO, 'TP : campus en panne', {
+  title: 'Remettre le campus en service',
+  instructions: [
+    'Les profs du bâtiment B ne joignent plus ceux du bâtiment A, et les élèves des deux bâtiments ne se voient plus.',
+    'Les VLAN viennent du serveur VTP du cœur. Corrige sans changer l\'adressage : show vtp status, show interfaces trunk et show etherchannel summary aident.',
+  ].join('\n'),
+  objectives: [
+    { id: 'o1', type: 'ping', from: 'pa1', to: '192.168.10.21' },
+    { id: 'o2', type: 'ping', from: 'pa2', to: '192.168.20.21' },
+  ],
+}, (d) => {
+  devOf(d, 'swb').config.vtp.password = 'IUT'; // mot de passe VTP différent : SW Bât. B n'a plus les VLAN
+  devOf(d, 'core').config.ports.find((p) => p.name === 'Fa0/24').allowedVlans = [10, 99]; // VLAN 20 oublié sur le trunk
+});
+
 // Exemples livrés avec l'application (menu Exemples, écran d'accueil) ; kind : « tp » = exercice avec objectifs
 export const DEMOS = [
   { id: 'vlan', label: '2 VLAN, 2 routeurs (statique)', about: 'VLAN, liaison série, routes statiques et route par défaut.', doc: DEMO },
@@ -519,6 +583,7 @@ export const DEMOS = [
   { id: 'nat', label: 'NAT / PAT (box, FAI, serveur publié)', about: 'PAT, NAT statique, adresses privées et publiques.', doc: NAT_DEMO },
   { id: 'dhcp', label: 'DHCP (serveur et relais)', about: 'Pools DHCP, relais ip helper-address, baux datés.', doc: DHCP_DEMO },
   { id: 'stp', label: 'STP (triangle de switches)', about: 'Root bridge, port bloqué, tempête sans STP.', doc: STP_DEMO },
+  { id: 'campus', label: 'Campus (EtherChannel, VTP, port-security)', about: 'Po1 en LACP, VLAN du serveur VTP, VLAN natif 99, MAC sticky.', doc: CAMPUS_DEMO },
   { id: 'services', label: 'DNS et web (ACL par port)', about: 'Serveur DNS et web, ACL étendue par port.', doc: SERVICES_DEMO },
   { id: 'ospf', label: 'OSPF 2 zones (Cisco + MikroTik)', about: 'Zones, ABR, route par défaut annoncée.', doc: OSPF_DEMO },
   { id: 'eigrp', label: 'EIGRP (bande passante et délai)', about: 'Métrique composite : le détour Gigabit bat la liaison série directe.', doc: EIGRP_DEMO },
@@ -526,5 +591,6 @@ export const DEMOS = [
   { id: 'ipv6', label: 'Double pile IPv4 / IPv6', about: 'SLAAC, NDP, passerelles link-local, routes IPv6.', doc: IPV6_DEMO },
   { id: 'ospf6', label: 'OSPFv3 2 zones (IPv6, Cisco + MikroTik)', about: 'OSPFv3 sur link-local, route par défaut IPv6.', doc: OSPF6_DEMO },
   { id: 'tp-vlan', kind: 'tp', label: 'TP : inter-VLAN en panne (3 pannes)', about: 'Trouve et répare trois pannes ; objectifs vérifiés en direct.', doc: TP_INTERVLAN },
+  { id: 'tp-campus', kind: 'tp', label: 'TP : campus en panne (2 pannes)', about: 'VTP et trunk à réparer ; objectifs vérifiés en direct.', doc: TP_CAMPUS },
   { id: 'tp-ospf', kind: 'tp', label: 'TP : OSPF ne monte pas (3 pannes)', about: 'Adjacences OSPF à réparer ; indices progressifs.', doc: TP_OSPF },
 ];

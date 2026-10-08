@@ -5,6 +5,7 @@ import { computeRouting } from './routing.js';
 import { withLeases } from './dhcp.js';
 import { dnsServerOf, isHostname, serviceEnabled } from './services.js';
 import { blocksNdp } from './acl6.js';
+import { nativeOf, vtpMode, vtpOf } from './switching.js';
 import { isLinkLocal6, isUnicast6, isValidIp6, isValidPrefix6, kindOf6, networkLabel6, normIp6, sameSubnet6 } from './ip6.js';
 
 // ctx : topologie et routage déjà calculés par l'éditeur (évite de tout refaire)
@@ -76,6 +77,8 @@ export function validate(rawDoc, ctx = {}) {
       }
     }
   }
+
+  checkSwitching(topo, add);
 
   // ACL appliquées : elles doivent exister (sinon IOS laisse tout passer, souvent par erreur)
   for (const d of topo.devices.values()) {
@@ -269,4 +272,45 @@ export function validate(rawDoc, ctx = {}) {
   }
 
   return issues;
+}
+
+// Commutation : VLAN natifs des trunks, EtherChannel, port-security, VTP
+function checkSwitching(topo, add) {
+  for (const [id, l] of topo.links) {
+    const [a, b] = [topo.devices.get(l.source), topo.devices.get(l.target)];
+    if (a?.type !== 'switch' || b?.type !== 'switch' || !topo.isUp(id)) continue;
+    const [pa, pb] = [topo.switchPort(a.id, id), topo.switchPort(b.id, id)];
+    if (pa.mode === 'trunk' && pb.mode === 'trunk' && nativeOf(pa) !== nativeOf(pb)) {
+      add(a.id, 'error', `%CDP-4-NATIVE_VLAN_MISMATCH : ${a.label} ${pa.name} (VLAN natif ${nativeOf(pa)}) ↔ ${b.label} ${pb.name} (VLAN natif ${nativeOf(pb)}). PVST+ bloque ces deux VLAN sur ce trunk.`);
+    }
+    if (pa.mode !== pb.mode) {
+      add(a.id, 'warning', `${a.label} ${pa.name} (${pa.mode}) ↔ ${b.label} ${pb.name} (${pb.mode}) : un trunk en face d'un port access ne transporte que le VLAN natif.`);
+    }
+  }
+  for (const ch of topo.channels ?? []) {
+    const d = topo.devices.get(ch.device);
+    if (ch.state !== 'up' && ch.reason && ch.members.some((l) => topo.isUp(l) || topo.status.get(l)?.suspended)) {
+      add(d.id, 'warning', `${d.label} Port-channel${ch.group} (EtherChannel ${ch.mode}) ne monte pas : ${ch.reason}. Les câbles restent séparés (STP en bloque).`);
+    }
+    for (const x of ch.suspended) add(d.id, 'error', `${d.label} Port-channel${ch.group} : ${x.reason}, port suspendu.`);
+  }
+  for (const [key, st] of topo.security ?? []) {
+    const d = topo.devices.get(key.slice(0, key.indexOf('|')));
+    const who = st.violators.map((v) => `${v.label} (${v.mac})`).join(', ');
+    if (st.errDisabled) add(d.id, 'error', `${d.label} ${st.name} : port-security, ${who} dépasse le maximum de ${st.max} adresse(s) : port err-disabled (shutdown puis no shutdown après correction).`);
+    else if (st.violators.length) add(d.id, 'warning', `${d.label} ${st.name} : port-security (${st.violation}), les trames de ${who} sont jetées (maximum ${st.max}).`);
+  }
+  for (const d of topo.devices.values()) {
+    if (d.type !== 'switch' || vtpMode(d) !== 'client') continue;
+    for (const l of topo.linksOf.get(d.id)) {
+      const p = topo.switchPort(d.id, l);
+      const vlan = Number(p.vlan) || 1;
+      if (p.mode !== 'trunk' && !topo.vlanExists(d.id, vlan)) {
+        const db = topo.vtp.get(d.id);
+        const why = db && db.domain.length > 1 ? `la base du domaine ${vtpOf(d).domain} (venue de ${topo.devices.get(db.from).label}) ne l'a pas`
+          : `aucun autre switch du domaine « ${vtpOf(d).domain ?? ''} » n'est joint par un trunk avec le même nom et le même mot de passe`;
+        add(d.id, 'error', `${d.label} ${p.name} inactif : client VTP sans VLAN ${vlan} (${why}).`);
+      }
+    }
+  }
 }

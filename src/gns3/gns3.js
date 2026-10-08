@@ -198,7 +198,7 @@ export async function fromGns3(project, files = new Map()) {
       if (d.type === 'router') d.config.interfaces.push({ link: id, name: port, ip: null, mask: null });
       if (d.type !== 'switch') continue;
       const pm = (m.node.properties?.ports_mapping ?? []).find((x) => x.port_number === end.port_number);
-      if (pm?.type === 'dot1q') d.config.ports.push({ link: id, name: port, mode: 'trunk', ...(pm.vlan && pm.vlan !== 1 ? { native: pm.vlan } : {}) });
+      if (pm?.type === 'dot1q') d.config.ports.push({ link: id, name: port, mode: 'trunk', ...(pm.vlan && pm.vlan !== 1 ? { nativeVlan: pm.vlan } : {}) });
       else {
         if (pm?.type === 'qinq') warnings.push(`${d.label} port ${end.port_number} : QinQ non simulé, port en access.`);
         d.config.ports.push({ link: id, name: port, mode: 'access', vlan: Number(pm?.vlan) || 1 });
@@ -206,7 +206,7 @@ export async function fromGns3(project, files = new Map()) {
     }
   }
   for (const d of devices.filter((x) => x.type === 'switch')) {
-    const ids = [...new Set(d.config.ports.flatMap((p) => [p.vlan, p.native]).filter((v) => v && v !== 1))].sort((x, y) => x - y);
+    const ids = [...new Set(d.config.ports.flatMap((p) => [p.vlan, p.nativeVlan]).filter((v) => v && v !== 1))].sort((x, y) => x - y);
     if (ids.length) d.config.vlans = ids.map((v) => ({ id: v, name: `VLAN${String(v).padStart(4, '0')}` }));
   }
 
@@ -411,7 +411,7 @@ export function gns3Files(source, uuid = () => crypto.randomUUID()) {
         },
       });
     } else if (d.type === 'switch') {
-      const vlanOf = (r) => (r.mode === 'trunk' ? Number(r.native) || 1 : Number(r.vlan) || 1);
+      const vlanOf = (r) => (r.mode === 'trunk' ? Number(r.nativeVlan) || 1 : Number(r.vlan) || 1);
       const count = Math.max(8, rows.length);
       const byIndex = new Map(rows.map((r) => [r.index, r]));
       nodes.push({
@@ -425,6 +425,11 @@ export function gns3Files(source, uuid = () => crypto.randomUUID()) {
       });
       rows.forEach((r) => at(r, 0, r.index));
       if (modelOf(d).l3 || d.config?.interfaces?.length) warnings.push(`${d.label} : le switch Ethernet de GNS3 n'a pas de niveau 3 (SVI, routage), seuls les ports et VLAN sont repris.`);
+      const lost = [
+        rows.some((r) => r.channelGroup) && 'EtherChannel', rows.some((r) => r.ps?.enabled) && 'port-security',
+        d.config?.vtp && 'VTP', rows.some((r) => r.allowedVlans) && 'VLAN autorisés',
+      ].filter(Boolean);
+      if (lost.length) warnings.push(`${d.label} : le switch Ethernet de GNS3 ne gère pas ${lost.join(', ')} (prends un switch IOU ou un c3725 avec NM-16ESW pour ça).`);
     } else if (d.type === 'hub') {
       nodes.push({
         ...base, node_type: 'ethernet_hub', symbol: ':/symbols/hub.svg',

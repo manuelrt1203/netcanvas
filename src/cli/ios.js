@@ -4,7 +4,7 @@ import { dataPorts, ensureEntry, getEntry, linkOf, maskToCidr, pad, ping, withDe
 import { buildTopology, isLoopbackName } from '../net/topology.js';
 import { cidrToMask, formatIp, isBroadcastAddress, isNetworkAddress, isValidIp, networkOf, parseIp, sameSubnet } from '../net/ip.js';
 import { isSviName, modelOf } from '../net/catalog.js';
-import { hostname as iosHostname, iosStpLines, iosStpPortLines, iosAclLines, iosInterfaceExtras, iosDhcpLines, iosDnsLines, iosIpv6GlobalLines, iosIpv6IfaceLines, iosLongName, iosNatLines, iosRoutingLines } from '../export/cisco.js';
+import { hostname as iosHostname, iosStpLines, iosStpPortLines, iosSwitchPortLines, iosVtpLines, iosAclLines, iosInterfaceExtras, iosDhcpLines, iosDnsLines, iosIpv6GlobalLines, iosIpv6IfaceLines, iosLongName, iosNatLines, iosRoutingLines } from '../export/cisco.js';
 import { traceroute } from '../net/traceroute.js';
 import { ipArpShow, tableClears, tableShows } from './ios-tables.js';
 import { stpConfigCommand, stpInterfaceCommands, stpNoConfigCommand, stpShowCommand } from './ios-stp.js';
@@ -13,6 +13,8 @@ import { clearNatCommand, natConfigCommand, natInterfaceCommands, showNatTransla
 import { dhcp6PoolTree, ipv6GlobalCommands, ipv6InterfaceCommands, ipv6ShowCommand } from './ios-ipv6.js';
 import { dnsConfigCommands, isTarget, resolveTarget, showHostsCommand } from './ios-dns.js';
 import { acl6Tree, accessGroupCommands, aclConfigCommands, aclShows, aclTree, showAccessLists } from './ios-acl.js';
+import { bumpRevision, iosPortChannelLines, switchInterfaceCommands, switchShows, vlanEditAllowed, vtpCommands } from './ios-switch.js';
+import { vtpMode } from '../net/switching.js';
 import { bgpTree, delayCommands, eigrpShows, eigrpTree, interfaceRoutingCommands, ospf6Tree, ospfTree, ripTree, routeFilters, routerCommands, routingShows, showIpRoute } from './ios-routing.js';
 
 const NOT_SIMULATED = (what) => [`% NetCanvas : ${what} n'est pas encore simulé.`, ''];
@@ -100,13 +102,20 @@ function runningConfig(dev) {
   const lines = ['!', `version ${modelOf(dev).gns3 ? '12.4' : '15.1'}`, 'no service timestamps log datetime msec', '!', `hostname ${iosHostname(dev.label, dev.type)}`, '!'];
   if (dev.config?.ipv6Routing) lines.push('ipv6 unicast-routing', '!');
   if (dev.type === 'switch') {
-    lines.push(...iosStpLines(dev.config ?? {}), '!');
+    const vtp = iosVtpLines(dev.config ?? {});
+    lines.push(...(vtp.length ? [...vtp, '!'] : []), ...iosStpLines(dev.config ?? {}), '!', ...iosPortChannelLines(dev));
     for (const p of dataPorts(dev)) {
       const e = getEntry(dev, p.name);
       lines.push(`interface ${long(p.name)}`);
       if (e?.description) lines.push(` description ${e.description}`);
+      const [trunk, rest] = [iosSwitchPortLines(e).filter((l) => l.startsWith(' switchport trunk')), iosSwitchPortLines(e).filter((l) => !l.startsWith(' switchport trunk'))];
+      lines.push(...trunk);
       if (e?.mode === 'trunk') lines.push(' switchport mode trunk');
-      else if (e && (Number(e.vlan) || 1) !== 1) lines.push(` switchport access vlan ${e.vlan}`);
+      else {
+        if (e && (Number(e.vlan) || 1) !== 1) lines.push(` switchport access vlan ${e.vlan}`);
+        if (e?.ps) lines.push(' switchport mode access');
+      }
+      lines.push(...rest);
       lines.push(...iosStpPortLines(e));
       if (e?.shutdown) lines.push(' shutdown');
       lines.push('!');
@@ -155,27 +164,37 @@ function runningConfig(dev) {
   return ['Building configuration...', '', `Current configuration : ${text.length} bytes`, ...lines, ''];
 }
 
-function vlanTable(dev) {
+function vlanTable(dev, doc) {
   const names = new Map([[1, 'default']]);
   for (const v of dev.config?.vlans ?? []) names.set(Number(v.id), v.name);
+  // Client VTP : les VLAN sont ceux du domaine ; un port dans un VLAN inconnu n'apparaît nulle part (inactif)
+  const db = vtpMode(dev) === 'client' && doc ? buildTopology(doc).vtp.get(dev.id) : null;
+  if (db) {
+    names.clear();
+    for (const [id, name] of db.vlans) names.set(id, name);
+  }
   const members = new Map();
   for (const p of dataPorts(dev)) {
     const e = getEntry(dev, p.name);
     if (e?.mode === 'trunk') continue;
     const v = Number(e?.vlan) || 1;
-    if (!names.has(v)) names.set(v, `VLAN${String(v).padStart(4, '0')}`);
+    if (e?.channelGroup) continue; // membre d'un Port-channel : le Po apparaît à sa place
+    if (!names.has(v)) {
+      if (db) continue;
+      names.set(v, `VLAN${String(v).padStart(4, '0')}`);
+    }
     members.set(v, [...(members.get(v) ?? []), p.name.replace(/^G(?=\d)/, 'Gig')]);
   }
   return [...names].sort(([a], [b]) => a - b).map(([id, name]) => ({ id, name, ports: members.get(id) ?? [] }));
 }
 
-function showVlanBrief(dev) {
+function showVlanBrief(dev, doc) {
   const rows = [
     '',
     `${pad('VLAN', 5)}${pad('Name', 33)}${pad('Status', 10)}Ports`,
     `${'-'.repeat(4)} ${'-'.repeat(32)} ${'-'.repeat(9)} ${'-'.repeat(31)}`,
   ];
-  for (const v of vlanTable(dev)) {
+  for (const v of vlanTable(dev, doc)) {
     const chunks = [];
     for (let i = 0; i < v.ports.length; i += 4) chunks.push(v.ports.slice(i, i + 4).join(', '));
     rows.push(`${pad(v.id, 5)}${pad(v.name, 33)}${pad('active', 10)}${chunks[0] ?? ''}`);
@@ -304,7 +323,11 @@ function forIfaces(ctx, fn) {
 function setAccessVlan(ctx) {
   const vlan = Number(ctx.args.vlan);
   const vlans = (ctx.dev.config.vlans ??= []);
-  if (vlan !== 1 && !vlans.some((v) => Number(v.id) === vlan)) {
+  if (vtpMode(ctx.dev) === 'client') {
+    if (vlan !== 1 && !buildTopology(withDevice(ctx.doc, ctx.dev)).vlanExists(ctx.dev.id, vlan)) {
+      ctx.out.push(`% Access VLAN does not exist. Please assign the interface to an existing VLAN.`, `% NetCanvas : client VTP, le VLAN ${vlan} doit venir du serveur ; le port reste inactif en attendant.`);
+    }
+  } else if (vlan !== 1 && !vlans.some((v) => Number(v.id) === vlan)) {
     vlans.push({ id: vlan, name: `VLAN${String(vlan).padStart(4, '0')}` });
     ctx.out.push('% Access VLAN does not exist. Creating vlan ' + vlan);
   }
@@ -345,8 +368,8 @@ function showTree(dev) {
     kw('version', 'System hardware and software status', { run: (c) => c.out.push(...showVersion(c.dev)) }),
   ];
   if (isSwitch) {
-    kids.push(kw('vlan', 'VTP VLAN status', { run: (c) => c.out.push(...showVlanBrief(c.dev)), children: [kw('brief', 'VTP all VLAN status in brief', { run: (c) => c.out.push(...showVlanBrief(c.dev)) })] }));
-    kids.push(stpShowCommand());
+    kids.push(kw('vlan', 'VTP VLAN status', { run: (c) => c.out.push(...showVlanBrief(c.dev, c.doc)), children: [kw('brief', 'VTP all VLAN status in brief', { run: (c) => c.out.push(...showVlanBrief(c.dev, c.doc)) })] }));
+    kids.push(stpShowCommand(), ...switchShows(parseInterfaces));
   }
   kids.push(...tableShows(dev, parseInterfaces));
   return kw('show', 'Show running system information', { children: kids });
@@ -425,6 +448,8 @@ function interfaceCmd(isSwitch) {
       kw('range', 'interface range command', { children: [rest('spec', 'LINE', 'Interfaces', (c) => enterInterfaces(c, true))] }),
       ...(isSwitch ? [kw('vlan', 'Catalyst Vlans', {
         children: [arg('n', '<1-4094>', 'Vlan interface number', isNum(1, 4094), { run: (c) => { c.s.mode = 'if'; c.s.ifaces = [`Vlan${Number(c.args.n)}`]; } })],
+      }), kw('port-channel', 'Ethernet Channel of interfaces', {
+        children: [arg('n', '<1-64>', 'Port-channel interface number', isNum(1, 64), { run: (c) => enterPortChannel(c, Number(c.args.n)) })],
       })] : []),
       rest('spec', 'WORD', 'Interface type and number', (c) => enterInterfaces(c, false)),
     ],
@@ -500,6 +525,7 @@ function configTree(dev) {
           }),
           kw('vlan', 'Vlan commands', { children: [arg('vlan', '<1-4094>', 'VLAN ID', isNum(2, 4094), { run: removeVlan })] }),
           stpNoConfigCommand(),
+          vtpCommands().remove,
         ] : []),
         accept('service', ''),
         accept('banner', ''),
@@ -511,14 +537,16 @@ function configTree(dev) {
     doCmd(dev),
   ];
   if (isSwitch) {
-    children.push(stpConfigCommand());
+    children.push(stpConfigCommand(), vtpCommands().add, accept('errdisable', 'Error disable'), accept('port-channel', 'EtherChannel configuration'));
     children.push(kw('vlan', 'Vlan commands', {
       children: [arg('vlan', '<1-4094>', 'ISL VLAN IDs 1-1005', isNum(1, 4094), {
         run: (c) => {
           const id = Number(c.args.vlan);
           const vlans = (c.dev.config.vlans ??= []);
           if (id !== 1 && !vlans.some((v) => Number(v.id) === id)) {
+            if (!vlanEditAllowed(c)) return;
             vlans.push({ id, name: `VLAN${String(id).padStart(4, '0')}` });
+            bumpRevision(c.dev);
             c.changed = true;
           }
           c.s.mode = 'vlan';
@@ -570,12 +598,23 @@ function removeRoute(c) {
 }
 
 function removeVlan(c) {
+  if (!vlanEditAllowed(c)) return;
+  bumpRevision(c.dev);
   const id = Number(c.args.vlan);
   c.dev.config.vlans = (c.dev.config.vlans ?? []).filter((v) => Number(v.id) !== id);
   c.changed = true;
 }
 
+// interface Port-channelN : les commandes s'appliquent à tous les membres du groupe (comme IOS les recopie)
+function enterPortChannel(c, n) {
+  c.s.mode = 'if-range';
+  c.s.ifaces = dataPorts(c.dev).map((p) => p.name).filter((name) => Number(getEntry(c.dev, name)?.channelGroup) === n);
+  c.s.portChannel = n;
+}
+
 function enterInterfaces(c, range) {
+  const po = /^\s*po(?:rt-channel)?\s*(\d+)\s*$/i.exec(c.args.spec);
+  if (po && c.dev.type === 'switch') return enterPortChannel(c, Number(po[1]));
   const r = parseInterfaces(c.args.spec, c.dev, { range });
   if (r.error) return c.out.push(r.error, '');
   c.s.mode = range ? 'if-range' : 'if';
@@ -607,6 +646,7 @@ function interfaceTree(dev) {
   ];
 
   if (isSwitch) {
+    const sw = switchInterfaceCommands(forIfaces);
     // Adresse IP : seulement sur une interface VLAN (un port de switch est de niveau 2)
     const onSvi = (run) => (c) => {
       if (!c.s.ifaces.every(isSviName)) return c.out.push(`${' '.repeat(c.line.indexOf('ip') + 16)}^`, "% Invalid input detected at '^' marker.", '');
@@ -633,18 +673,17 @@ function interfaceTree(dev) {
           kw('access', 'Set access mode characteristics of the interface', {
             children: [kw('vlan', 'Set VLAN when interface is in access mode', { children: [arg('vlan', '<1-4094>', 'VLAN ID of the VLAN when this port is in access mode', isNum(1, 4094), { run: setAccessVlan })] })],
           }),
-          kw('trunk', 'Set trunking characteristics of the interface', {
-            children: [rest('x', 'LINE', '', (c) => c.out.push('% NetCanvas : un trunk transporte tous les VLAN, VLAN natif 1 (allowed / native non simulés).', ''))],
-          }),
-          kw('port-security', 'Security related command', { run: (c) => c.out.push(...NOT_SIMULATED('port-security')), children: [rest('x', 'LINE', '', (c) => c.out.push(...NOT_SIMULATED('port-security')))] }),
+          sw.trunk,
+          sw.portSecurity,
           kw('nonegotiate', 'Device will not engage in negotiation protocol on this interface', { run() {} }),
         ],
       }),
+      sw.channelGroup,
       stpInterfaceCommands(forIfaces).add,
     );
-    no.push(stpInterfaceCommands(forIfaces).remove);
+    no.push(stpInterfaceCommands(forIfaces).remove, ...sw.no);
     no.push(kw('switchport', 'Set switching mode characteristics', {
-      children: [kw('access', '', { children: [kw('vlan', '', { run: (c) => forIfaces(c, (e) => { e.vlan = 1; }) })] })],
+      children: [kw('access', '', { children: [kw('vlan', '', { run: (c) => forIfaces(c, (e) => { e.vlan = 1; }) })] }), ...sw.noSwitchport],
     }));
   } else {
     children.push(
@@ -703,6 +742,7 @@ function vlanTree(dev) {
         children: [arg('name', 'WORD', 'The ascii name for the VLAN', null, {
           run: (c) => {
             const v = (c.dev.config.vlans ??= []).find((x) => Number(x.id) === c.s.vlan);
+            if (v && v.name !== c.args.name) bumpRevision(c.dev);
             if (v) v.name = c.args.name;
             c.changed = true;
           },

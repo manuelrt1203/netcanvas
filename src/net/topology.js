@@ -1,6 +1,7 @@
 // Vue « réseau » d'un schéma exporté (format v3, v2 toléré) : qui est relié à qui, par quel port et
 // quel câble, l'état de chaque câble et la config de chaque interface.
 import { computeStp } from './stp.js';
+import { applySwitching } from './switching.js';
 import { isValidCidr, isValidIp } from './ip.js';
 import { eui64Address, linkLocalOf, normIp6 } from './ip6.js';
 import { macCisco, macOf } from './mac.js';
@@ -148,11 +149,7 @@ export function buildTopology(doc) {
 
   // Une SVI est active si un port actif du switch transporte son VLAN (comme sur IOS)
   function sviUp(id, vlan) {
-    return linksOf.get(id).some((l) => {
-      if (!isUp(l)) return false;
-      const p = switchPort(id, l);
-      return p.mode === 'trunk' || (Number(p.vlan) || NATIVE_VLAN) === vlan;
-    });
+    return linksOf.get(id).some((l) => isUp(l) && topo.carries(id, l, vlan));
   }
 
   // Toutes les interfaces de niveau 3 possibles, et leur état
@@ -202,6 +199,8 @@ export function buildTopology(doc) {
     devices, ports, links, linksOf, consoleLinks, status, other, portName, isUp,
     hostIface, routerIface, switchPort, l3IfaceOn, l3Ifaces, subIfaces, svis, sviUp, l3Ifaces6, l3IfaceOn6,
   };
+  // EtherChannel, VTP, trunk (natif, VLAN autorisés), port-security : avant le STP
+  applySwitching(topo);
   // Spanning Tree : ports bloqués par VLAN, tempêtes de diffusion ; noté aussi sur l'état des câbles (voyants)
   topo.stp = computeStp(topo);
   for (const [id, st] of status) {

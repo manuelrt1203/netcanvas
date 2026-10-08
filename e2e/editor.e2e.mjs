@@ -28,7 +28,7 @@ await page.evaluate(() => localStorage.clear());
 await page.reload();
 step('écran d\'accueil, nouveau projet');
 assert.ok(await page.getByRole('heading', { name: 'NetCanvas' }).isVisible());
-assert.equal(await page.locator('.welcome .example').count(), 14);
+assert.equal(await page.locator('.welcome .example').count(), 16);
 await page.click('role=button[name="Nouveau projet"]');
 
 step('ajout et connexion d’équipements');
@@ -508,6 +508,21 @@ await added.getByLabel('Vers').fill('192.168.10.11');
 await page.click('role=button[name="Vue élève"]');
 assert.equal(await page.locator('#tab-tp .badge').textContent(), '1/5');
 assert.ok(await page.locator('.tp-objectives li.ok').getByText('PC Compta ping 192.168.10.11').isVisible());
+
+step('commutation : EtherChannel sur le plan, TP campus réparé par le formulaire (VTP, VLAN autorisés)');
+await openDemo('Campus (EtherChannel, VTP, port-security)');
+assert.equal(await page.getByText('Po1 · LACP').count(), 2, 'les deux câbles du Port-channel');
+await openDemo('TP : campus en panne (2 pannes)');
+await page.click('role=tab[name=/^TP/]');
+assert.equal(await page.locator('#tab-tp .badge').textContent(), '0/2');
+await page.getByTestId('rf__node-swb').click();
+await page.click('role=tab[name=/^Propriétés/]');
+if (await page.locator('role=radio[name="Formulaire"]').getAttribute('aria-checked') !== 'true') await page.click('role=radio[name="Formulaire"]');
+await page.locator('details', { hasText: 'VLAN et VTP' }).getByLabel('Mot de passe').fill('iut');
+await page.getByTestId('rf__node-core').click();
+await page.locator('fieldset.iface', { hasText: 'Fa0/24' }).getByLabel('VLAN autorisés').fill('10,20,99');
+await page.click('role=tab[name=/^TP/]');
+assert.equal(await page.locator('#tab-tp .badge').textContent(), '2/2');
 
 step('édition : annuler / rétablir, copier-coller, sélection multiple, recherche');
 await newProject();

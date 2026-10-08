@@ -27,6 +27,7 @@ import { withLeases } from '../net/dhcp.js';
 import { ascii, interfaceTable, switchVlans, uniqueNames } from './common.js';
 import { bridgePriority, portCost, stpEnabled } from '../net/stp.js';
 import { macOf } from '../net/mac.js';
+import { allowedOf, nativeOf } from '../net/switching.js';
 
 export const CLAB_IMAGE = 'nicolaka/netshoot:latest'; // iproute2 + bridge + ping + tcpdump
 
@@ -78,11 +79,22 @@ export function clabCommands(rawDoc) {
         : 'ip link add br0 type bridge vlan_filtering 1', 'ip link set br0 up');
       for (const r of rows) {
         const dev = ifname(r.index);
+        // Membre secondaire d'un EtherChannel (un seul câble transporte les trames), port suspendu,
+        // err-disabled (port-security) ou dans un VLAN inconnu d'un client VTP : port éteint, comme dans NetCanvas
+        const st = topo.status.get(r.link);
+        if (!topo.l2Links(d.id).includes(r.link) || st?.suspended || st?.errDisabled || (r.mode !== 'trunk' && !topo.vlanExists(d.id, Number(r.vlan) || 1))) {
+          cmds.push(`ip link set ${dev} down`);
+          continue;
+        }
         cmds.push(`ip link set ${dev} master br0`, `ip link set ${dev} up`);
         if (stp) cmds.push(`bridge link set dev ${dev} cost ${Number(r.stpCost) || portCost(r.name)}`);
         if (r.mode === 'trunk') {
-          // VLAN 1 reste natif (non étiqueté), les autres passent étiquetés
-          for (const v of allVlans) cmds.push(`bridge vlan add vid ${v} dev ${dev}`);
+          // VLAN natif non étiqueté (1 par défaut), VLAN autorisés étiquetés
+          const native = nativeOf(r);
+          const allowed = allowedOf(r);
+          if (native !== 1 || (allowed && !allowed.has(1))) cmds.push(`bridge vlan del vid 1 dev ${dev}`);
+          if (native !== 1 && (allowed?.has(native) ?? true)) cmds.push(`bridge vlan add vid ${native} dev ${dev} pvid untagged`);
+          for (const v of allVlans) if (v !== native && (allowed?.has(v) ?? true)) cmds.push(`bridge vlan add vid ${v} dev ${dev}`);
         } else if ((Number(r.vlan) || 1) !== 1) {
           cmds.push(`bridge vlan del vid 1 dev ${dev}`, `bridge vlan add vid ${Number(r.vlan)} dev ${dev} pvid untagged`);
         }
