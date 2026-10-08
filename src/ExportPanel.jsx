@@ -61,9 +61,12 @@ export default function ExportPanel({ doc }) {
   const [error, setError] = useState('');
   const format = formatById(formatId);
   const isImage = format.id === 'svg' || format.id === 'png';
+  const isZip = format.binary === 'zip';
 
-  const output = useMemo(() => format.build(doc), [format, doc]);
+  // L'archive se construit au téléchargement ; l'aperçu montre son contenu
+  const output = useMemo(() => (isZip ? format.preview(doc) : format.build(doc)), [format, doc, isZip]);
   const warnings = useMemo(() => {
+    if (format.warnings) return format.warnings(doc);
     if (format.id !== 'packet-tracer' && format.id !== 'gns3') return [];
     return ciscoConfigs(doc, { target: format.id }).flatMap((c) => c.warnings.map((w) => `${c.label} : ${w}`));
   }, [format, doc]);
@@ -82,7 +85,8 @@ export default function ExportPanel({ doc }) {
   const save = async () => {
     setError('');
     try {
-      const blob = format.binary ? await svgToPng(output) : new Blob([output], { type: `${format.mime};charset=utf-8` });
+      const blob = isZip ? new Blob([format.build(doc)], { type: format.mime })
+        : format.binary ? await svgToPng(output) : new Blob([output], { type: `${format.mime};charset=utf-8` });
       download(blob, fileName(doc, format));
     } catch (err) {
       setError(err.message);

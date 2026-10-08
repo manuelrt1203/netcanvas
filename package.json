@@ -11,6 +11,8 @@
     "test:e2e": "node e2e/editor.e2e.mjs",
     "test:share": "node e2e/share.e2e.mjs",
     "test:frr": "node e2e/frr-ospf6.mjs",
+    "test:gns3": "node e2e/gns3.e2e.mjs",
+    "test:gns3-real": "node e2e/gns3-real.mjs",
     "desktop": "vite build && electron .",
     "dist": "vite build && electron-builder --publish never",
     "release": "vite build && electron-builder --publish always",

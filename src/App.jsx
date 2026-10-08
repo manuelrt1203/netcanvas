@@ -17,6 +17,7 @@ import SimPanel from './SimPanel.jsx';
 // Chargés à la demande : l'éditeur s'ouvre plus vite
 const ExportPanel = lazy(() => import('./ExportPanel.jsx'));
 const Terminal = lazy(() => import('./Terminal.jsx'));
+const Gns3Import = lazy(() => import('./Gns3Import.jsx'));
 import { CableInspector, DeviceInspector, MultiInspector, Overview } from './Inspector.jsx';
 import { arrange, copySelection, duplicate, search } from './editing.js';
 import { DEVICE_TYPES, Icon, PALETTE, iconName } from './devices.jsx';
@@ -405,6 +406,8 @@ function Editor() {
   };
   const lastSaved = useRef(null); // dernier document enregistré en ligne
   const shareDialog = useRef(null);
+  const gns3Dialog = useRef(null);
+  const [gns3Open, setGns3Open] = useState(0); // à chaque ouverture : boîte remise à zéro
 
   // Sauvegarde automatique : brouillon local, sauf pendant qu'un schéma partagé est ouvert
   useEffect(() => {
@@ -887,6 +890,16 @@ function Editor() {
     setLocation(`?d=${id}`);
     setShared({ id, token: null, owner: false, embed: false, status: 'loading' });
   };
+  const openGns3 = () => {
+    closeMenu();
+    setGns3Open((n) => n + 1);
+    gns3Dialog.current?.showModal();
+  };
+  const openGns3Doc = (imported) => {
+    if (!discardOk()) return;
+    gns3Dialog.current?.close();
+    startFrom(loadDoc(imported));
+  };
   const openExample = (demo) => {
     closeMenu();
     if (!discardOk()) return;
@@ -895,7 +908,7 @@ function Editor() {
 
   // Application de bureau : menus natifs, fichier ouvert par double-clic, fermeture avec modifications
   const fileActions = useRef({});
-  fileActions.current = { newProject, openProject, saveProject, openPath, showWelcome: () => setWelcome(true), dirty };
+  fileActions.current = { newProject, openProject, saveProject, openPath, openGns3, showWelcome: () => setWelcome(true), dirty };
   useEffect(() => {
     if (!desktop) return undefined;
     desktop.recentFiles().then(setRecents);
@@ -906,6 +919,7 @@ function Editor() {
       else if (cmd === 'save') a.saveProject(false);
       else if (cmd === 'save-as') a.saveProject(true);
       else if (cmd === 'welcome') a.showWelcome();
+      else if (cmd === 'gns3') a.openGns3();
       else if (cmd === 'save-and-close') { if (await a.saveProject(false)) desktop.closeNow(); }
     });
     const offOpen = desktop.onOpenPath((path) => fileActions.current.openPath(path));
@@ -967,6 +981,7 @@ function Editor() {
                   <button type="button" role="menuitem" onClick={openProject}>Ouvrir… <kbd>Ctrl+O</kbd></button>
                   <button type="button" role="menuitem" onClick={() => saveProject(false)}>Enregistrer <kbd>Ctrl+S</kbd></button>
                   <button type="button" role="menuitem" onClick={() => saveProject(true)}>Enregistrer sous… <kbd>Ctrl+Maj+S</kbd></button>
+                  <button type="button" role="menuitem" onClick={openGns3}>Importer depuis GNS3…</button>
                   <button type="button" role="menuitem" onClick={() => { closeMenu(); setWelcome(true); }}>Accueil et exemples</button>
                 </div>
               </details>
@@ -1244,6 +1259,15 @@ function Editor() {
               </>
             )}
             <form method="dialog"><button type="submit">Fermer</button></form>
+          </dialog>
+          <dialog ref={gns3Dialog} className="help-dialog import-dialog" aria-labelledby="gns3-title">
+            <h2 id="gns3-title">Importer depuis GNS3</h2>
+            {gns3Open > 0 && (
+              <Suspense fallback={<p className="hint">Chargement…</p>}>
+                <Gns3Import key={gns3Open} onOpen={openGns3Doc} />
+              </Suspense>
+            )}
+            <form method="dialog"><button type="submit" className="ghost">Fermer</button></form>
           </dialog>
           <dialog ref={helpDialog} className="help-dialog" aria-labelledby="help-title">
             <h2 id="help-title">Raccourcis clavier</h2>

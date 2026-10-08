@@ -67,6 +67,7 @@ function buildMenu(recent = []) {
         { label: 'Enregistrer', accelerator: 'CmdOrCtrl+S', click: send('save') },
         { label: 'Enregistrer sous…', accelerator: 'CmdOrCtrl+Shift+S', click: send('save-as') },
         { type: 'separator' },
+        { label: 'Importer depuis GNS3…', click: send('gns3') },
         { label: 'Accueil et exemples', click: send('welcome') },
         { type: 'separator' },
         mac ? { role: 'close', label: 'Fermer la fenêtre' } : { role: 'quit', label: 'Quitter' },

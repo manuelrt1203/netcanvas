@@ -5,6 +5,7 @@ import { toCsv } from './csv.js';
 import { toDrawio } from './drawio.js';
 import { toSvg } from './svg.js';
 import { fileSafe } from './common.js';
+import { gns3Files, toGns3Project } from '../gns3/gns3.js';
 
 export const FORMATS = [
   {
@@ -21,6 +22,17 @@ export const FORMATS = [
     id: 'gns3', label: 'GNS3', ext: 'txt', mime: 'text/plain',
     help: 'Startup-config des routeurs c7200, ports du switch Ethernet intégré et commandes VPCS des PC.',
     build: (doc) => ciscoBundle(doc, 'gns3'),
+  },
+  {
+    id: 'gns3project', label: 'Projet GNS3 (.gns3project)', ext: 'gns3project', mime: 'application/zip', binary: 'zip',
+    help: 'Projet complet à ouvrir dans GNS3 (File > Import portable project) : routeurs Dynamips avec leur config de démarrage, switch, VPCS, câbles.',
+    build: toGns3Project,
+    // Aperçu : le fichier project.gns3 et la liste des fichiers de l'archive
+    preview: (doc) => {
+      const { files } = gns3Files(doc);
+      return [`Archive : ${files.map((f) => f.name).join('\n          ')}`, '', files[0].data].join('\n');
+    },
+    warnings: (doc) => gns3Files(doc).warnings,
   },
   {
     id: 'containerlab', label: 'Containerlab', ext: 'clab.yml', mime: 'text/yaml',

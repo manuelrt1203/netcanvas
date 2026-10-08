@@ -43,6 +43,7 @@ jobs:
           npx vite --port 5173 --strictPort > vite.log 2>&1 &
           for i in $(seq 1 60); do curl -sf http://localhost:5173 > /dev/null && break; sleep 1; done
           npm run test:e2e
+          npm run test:gns3
 
       - name: Test de l'application de bureau (Electron)
         run: xvfb-run -a npm run test:desktop

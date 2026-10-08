@@ -172,6 +172,28 @@ Quand une section est refusée (interface absente du modèle), ses lignes indent
 
 Le test d'aller-retour exporte la config de chaque routeur et switch des démos, la réimporte sur un équipement vierge et vérifie que la config obtenue est identique.
 
+## Projets GNS3 (`src/gns3/`)
+
+**Fichier > Importer depuis GNS3…** ouvre un projet GNS3 2.2 :
+- un **projet portable** `.gns3project` (GNS3 : File > Export portable project), configs comprises ;
+- le **dossier du projet** (`GNS3/projects/<nom>`), configs comprises ;
+- un fichier `.gns3` seul : la topologie sans les configs.
+
+| GNS3 | NetCanvas |
+|---|---|
+| Dynamips c7200, c3725 (c2691), c3600/3640 | routeur GNS3 de même modèle, mêmes modules (`slotN`, `wicN`) ; startup-config importée par le terminal IOS |
+| qemu ou docker MikroTik CHR 6.x / 7.1 / 7.x, FRR | CHR 6.49, 7.1, 7.16, FRR 7.5.1 (la config reste dans le disque de la VM : la coller avec « Importer une config ») |
+| Ethernet switch | 2960 : ports access / dot1q, VLAN, VLAN natif |
+| Ethernet hub, VPCS, NAT, cloud | hub, PC (`startup.vpc`), Internet |
+| docker « invité » (debianiut…) | PC, config lue dans `etc/network/interfaces` |
+| IOU, autre qemu ou docker | équipement générique, d'après son icône |
+
+Ports : un port GNS3 est `(adapter, port)`. Dynamips : adapter = slot, cartes WIC sur l'adapter 0 au port `16 × (n° WIC + 1) + port` (`Serial0/0` = 0/16). Qemu : adapter = n° de carte (`ether1` = 0 pour un CHR, `eth0` = 0 pour FRR). Switch et hub : `EthernetN` = port N, qui devient `Fa0/(N+1)`.
+
+Export **Projet GNS3 (.gns3project)** (onglet Export) : se charge par File > Import portable project. Routeurs Dynamips avec leur startup-config (un 2911, 4321 ou routeur générique devient un c7200 : Ethernet sur C7200-IO-2FE puis PA-2FE-TX, série sur PA-4T+, noms changés partout dans la config), MikroTik et FRR en qemu (config à coller), switch Ethernet avec ses VLAN, VPCS avec `startup.vpc`, Internet en nœud NAT. Images attendues : celles des modèles GNS3 courants (`c7200-adventerprisek9-mz.124-24.T5.image`, `c3725-adventerprisek9-mz.124-15.T14.image`, `c3640-a3js-mz.124-25d.image`, `chr-7.16.img`…), à changer dans GNS3 si besoin.
+
+Vérifié contre un vrai GNS3 2.2.61 : `GNS3_URL=http://127.0.0.1:3080 npm run test:gns3-real` importe un projet exporté par NetCanvas, démarre un c7200 et un c3725 reliés en série et fait un ping VPCS de bout en bout. 17 projets de TP réels (OSPF, multi-aires, BGP local-pref…) font l'aller-retour GNS3 → NetCanvas → GNS3 avec les mêmes nœuds et câbles.
+
 ## Mode TP (`src/net/exercise.js`, onglet « TP »)
 
 Un schéma peut porter un exercice : un titre, une consigne et des objectifs vérifiés en direct à chaque modification. Types d'objectifs :
@@ -330,6 +352,7 @@ npm run test:share   # contre la vraie base (npm run dev lancé) : création, en
 | NetCanvas (JSON) | le schéma complet, réimportable |
 | Cisco Packet Tracer | un bloc `enable / configure terminal … write memory` par routeur et switch Cisco, à coller dans l'onglet CLI ; la config IP des PC en commentaire ; script RouterOS pour un MikroTik (absent de Packet Tracer, signalé) |
 | GNS3 | script RouterOS des MikroTik (appliance CHR, routage compris), startup-config des routeurs c7200 (loopbacks, `router ospf|rip|bgp` avec les interfaces renumérotées) (interfaces renumérotées `Fa0/0`, `Fa0/1`, `Fa1/0`…), tableau des ports du switch Ethernet intégré, commandes VPCS |
+| Projet GNS3 | `.gns3project` à ouvrir dans GNS3 : nœuds, câbles, configs de démarrage (voir « Projets GNS3 ») |
 | Containerlab | `.clab.yml` avec des conteneurs Linux : routeurs (`ip_forward`, loopbacks, routes), switches (bridge avec filtrage VLAN), hôtes. Les conteneurs n'exécutent pas OSPF/RIP/BGP : les routes de l'état convergé calculé par NetCanvas y sont installées en statique |
 | Plan d'adressage (CSV) | une ligne par interface : IP, masque, réseau, passerelle, VLAN, voisin. Séparateur `;` et BOM UTF-8 pour Excel |
 | draw.io | schéma modifiable avec les formes Cisco de diagrams.net |
@@ -369,8 +392,10 @@ Les fichiers v1 et v2 s'importent toujours : le modèle est déduit des ports ut
 ## Tests
 
 ```bash
-npm test           # 162 tests : calculs IP, ping, validation, JSON, TP, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
+npm test           # 238 tests : calculs IP, ping, validation, JSON, TP, câblage, OSPF / RIP / BGP, terminaux IOS / RouterOS / PC, exports
 npm run test:e2e   # navigateur réel (nécessite `npm run dev` lancé) : édition, contrôles, ping, persistance, exports, câblage, terminaux (IOS, RouterOS, PC), démos OSPF et BGP (show ip ospf neighbor, next-hop-self retiré)
+npm run test:gns3     # navigateur réel : import d'un .gns3project et d'un dossier de projet, export .gns3project
+npm run test:gns3-real   # vrai serveur GNS3 (GNS3_URL) : projet exporté importé, démarré, ping de bout en bout
 npm run test:desktop   # application de bureau (Electron, après npm run build ; sous Linux sans écran : xvfb-run -a) : ouvrir par double-clic, enregistrer, récents, fermeture
 ```
 
