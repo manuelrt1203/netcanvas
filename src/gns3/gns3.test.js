@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { deflateRawSync } from 'node:zlib';
-import { crc32, readZip, writeZip } from './zip.js';
+import { MAX_INFLATED, crc32, readZip, writeZip } from './zip.js';
 import { dynamipsPorts, fromGns3, gns3Files, readGns3, toGns3Project } from './gns3.js';
 import { buildTopology } from '../net/topology.js';
 import { computeRouting } from '../net/routing.js';
@@ -229,3 +229,58 @@ test('aller-retour NetCanvas -> GNS3 -> NetCanvas : même routage', async () => 
   assert.ok(prefixes.some((p) => p.startsWith('S ')), prefixes.join(', '));
   assert.ok([...rib.values()].filter((r) => r.proto === 'C').length >= 2);
 });
+
+test('archive piégée : un fichier trop gros une fois décompressé est écarté, pas tout l\'import', async () => {
+  const project = { type: 'topology', name: 'bombe', topology: { nodes: [{ node_id: 'v1', node_type: 'vpcs', name: 'PC1', x: 0, y: 0 }], links: [] } };
+  const huge = deflateRawSync(Buffer.alloc(MAX_INFLATED + 1, 0x41)); // ~64 Ko compressés
+  // Archive écrite à la main : project.gns3 stocké, startup.vpc compressé (deflate)
+  const zip = writeZipWithDeflated([
+    { name: 'project.gns3', data: new TextEncoder().encode(JSON.stringify(project)) },
+    { name: 'project-files/vpcs/v1/startup.vpc', deflated: huge, size: MAX_INFLATED + 1 },
+  ]);
+  const { doc, warnings } = await readGns3(zip);
+  assert.equal(doc.devices.length, 1);
+  assert.ok(warnings.some((w) => /PC1 : config illisible .*Mo une fois décompressé/.test(w)), warnings.join('\n'));
+});
+
+// Comme writeZip, avec des entrées déjà compressées (méthode 8)
+function writeZipWithDeflated(files) {
+  const parts = [];
+  const central = [];
+  let offset = 0;
+  const enc = new TextEncoder();
+  for (const f of files) {
+    const name = enc.encode(f.name);
+    const data = f.deflated ?? f.data;
+    const method = f.deflated ? 8 : 0;
+    const size = f.size ?? data.length;
+    const local = new DataView(new ArrayBuffer(30));
+    local.setUint32(0, 0x04034b50, true);
+    local.setUint16(8, method, true);
+    local.setUint32(18, data.length, true);
+    local.setUint32(22, size, true);
+    local.setUint16(26, name.length, true);
+    parts.push(new Uint8Array(local.buffer), name, new Uint8Array(data));
+    const entry = new DataView(new ArrayBuffer(46));
+    entry.setUint32(0, 0x02014b50, true);
+    entry.setUint16(10, method, true);
+    entry.setUint32(20, data.length, true);
+    entry.setUint32(24, size, true);
+    entry.setUint16(28, name.length, true);
+    entry.setUint32(42, offset, true);
+    central.push(new Uint8Array(entry.buffer), name);
+    offset += 30 + name.length + data.length;
+  }
+  const size = central.reduce((s, p) => s + p.length, 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, files.length, true);
+  end.setUint16(10, files.length, true);
+  end.setUint32(12, size, true);
+  end.setUint32(16, offset, true);
+  const all = [...parts, ...central, new Uint8Array(end.buffer)];
+  const out = new Uint8Array(all.reduce((s, p) => s + p.length, 0));
+  let at = 0;
+  for (const p of all) { out.set(p, at); at += p.length; }
+  return out;
+}

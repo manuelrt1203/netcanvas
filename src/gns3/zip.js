@@ -71,9 +71,25 @@ function concat(parts) {
 
 export const isZip = (bytes) => bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04;
 
-async function inflateRaw(data) {
-  const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+// Plafond d'un fichier décompressé : les configs font quelques Ko ; une archive piégée (« bombe zip »)
+// ferait sinon gonfler la mémoire jusqu'au plantage de l'onglet.
+export const MAX_INFLATED = 64 * 1024 * 1024;
+
+async function inflateRaw(data, name) {
+  const reader = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw')).getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > MAX_INFLATED) {
+      await reader.cancel();
+      throw new Error(`${name} : plus de ${MAX_INFLATED / 1024 / 1024} Mo une fois décompressé, fichier ignoré.`);
+    }
+    chunks.push(value);
+  }
+  return concat(chunks);
 }
 
 // Renvoie Map<nom, () => Promise<Uint8Array>> ; `wanted(nom)` filtre ce qu'on décompresse (on saute les images disque)
@@ -128,7 +144,7 @@ export function readZip(bytes) {
     const data = bytes.subarray(start, start + compressed);
     entries.set(name, async () => {
       if (method === 0) return data;
-      if (method === 8) return inflateRaw(data);
+      if (method === 8) return inflateRaw(data, name);
       throw new Error(`${name} : compression ${method} non prise en charge.`);
     });
   }

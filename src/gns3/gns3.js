@@ -116,7 +116,7 @@ function mapNode(node) {
       const max = Math.max(0, ...(p.ports_mapping ?? []).map((x) => x.port_number));
       const model = max < 24 ? '2960-24TT' : '2960-48TT';
       if (max >= 48) notes.push('plus de 48 ports : les ports au-delà sont retirés');
-      return { type: 'switch', model, notes, portName: (a, n) => (n < 48 && n <= max + 1 ? `Fa0/${n + 1}` : undefined) };
+      return { type: 'switch', model, notes, portName: (a, n) => (n < 48 && n <= max ? `Fa0/${n + 1}` : undefined) };
     }
     case 'ethernet_hub':
       return { type: 'hub', model: 'Hub-PT', notes, portName: (a, n) => (n <= 5 ? `Port${n}` : undefined) };
@@ -226,7 +226,13 @@ export async function fromGns3(project, files = new Map()) {
       if (m.type === 'router' && ['qemu', 'docker'].includes(kind)) qemuRouters.push(m.node.name);
       continue;
     }
-    const text = await decode(key);
+    let text;
+    try {
+      text = await decode(key);
+    } catch (err) {
+      warnings.push(`${m.node.name} : config illisible (${err.message}).`);
+      continue;
+    }
     if (!text.trim()) continue;
     const device = doc.devices.find((d) => d.id === m.id);
     if (m.type === 'pc') {
