@@ -960,13 +960,13 @@ function Editor() {
       <SimContext.Provider value={sim.view}>
         <div className={`app${wideInspector ? ' wide-inspector' : ''}${readOnly ? ' read-only' : ''}${shared?.embed ? ' embed' : ''}`}>
           <header className="topbar">
-            <div className="brand">
+            <h1 className="brand">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <circle cx="5" cy="6" r="2.5" /><circle cx="19" cy="6" r="2.5" /><circle cx="12" cy="18" r="2.5" />
                 <path d="M7.5 6h9M6.3 8.2l4.4 7.6M17.7 8.2l-4.4 7.6" />
               </svg>
               NetCanvas
-            </div>
+            </h1>
             <label className="visually-hidden" htmlFor="name">Nom du schéma</label>
             <input id="name" className="doc-name" value={name} readOnly={readOnly} onChange={(e) => setName(e.target.value)} />
             <div className="actions">

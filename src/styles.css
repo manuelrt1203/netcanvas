@@ -6,6 +6,7 @@
   --border: #d5dce4;
   --primary: #0b6bcb;
   --primary-text: #ffffff;
+  --primary-hover: #0a5cae;
   --danger: #b91c1c;
   --router: #0b6bcb;
   --switch: #0f766e;
@@ -25,6 +26,7 @@
     --border: #26324a;
     --primary: #4ea1f3;
     --primary-text: #0b1120;
+    --primary-hover: #74b6f6;
     --danger: #f87171;
     --router: #4ea1f3;
     --switch: #2dd4bf;
@@ -48,7 +50,7 @@ h2 { font-size: 1rem; margin: 0 0 8px; }
   grid-area: top; display: flex; align-items: center; gap: 16px;
   padding: 8px 16px; background: var(--surface); border-bottom: 1px solid var(--border);
 }
-.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+.brand { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 1rem; font-weight: 700; }
 .brand svg { width: 24px; height: 24px; fill: none; stroke: var(--primary); stroke-width: 1.75; }
 .doc-name { max-width: 260px; border-color: transparent; background: transparent; font-weight: 500; }
 .doc-name:hover { border-color: var(--border); }
@@ -60,7 +62,9 @@ button {
   background: var(--primary); color: var(--primary-text); font: 600 .9rem system-ui, sans-serif;
   cursor: pointer; transition: opacity .15s, background .15s;
 }
-button:hover { opacity: .9; }
+/* Survol : fond plus soutenu plutôt qu'une opacité, qui éclaircissait le bleu sous le texte blanc (4,45:1). */
+/* :where() garde la priorité de « button » seul : les boutons stylés par une classe (ghost, danger, onglets…) gardent leur survol. */
+button:where(:hover:not(:disabled)) { background: var(--primary-hover); border-color: var(--primary-hover); }
 button.ghost { background: transparent; color: var(--text); border-color: var(--border); }
 button.ghost:hover { border-color: var(--primary); }
 button.danger { background: transparent; color: var(--danger); border-color: var(--danger); margin-top: 24px; width: 100%; }
@@ -559,3 +563,7 @@ button.link { background: none; border: 0; padding: 0; color: var(--primary); fo
 .mac-list li { display: flex; align-items: center; gap: 8px; }
 .proto h4 { margin: 12px 0 4px; font-size: 13px; }
 .redist { margin: 4px 0; }
+
+/* Mention React Flow : gris #999 de la bibliothèque trop pâle (2,85:1). */
+.react-flow__attribution { background: var(--surface); }
+.react-flow__attribution a { color: var(--muted); }

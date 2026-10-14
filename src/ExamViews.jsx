@@ -144,7 +144,7 @@ export function ExamDashboard({ id, token, onOpenCopy, onClose }) {
   return (
     <div className="welcome" role="dialog" aria-modal="true" aria-labelledby="exam-dash-title">
       <div className="welcome-card exam-dashboard">
-        <header className="welcome-head">
+        <div className="welcome-head">
           <div>
             <h1 id="exam-dash-title">{exam.title}</h1>
             <p className="muted">
@@ -153,7 +153,7 @@ export function ExamDashboard({ id, token, onOpenCopy, onClose }) {
             </p>
           </div>
           {onClose && <button type="button" className="ghost icon welcome-close" onClick={onClose} aria-label="Fermer le suivi">✕</button>}
-        </header>
+        </div>
         <CopyRow label="Lien pour les étudiants" value={examLinks(id, null).student} />
         <div className="row">
           <button type="button" className="ghost small-btn" onClick={refresh}>Actualiser</button>

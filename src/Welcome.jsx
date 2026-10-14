@@ -6,7 +6,7 @@ export default function Welcome({ version, draft, recents = [], onNew, onOpen, o
   return (
     <div className="welcome" role="dialog" aria-modal="true" aria-labelledby="welcome-title">
       <div className="welcome-card">
-        <header className="welcome-head">
+        <div className="welcome-head">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <circle cx="5" cy="6" r="2.5" /><circle cx="19" cy="6" r="2.5" /><circle cx="12" cy="18" r="2.5" />
             <path d="M7.5 6h9M6.3 8.2l4.4 7.6M17.7 8.2l-4.4 7.6" />
@@ -16,7 +16,7 @@ export default function Welcome({ version, draft, recents = [], onNew, onOpen, o
             <p className="muted">Schémas réseau, configuration Cisco et MikroTik, simulation expliquée. {version && <span>Version {version}</span>}</p>
           </div>
           {onClose && <button type="button" className="ghost icon welcome-close" onClick={onClose} aria-label="Fermer l'accueil">✕</button>}
-        </header>
+        </div>
         {notice}
 
         <div className="welcome-actions">

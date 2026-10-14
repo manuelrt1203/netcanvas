@@ -27,7 +27,7 @@ await page.goto(URL);
 await page.evaluate(() => localStorage.clear());
 await page.reload();
 step('écran d\'accueil, nouveau projet');
-assert.ok(await page.getByRole('heading', { name: 'NetCanvas' }).isVisible());
+assert.ok(await page.getByRole('dialog').getByRole('heading', { name: 'NetCanvas' }).isVisible());
 assert.equal(await page.locator('.welcome .example').count(), 16);
 await page.click('role=button[name="Nouveau projet"]');
 
@@ -511,6 +511,7 @@ assert.ok(await page.locator('.tp-objectives li.ok').getByText('PC Compta ping 1
 
 step('commutation : EtherChannel sur le plan, TP campus réparé par le formulaire (VTP, VLAN autorisés)');
 await openDemo('Campus (EtherChannel, VTP, port-security)');
+await page.getByText('Po1 · LACP').nth(1).waitFor(); // étiquettes des câbles dessinées après le rendu du plan
 assert.equal(await page.getByText('Po1 · LACP').count(), 2, 'les deux câbles du Port-channel');
 await openDemo('TP : campus en panne (2 pannes)');
 await page.click('role=tab[name=/^TP/]');
