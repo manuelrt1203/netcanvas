@@ -217,6 +217,18 @@ Un schéma peut porter un exercice : un titre, une consigne et des objectifs vé
 | Session BGP | la session vers ce voisin est Established |
 | Route | le routeur a une route qui couvre le préfixe (un résumé ou une route par défaut compte) |
 | Aucune erreur | les contrôles ne signalent aucune erreur |
+| Nom résolu (DNS) | l'hôte résout le nom (et obtient l'adresse attendue, si elle est donnée) |
+| Page web accessible | l'hôte ouvre la page (nom ou IP) : DNS, routage, ACL par port et service |
+| Trafic traduit par NAT | le ping aboutit **et** une traduction NAT (source ou destination) a lieu |
+| Route apprise par RIP | le routeur a une route RIP qui couvre le préfixe |
+| Voisinage EIGRP | les deux routeurs sont voisins EIGRP |
+| Route IPv6 présente | la table IPv6 couvre le préfixe (un résumé ou `::/0` compte ; un ping IPv6 s'écrit avec l'objectif Ping) |
+| Switch root du Spanning Tree | le switch est root bridge du VLAN |
+| Port bloqué par le Spanning Tree | un port du switch est bloqué (boucle cassée) dans ce VLAN |
+| EtherChannel monté | le Port-channel entre les deux switches est actif (sinon, la raison de la négociation ratée) |
+| VLAN appris par VTP | le switch connaît ce VLAN (domaine, mot de passe, mode, trunks) |
+| Port coupé par port-security | un port du switch est en err-disabled |
+| ACL appliquée à une interface | l'ACL existe et est appliquée en entrée ou en sortie d'une interface |
 
 Indices progressifs pour l'élève : 1. l'objectif n'est pas atteint ; 2. l'équipement où ça bloque (bouton « Voir ») ; 3. l'explication du simulateur.
 

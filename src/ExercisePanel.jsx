@@ -4,6 +4,7 @@ import { useId, useState } from 'react';
 import { OBJECTIVES, hintFor } from './net/exercise.js';
 import { ExamCreateForm } from './ExamViews.jsx';
 import { isValidIp } from './net/ip.js';
+import { isValidIp6 } from './net/ip6.js';
 
 const newObjectiveId = () => `o${crypto.randomUUID().slice(0, 6)}`;
 const EMPTY_EXERCISE = { title: 'Nouveau TP', instructions: '', objectives: [] };
@@ -20,12 +21,23 @@ function Field({ label, children }) {
 
 // Paramètre d'un objectif : équipement, routeur ou adresse IP (avec préfixe facultatif)
 function Param({ kind, name, value, devices, onChange }) {
-  const labels = { from: 'Depuis', to: 'Vers', host: 'Hôte', a: 'Routeur A', b: 'Routeur B', router: 'Routeur', neighbor: 'Voisin (IP)' };
+  const labels = {
+    from: 'Depuis', to: 'Vers', host: 'Hôte', a: 'Équipement A', b: 'Équipement B', router: 'Équipement', neighbor: 'Voisin (IP)',
+    name: 'Nom', target: 'Adresse ou nom', expect: 'Adresse attendue (facultatif)', switch: 'Switch', vlan: 'VLAN',
+  };
   if (kind === 'ip') {
     const ip = (value ?? '').split('/')[0];
     return (
       <Field label={labels[name] ?? name}>
-        {(id) => <input id={id} value={value ?? ''} placeholder="192.168.1.10" aria-invalid={value && !isValidIp(ip) ? true : undefined}
+        {(id) => <input id={id} value={value ?? ''} placeholder="192.168.1.10" aria-invalid={value && !isValidIp(ip) && !isValidIp6(ip) ? true : undefined}
+          onChange={(e) => onChange(e.target.value.trim())} />}
+      </Field>
+    );
+  }
+  if (kind === 'text') {
+    return (
+      <Field label={labels[name] ?? name}>
+        {(id) => <input id={id} value={value ?? ''} inputMode={name === 'vlan' ? 'numeric' : undefined}
           onChange={(e) => onChange(e.target.value.trim())} />}
       </Field>
     );
@@ -83,7 +95,7 @@ export default function ExercisePanel({ exercise, results, devices, readOnly, do
     return (
       <>
         <h2>TP</h2>
-        <p className="hint">Transforme ce schéma en exercice : écris une consigne, ajoute des objectifs (pings, adjacences OSPF, sessions BGP, baux DHCP, routes…), puis casse le réseau.</p>
+        <p className="hint">Transforme ce schéma en exercice : écris une consigne, ajoute des objectifs (pings, DNS, web, NAT, OSPF/EIGRP/BGP/RIP, DHCP, routes IPv4 et IPv6, Spanning Tree, EtherChannel, VTP, port-security, ACL), puis casse le réseau.</p>
         <p className="hint">L'élève voit les objectifs se valider en direct pendant qu'il répare, avec des indices s'il bloque. Partage le lien de lecture : il le duplique pour travailler.</p>
         <p className="hint">Exemples tout prêts dans le menu Démos (« TP : … »).</p>
         {!readOnly && <button type="button" onClick={() => { onChange(EMPTY_EXERCISE); setEditing(true); }}>Créer un TP</button>}
