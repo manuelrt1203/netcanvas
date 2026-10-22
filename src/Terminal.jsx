@@ -13,7 +13,7 @@ function getSession(store, device, shell) {
 
 const MAX_LINES = 1000;
 
-export default function Terminal({ device, doc, sessions, onChange, onPing, onRuntime }) {
+export default function Terminal({ device, doc, sessions, onChange, onPing, onRuntime, onCommand }) {
   const shell = shellFor(device);
   const session = getSession(sessions, device, shell);
   const [lines, setLines] = useState(session.lines);
@@ -35,6 +35,7 @@ export default function Terminal({ device, doc, sessions, onChange, onPing, onRu
 
   const submit = (line) => {
     const echo = `${prompt}${line}`;
+    if (line.trim()) onCommand?.(device, line.trim());
     const r = runLine(shell, session.state, line, device, doc);
     if (line.trim()) session.history = [...session.history.filter((h) => h !== line), line].slice(-100);
     if (r.effects.some((e) => e.type === 'clear')) {

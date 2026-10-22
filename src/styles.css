@@ -567,3 +567,10 @@ button.link { background: none; border: 0; padding: 0; color: var(--primary); fo
 /* Mention React Flow : gris #999 de la bibliothèque trop pâle (2,85:1). */
 .react-flow__attribution { background: var(--surface); }
 .react-flow__attribution a { color: var(--muted); }
+
+/* Journal d'actions d'une copie (mode examen) */
+.log-flag { color: var(--danger); }
+.log-flags { margin: 8px 0; padding-left: 20px; color: var(--danger); }
+.log-table { font-variant-numeric: tabular-nums; }
+.log-table td:nth-child(3) { font-family: ui-monospace, monospace; word-break: break-word; }
+.log-table td:first-child { white-space: nowrap; }

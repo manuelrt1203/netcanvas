@@ -38,8 +38,10 @@ import ConfigImport from './ConfigImport.jsx';
 import ExercisePanel from './ExercisePanel.jsx';
 import { evaluateExercise } from './net/exercise.js';
 import { createExam, loadExam, parseExamLocation, rememberExam, startExam, submitExam } from './share.js';
-import { ExamBanner, ExamDashboard, ExamStart } from './ExamViews.jsx';
-import { examSession, newClientId, remainingSeconds, saveExamSession } from './exam.js';
+import { ExamBanner, ExamDashboard, ExamLogView, ExamStart } from './ExamViews.jsx';
+import { examSession, examSettings, exerciseFor, newClientId, remainingSeconds, saveExamSession } from './exam.js';
+import { cut, pushEntry, summarizeEdit } from './examlog.js';
+import { variantOf } from './net/variant.js';
 import { applyPatch, collabEnabled, diffDocs, joinCollab, myIdentity } from './collab.js';
 import { claimShared, collabKeyOf, createShared, loadShared, setShareExpiry, myShares, parseShareLocation, rememberShare, saveShared, shareEnabled, shareLinks, sharedAccess } from './share.js';
 import { accountsEnabled, currentUser, handleAuthRedirect, onUserChange } from './account.js';
@@ -250,6 +252,7 @@ function Editor() {
     return loc ? { ...loc, role: loc.token ? 'admin' : 'student', status: loc.token ? 'dashboard' : 'loading' } : null;
   });
   const [examNow, setExamNow] = useState(Date.now());
+  const [logOpen, setLogOpen] = useState(false);
   const examLocked = exam?.status === 'submitted' || exam?.status === 'copy' || exam?.status === 'start';
 
   const readOnly = Boolean(shared && !editable) || examLocked;
@@ -263,23 +266,38 @@ function Editor() {
     const client = session?.client ?? newClientId();
     const r = await startExam(base.id, client, student);
     const offset = new Date(r.serverNow).getTime() - Date.now();
+    // Sujet personnel quand l'examen a des variantes (adresses et VLAN propres à l'étudiant)
+    const subject = base.settings.variants ? variantOf(base.template, base.settings.salt ?? '', student).doc : base.template;
     const next = { ...session, client, student, startedAt: r.startedAt, submittedAt: r.submittedAt };
     saveExamSession(base.id, next);
-    replaceDoc(loadDoc(next.doc ?? base.template));
+    examLog.current = session?.log ?? (base.settings.log ? [{ t: 0, k: 'start', x: 'Début de l\'épreuve' }] : []);
+    replaceDoc(loadDoc(next.doc ?? subject));
     lastExamSave.current = null;
     setExam({ ...base, student, client, startedAt: r.startedAt, offset, submittedAt: r.submittedAt, status: r.submittedAt ? 'submitted' : 'running' });
   };
   const lastExamSave = useRef(null);
+  // Journal d'actions (voir examlog.js) : gardé en mémoire, sur le poste, et remis avec la copie
+  const examLog = useRef([]);
+  const examRef = useRef(null);
+  examRef.current = exam;
+  const logExam = (k, x, extra = {}) => {
+    const e = examRef.current;
+    if (e?.role !== 'student' || e.status !== 'running' || !e.settings?.log) return;
+    const t = Math.max(0, Math.round((Date.now() + e.offset - new Date(e.startedAt).getTime()) / 1000));
+    examLog.current = pushEntry(examLog.current, { t, k, x, ...extra });
+  };
+  const logExamRef = useRef(logExam);
+  logExamRef.current = logExam;
   useEffect(() => {
     if (exam?.role !== 'student' || exam.status !== 'loading') return;
     loadExam(exam.id)
       .then(async (row) => {
         if (!row) throw new Error('Cet examen n\'existe pas (ou plus).');
-        const base = { ...exam, title: row.title, settings: row.settings, template: row.template, closed: row.closed };
+        const base = { ...exam, title: row.title, settings: examSettings(row), template: row.template, closed: row.closed };
         const session = examSession(exam.id);
         if (session?.student) await beginExam(base, session.student, session);
         else {
-          replaceDoc(loadDoc(row.template));
+          replaceDoc(loadDoc(base.settings.variants ? EMPTY_DOC : row.template));
           setExam({ ...base, status: 'start' });
         }
       })
@@ -296,12 +314,59 @@ function Editor() {
     if (exam?.status !== 'running') return;
     saveExamSession(exam.id, { ...examSession(exam.id), doc });
   }, [doc, exam?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Journal : modifications du schéma, collages, textes copiés, sorties de la fenêtre ; sauvegardé sur le poste
+  const prevExamDoc = useRef(null);
+  useEffect(() => {
+    if (exam?.role !== 'student' || exam.status !== 'running') { prevExamDoc.current = null; return; }
+    const text = prevExamDoc.current ? summarizeEdit(prevExamDoc.current, doc) : null;
+    prevExamDoc.current = doc;
+    if (text) logExamRef.current('edit', text);
+  }, [doc, exam?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (exam?.role !== 'student' || exam.status !== 'running' || !exam.settings?.log) return undefined;
+    const log = (...a) => logExamRef.current(...a);
+    let leftAt = null;
+    const leave = () => { if (leftAt === null) leftAt = Date.now(); };
+    const back = () => {
+      if (leftAt === null) return;
+      const dur = Math.round((Date.now() - leftAt) / 1000);
+      leftAt = null;
+      if (dur >= 3) log('out', `sortie de la fenêtre (${dur} s)`, { dur });
+    };
+    const onVisibility = () => (document.hidden ? leave() : back());
+    const onPaste = (e) => {
+      const text = e.clipboardData?.getData('text') ?? '';
+      if (!text) return;
+      const where = e.target?.closest?.('.terminal') ? 'le terminal' : 'un champ';
+      log('paste', `collé dans ${where} (${text.length} car.) : « ${cut(text.replace(/\s+/g, ' '), 60)} »`, { len: text.length });
+    };
+    const onCopy = () => {
+      const text = String(window.getSelection?.() ?? '');
+      if (text.length >= 20) log('copy', `texte copié depuis la page (${text.length} car.) : « ${cut(text.replace(/\s+/g, ' '), 60)} »`, { len: text.length });
+    };
+    window.addEventListener('blur', leave);
+    window.addEventListener('focus', back);
+    document.addEventListener('visibilitychange', onVisibility);
+    document.addEventListener('paste', onPaste, true);
+    document.addEventListener('copy', onCopy, true);
+    const save = setInterval(() => saveExamSession(exam.id, { ...examSession(exam.id), log: examLog.current }), 5000);
+    return () => {
+      window.removeEventListener('blur', leave);
+      window.removeEventListener('focus', back);
+      document.removeEventListener('visibilitychange', onVisibility);
+      document.removeEventListener('paste', onPaste, true);
+      document.removeEventListener('copy', onCopy, true);
+      clearInterval(save);
+      saveExamSession(exam.id, { ...examSession(exam.id), log: examLog.current });
+    };
+  }, [exam?.status]); // eslint-disable-line react-hooks/exhaustive-deps
   const examRemaining = exam?.status === 'running' ? remainingSeconds(exam.startedAt, exam.settings.duration, exam.offset, examNow) : null;
   const handInExam = async () => {
     setExam((x) => ({ ...x, submitting: true, error: null }));
     try {
-      const at = await submitExam(exam.id, exam.client, doc);
-      saveExamSession(exam.id, { ...examSession(exam.id), doc, submittedAt: at });
+      const sent = exam.settings?.log ? { ...doc, examLog: examLog.current } : doc;
+      const at = await submitExam(exam.id, exam.client, sent);
+      saveExamSession(exam.id, { ...examSession(exam.id), doc, log: examLog.current, submittedAt: at });
       setExam((x) => ({ ...x, status: 'submitted', submittedAt: at, submitting: false }));
     } catch (err) {
       setExam((x) => ({ ...x, submitting: false, error: err.message }));
@@ -315,7 +380,10 @@ function Editor() {
   }, [examRemaining]); // eslint-disable-line react-hooks/exhaustive-deps
   // Prof : sujet = schéma actuel (avec son TP), liens gardés dans ce navigateur
   const createExamFromTp = async (settings) => {
-    const created = await createExam(settings.title, doc, settings);
+    // La base ne garde que durée, indices et progression : variantes, sel et journal partent dans le sujet
+    const options = { variants: Boolean(settings.variants), log: Boolean(settings.log) };
+    if (options.variants) options.salt = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+    const created = await createExam(settings.title, { ...doc, examOptions: options }, settings);
     rememberExam({ id: created.id, token: created.token, title: settings.title, at: new Date().toISOString() });
     return created;
   };
@@ -783,6 +851,7 @@ function Editor() {
     const service = mode === 'dns' || mode === 'web';
     const result = service ? runService(live, src, mode, dst, { topo, routing }) : simulatePing(live, src, dst, { topo, routing });
     keepNat(result);
+    logExam('sim', `${mode} ${live.devices.find((d) => d.id === src)?.label ?? src} → ${dst} : ${result.ok ? 'réussi' : 'échec'}`);
     if (mode === 'trace') result.trace = traceroute(live, src, dst);
     setSim({ result, sig: configSig(doc), playing: false, view: EMPTY_SIM, step: null });
     if (stepwise && result.frames?.length) showFrame(result, 0);
@@ -1020,8 +1089,12 @@ function Editor() {
             <div className="exam-banner" role="status">
               <strong>Copie de {exam.copy.student}</strong>
               <span>{exam.copy.note === null ? 'non rendue' : `${String(exam.copy.note).replace('.', ',')}/20 (${exam.copy.score}/${exam.copy.total} objectifs)`}</span>
+              {exam.copy.log && <button type="button" className="small-btn" onClick={() => setLogOpen(true)}>Journal d'actions</button>}
               <button type="button" className="small-btn" onClick={() => setExam((x) => ({ ...x, status: 'dashboard' }))}>Retour au suivi</button>
             </div>
+          )}
+          {exam?.status === 'copy' && logOpen && exam.copy.log && (
+            <ExamLogView student={exam.copy.student} log={exam.copy.log} onClose={() => setLogOpen(false)} />
           )}
           {update && <UpdateBanner update={update} onClose={() => setUpdate(null)} />}
           {shared && !shared.embed && (
@@ -1178,7 +1251,8 @@ function Editor() {
                   terminal={hasTerminal(selectedDevice) && (
                     <Suspense fallback={<p className="hint">Chargement du terminal…</p>}>
                       <Terminal key={selected.id} device={selectedDevice} doc={doc} sessions={sessions.current}
-                        onChange={(dev) => updateNode(selected.id)(() => deviceToData(dev, doc.links))} onPing={pingFromTerminal} onRuntime={(update) => setRuntime(update)} />
+                        onChange={(dev) => updateNode(selected.id)(() => deviceToData(dev, doc.links))} onPing={pingFromTerminal} onRuntime={(update) => setRuntime(update)}
+                        onCommand={(dev, line) => logExam('cmd', `${dev.label} › ${line}`)} />
                     </Suspense>
                   )} />
               ) : selectedNodes.length > 1 ? (
@@ -1305,8 +1379,10 @@ function Editor() {
             <ExamDashboard id={exam.id} token={exam.token}
               onClose={() => { setLocation(''); setExam(null); replaceDoc(loadDoc(EMPTY_DOC)); setWelcome(true); }}
               onOpenCopy={(g, template) => {
-                replaceDoc(loadDoc({ ...g.doc, exercise: template.exercise }));
-                setExam((x) => ({ ...x, status: 'copy', copy: { student: g.student, note: g.note, score: g.score, total: g.total } }));
+                const { examLog: copyLog, ...copyDoc } = g.doc;
+                replaceDoc(loadDoc({ ...copyDoc, exercise: exerciseFor(template, g.student) }));
+                setLogOpen(false);
+                setExam((x) => ({ ...x, status: 'copy', copy: { student: g.student, note: g.note, score: g.score, total: g.total, log: copyLog ?? null } }));
                 setTab('tp');
               }} />
           )}

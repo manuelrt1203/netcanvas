@@ -181,7 +181,7 @@ export default function ExercisePanel({ exercise, results, devices, readOnly, do
         })}
       </ol>
       {onCreateExam && !readOnly && !examRules && total > 0 && (
-        examForm ? <ExamCreateForm defaultTitle={exercise.title} onCreate={onCreateExam} />
+        examForm ? <ExamCreateForm defaultTitle={exercise.title} subject={doc} onCreate={onCreateExam} />
           : <button type="button" className="ghost" onClick={() => setExamForm(true)}>Créer un examen chronométré…</button>
       )}
     </>

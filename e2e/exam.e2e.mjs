@@ -37,6 +37,9 @@ step('étudiante 1 : nom, épreuve, objectifs sans statut, remise');
 const alice = await newPage();
 await alice.goto(studentLink);
 await alice.getByText('Durée : 1 minutes').waitFor();
+// L'étudiant est prévenu : sujet personnel et journal d'actions
+assert.ok(await alice.getByText(/Ton sujet est personnel/).isVisible());
+assert.ok(await alice.getByText(/journal de tes actions/).isVisible());
 await alice.getByLabel('Ton nom et prénom').fill('Alice Martin');
 await alice.click('role=button[name="Commencer l\'épreuve"]');
 await alice.locator('.exam-clock').waitFor();
@@ -44,6 +47,10 @@ assert.equal(await alice.locator('summary:has-text("Fichier")').count(), 0, 'pas
 await alice.click('role=tab[name=/^TP/]');
 assert.ok(await alice.getByText('la vérification des objectifs est masquée').isVisible());
 assert.equal(await alice.locator('.tp-objectives li.ok').count(), 0, 'aucun statut affiché');
+// Variante : les objectifs d'Alice n'ont pas les adresses du sujet d'origine (PC Compta ping 192.168.20.10)
+const aliceObjectives = (await alice.locator('.tp-objectives li').allTextContents()).join(' | ');
+assert.ok(aliceObjectives.includes('PC Compta ping 192.168.'), aliceObjectives);
+assert.ok(!aliceObjectives.includes('192.168.20.10'), `l'objectif n'a pas été décliné : ${aliceObjectives}`);
 assert.equal(await alice.getByRole('button', { name: 'Indice' }).count(), 0, 'pas d\'indice');
 // Reprise après rechargement : même chrono (départ du serveur)
 const before = await alice.locator('.exam-clock').textContent();
@@ -59,6 +66,10 @@ const bob = await newPage();
 await bob.goto(studentLink);
 await bob.getByLabel('Ton nom et prénom').fill('Bob Durand');
 await bob.click('role=button[name="Commencer l\'épreuve"]');
+await bob.locator('.exam-clock').waitFor();
+await bob.click('role=tab[name=/^TP/]');
+const bobObjectives = (await bob.locator('.tp-objectives li').allTextContents()).join(' | ');
+assert.ok(!bobObjectives.includes('192.168.20.10'), `l'objectif de Bob n'a pas été décliné : ${bobObjectives}`);
 await bob.getByText(/Copie rendue à/).waitFor({ timeout: 90000 });
 
 step('suivi du prof : notes recalculées, copie, CSV, clôture');
@@ -66,6 +77,8 @@ await prof.goto(adminLink);
 await prof.locator('.exam-table tbody tr').nth(1).waitFor();
 const rows = await prof.locator('.exam-table tbody tr').allTextContents();
 assert.equal(rows.length, 2);
+assert.ok(await prof.getByRole('columnheader', { name: 'Journal' }).isVisible(), 'colonne Journal');
+assert.ok(rows.every((r) => /cmd/.test(r)), `résumé du journal : ${rows.join(' / ')}`);
 assert.ok(rows.every((r) => /\/20/.test(r) && /rendue/.test(r)), rows.join('\n'));
 const [download] = await Promise.all([prof.waitForEvent('download'), prof.click('role=button[name="Exporter les notes (CSV)"]')]);
 const csv = readFileSync(await download.path(), 'utf8');
@@ -73,6 +86,11 @@ assert.match(csv, /Examen e2e inter-VLAN;Alice Martin;\d+;\d+;[\d,]+;rendue/);
 await prof.locator('.exam-table tr', { hasText: 'Alice Martin' }).getByRole('button', { name: 'Voir la copie' }).click();
 await prof.getByText('Copie de Alice Martin').waitFor();
 assert.equal(await prof.locator('.app.read-only').count(), 1);
+// Journal de la copie : chronologie avec le début de l'épreuve
+await prof.click('role=button[name="Journal d\'actions"]');
+await prof.getByRole('heading', { name: 'Journal de Alice Martin' }).waitFor();
+assert.ok(await prof.locator('.log-table tbody tr', { hasText: 'Début' }).count() >= 1, 'début de l\'épreuve dans le journal');
+await prof.click('role=button[name="Fermer le journal"]');
 await prof.click('role=button[name="Retour au suivi"]');
 await prof.click('role=button[name="Clore l\'examen"]');
 await prof.getByText('examen clos').waitFor();

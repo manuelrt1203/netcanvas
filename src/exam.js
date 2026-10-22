@@ -2,6 +2,16 @@
 // La note est recalculée à partir du schéma rendu et des objectifs du SUJET (jamais ceux de la copie) :
 // une copie ne peut pas se donner des points.
 import { evaluateExercise } from './net/exercise.js';
+import { variantOf } from './net/variant.js';
+
+// Réglages d'un examen. La base ne conserve que durée, indices et progression : les options ajoutées depuis
+// (variantes, sel, journal) voyagent dans le sujet lui-même, sous `examOptions`.
+export const examSettings = (row) => ({ ...(row?.settings ?? {}), ...(row?.template?.examOptions ?? {}) });
+
+// Objectifs de CET étudiant : ceux du sujet, adaptés à sa variante quand l'examen en a (voir net/variant.js)
+export const exerciseFor = (template, student) => (template?.settings?.variants
+  ? variantOf(template, template.settings.salt ?? '', student).doc.exercise
+  : template.exercise);
 
 export const LATE_GRACE = 60; // secondes de tolérance après la fin de l'épreuve
 
@@ -12,7 +22,7 @@ export function gradeSubmission(sub, template) {
   const late = submitted !== null && minutes > 0 && submitted > started + (minutes * 60 + LATE_GRACE) * 1000;
   const base = { student: sub.student, startedAt: sub.started_at, submittedAt: sub.submitted_at, late };
   if (!sub.doc || submitted === null) return { ...base, status: 'en cours', score: null, total: null, note: null, minutes: null, results: [] };
-  const results = evaluateExercise({ ...sub.doc, exercise: template.exercise });
+  const results = evaluateExercise({ ...sub.doc, exercise: exerciseFor(template, sub.student) });
   const score = results.filter((r) => r.ok).length;
   const total = results.length;
   return {
