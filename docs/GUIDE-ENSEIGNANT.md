@@ -30,9 +30,17 @@ Dans l'onglet TP : *Créer un examen chronométré*. Le schéma actuel (avec ses
 
 Conseil : faites d'abord le TP vous-même en mode élève (lien en lecture, « Dupliquer pour modifier ») pour vérifier que les pannes sont réparables.
 
+### Séance de TP en direct (sans note)
+
+Dans l'onglet TP : *Lancer une séance en direct*. Les étudiants ouvrent le lien, saisissent leur nom et travaillent sur le TP ; vous voyez leur avancement objectif par objectif, en direct, et l'objectif le moins réussi de la classe (à reprendre au tableau). Seule la progression remonte, **jamais leur schéma**. La séance expire au bout de 24 h ; vous pouvez la clore ou la supprimer avant.
+
+### Supprimer un examen
+
+Dans le suivi de l'examen (ou « Mon compte » → Mes examens) : *Supprimer l'examen et les copies*. C'est définitif : exportez d'abord les notes (CSV).
+
 ## 3. Données et vie privée
 
-Les examens stockent le nom saisi par l'étudiant, son schéma rendu et le journal d'actions, dans un projet Supabase (UE). Rien d'autre. Pensez à indiquer la durée de conservation à vos étudiants et à supprimer l'examen une fois les notes validées.
+Les examens stockent le nom saisi par l'étudiant, son schéma rendu et le journal d'actions, dans un projet Supabase (UE). Rien d'autre. Pensez à indiquer la durée de conservation à vos étudiants et à supprimer l'examen une fois les notes validées (bouton « Supprimer l'examen et les copies »). Les séances en direct ne gardent que le nom et la progression, et disparaissent après 24 h.
 
 ## 4. Séance en salle : check-list
 

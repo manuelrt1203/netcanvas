@@ -37,8 +37,9 @@ import TablesPanel from './TablesPanel.jsx';
 import ConfigImport from './ConfigImport.jsx';
 import ExercisePanel from './ExercisePanel.jsx';
 import { evaluateExercise } from './net/exercise.js';
-import { createExam, loadExam, parseExamLocation, rememberExam, startExam, submitExam } from './share.js';
+import { createExam, createLive, joinLive, liveStored, loadExam, loadLive, parseExamLocation, parseLiveLocation, rememberExam, rememberLive, reportLive, saveLiveStored, startExam, submitExam } from './share.js';
 import { ExamBanner, ExamDashboard, ExamLogView, ExamStart } from './ExamViews.jsx';
+import { LiveBanner, LiveDashboard, LiveStart } from './LiveViews.jsx';
 import { examSession, examSettings, exerciseFor, newClientId, remainingSeconds, saveExamSession } from './exam.js';
 import { cut, pushEntry, summarizeEdit } from './examlog.js';
 import { variantOf } from './net/variant.js';
@@ -187,7 +188,7 @@ function Editor() {
   const [savedSig, setSavedSig] = useState(null);
   const [cleanTick, setCleanTick] = useState(0);
   // Accueil au lancement, sauf lien de partage
-  const [welcome, setWelcome] = useState(() => !parseShareLocation() && !parseExamLocation());
+  const [welcome, setWelcome] = useState(() => !parseShareLocation() && !parseExamLocation() && !parseLiveLocation());
   const [recents, setRecents] = useState([]);
   // Mise à jour de l'application de bureau : { state: downloading | ready | manual | error, version, percent, url }
   const [update, setUpdate] = useState(null);
@@ -254,8 +255,15 @@ function Editor() {
   const [examNow, setExamNow] = useState(Date.now());
   const [logOpen, setLogOpen] = useState(false);
   const examLocked = exam?.status === 'submitted' || exam?.status === 'copy' || exam?.status === 'start';
+  // Séance de TP en direct : liveSession : { id, role: student | admin, token (admin), status: loading | start | running | error | dashboard,
+  //   title, template, closed, student, client, fromEditor }
+  const [liveSession, setLiveSession] = useState(() => {
+    const loc = parseLiveLocation();
+    return loc ? { ...loc, role: loc.token ? 'admin' : 'student', status: loc.token ? 'dashboard' : 'loading' } : null;
+  });
+  const [liveReport, setLiveReport] = useState('ok');
 
-  const readOnly = Boolean(shared && !editable) || examLocked;
+  const readOnly = Boolean(shared && !editable) || examLocked || liveSession?.status === 'start';
   const setLocation = (query) => {
     // Application de bureau (file://) : l'adresse ne sert pas, on n'y touche pas
     if (!desktop) window.history.replaceState(null, '', `${window.location.pathname}${query}`);
@@ -391,6 +399,56 @@ function Editor() {
     setWelcome(false);
     setLocation(`?exam=${id}#admin=${token ?? 'compte'}`);
     setExam({ id, token: token ?? 'compte', role: 'admin', status: 'dashboard' });
+  };
+
+  // --- Séance de TP en direct ----------------------------------------------------------
+  // Étudiant : charge le sujet, rejoint (même poste = même place), puis envoie sa progression (jamais le schéma)
+  const beginLive = async (base, student, saved) => {
+    const client = saved?.client ?? newClientId();
+    await joinLive(base.id, client, student);
+    saveLiveStored(base.id, { client, student });
+    replaceDoc(loadDoc(base.template));
+    setLiveReport('ok');
+    setLiveSession({ ...base, client, student, status: 'running' });
+  };
+  useEffect(() => {
+    if (liveSession?.role !== 'student' || liveSession.status !== 'loading') return;
+    loadLive(liveSession.id)
+      .then(async (row) => {
+        if (!row) throw new Error('Cette séance n\'existe pas (ou plus : elle expire au bout de 24 h).');
+        const base = { ...liveSession, title: row.title, template: row.template, closed: row.closed };
+        const saved = liveStored(base.id);
+        if (saved?.student && !row.closed) await beginLive(base, saved.student, saved);
+        else {
+          replaceDoc(loadDoc(row.template));
+          setLiveSession({ ...base, status: 'start' });
+        }
+      })
+      .catch((err) => setLiveSession((x) => ({ ...x, status: 'error', message: err.message })));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveSession?.status]);
+  useEffect(() => {
+    if (liveSession?.role !== 'student' || liveSession.status !== 'running') return undefined;
+    const send = () => {
+      const progress = tpResults.map((r) => ({ text: String(r.text ?? '').slice(0, 200), ok: Boolean(r.ok), weight: r.weight ?? 1 }));
+      reportLive(liveSession.id, liveSession.client, progress, progress.filter((p) => p.ok).length, progress.length)
+        .then(() => setLiveReport('ok'))
+        .catch(() => setLiveReport('error'));
+    };
+    const first = setTimeout(send, 1500); // après une rafale de modifications
+    const beat = setInterval(send, 30000); // et régulièrement : le prof voit qui est encore là
+    return () => { clearTimeout(first); clearInterval(beat); };
+  }, [tpResults, liveSession?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Prof : sujet = schéma actuel (avec son TP) ; lien de suivi gardé dans ce navigateur
+  const createLiveFromTp = async ({ title }) => {
+    const created = await createLive(title, doc);
+    rememberLive({ id: created.id, token: created.token, title, at: new Date().toISOString() });
+    return created;
+  };
+  const openLiveAdmin = (id, token, fromEditor = false) => {
+    setWelcome(false);
+    setLocation(`?live=${id}#admin=${token}`);
+    setLiveSession({ id, token, role: 'admin', status: 'dashboard', fromEditor });
   };
 
   // --- Compte ----------------------------------------------------------------------
@@ -1085,6 +1143,10 @@ function Editor() {
             <ExamBanner exam={exam} remaining={examRemaining} submitted={exam.submittedAt} submitting={exam.submitting} error={exam.error} onSubmit={handInExam} />
           )}
           {exam?.status === 'error' && <p className="error" role="alert">Examen : {exam.message}</p>}
+          {liveSession?.role === 'student' && liveSession.status === 'running' && (
+            <LiveBanner live={liveSession} score={tpResults.filter((r) => r.ok).length} total={tpResults.length} state={liveReport} />
+          )}
+          {liveSession?.status === 'error' && <p className="error" role="alert">Séance : {liveSession.message}</p>}
           {exam?.status === 'copy' && (
             <div className="exam-banner" role="status">
               <strong>Copie de {exam.copy.student}</strong>
@@ -1271,7 +1333,9 @@ function Editor() {
                 <ExercisePanel exercise={exercise} results={tpResults} devices={live.devices} doc={live} readOnly={readOnly}
                   onChange={setExercise} onLocate={selectNode}
                   examRules={exam?.role === 'student' ? exam.settings : null}
-                  onCreateExam={shareEnabled && !exam ? createExamFromTp : null} />
+                  onCreateExam={shareEnabled && !exam && !liveSession ? createExamFromTp : null}
+                  onCreateLive={shareEnabled && !exam && !liveSession ? createLiveFromTp : null}
+                  onOpenLive={(id, token) => openLiveAdmin(id, token, true)} />
               )}
               {tab === 'tables' && (
                 <TablesPanel device={selected ? live.devices.find((d) => d.id === selected.id) : null} doc={live} routing={routing}
@@ -1386,7 +1450,20 @@ function Editor() {
                 setTab('tp');
               }} />
           )}
-          {welcome && !exam && (
+          {liveSession?.role === 'student' && liveSession.status === 'start' && (
+            <LiveStart live={liveSession} error={liveSession.error}
+              onStart={(name) => beginLive(liveSession, name, liveStored(liveSession.id)).catch((err) => setLiveSession((x) => ({ ...x, error: err.message })))} />
+          )}
+          {liveSession?.role === 'admin' && liveSession.status === 'dashboard' && (
+            <LiveDashboard id={liveSession.id} token={liveSession.token}
+              onClose={() => {
+                const fromEditor = liveSession.fromEditor;
+                setLocation('');
+                setLiveSession(null);
+                if (!fromEditor) { replaceDoc(loadDoc(EMPTY_DOC)); setWelcome(true); }
+              }} />
+          )}
+          {welcome && !exam && !liveSession && (
             <Welcome version={VERSION} recents={recents}
               draft={draft?.nodes.length && !file && !(desktop && nodes.length) ? { name: draft.name ?? 'Mon réseau', count: draft.nodes.length, recover: Boolean(desktop) } : null}
               onNew={newProject} onOpen={openProject} onRecent={(r) => openPath(r.path)}

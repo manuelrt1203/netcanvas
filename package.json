@@ -20,6 +20,7 @@
     "test:desktop": "node e2e/desktop.e2e.mjs",
     "test:account": "node e2e/account.e2e.mjs",
     "test:exam": "node e2e/exam.e2e.mjs",
+    "test:live": "node e2e/live.e2e.mjs",
     "test:collab": "node e2e/collab.e2e.mjs"
   },
   "dependencies": {

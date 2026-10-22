@@ -117,6 +117,8 @@ export async function examAdmin(id, token) {
 export const listSubmissions = (id, token) => rpc('list_submissions', { p_id: id, p_token: token });
 export const setExamClosed = (id, token, closed) => rpc('set_exam_closed', { p_id: id, p_token: token, p_closed: closed });
 export const myExams = () => rpc('my_exams', {});
+// Supprime l'examen ET toutes ses copies (irréversible). Connecté en propriétaire, le jeton n'est pas nécessaire.
+export const deleteExam = (id, token) => rpc('delete_exam', { p_id: id, p_token: token ?? null });
 
 export function examLinks(id, token, origin = siteOrigin()) {
   const student = `${origin}/?exam=${id}`;
@@ -129,6 +131,84 @@ export function parseExamLocation(loc = window.location) {
   return { id, token: new URLSearchParams(loc.hash.slice(1)).get('admin') || null };
 }
 
+// --- Séance de TP en direct -------------------------------------------------------------------
+// Prof : create_live -> lien étudiant (?live=<id>) et lien de suivi (#admin=<jeton>). Étudiant : join_live puis
+// report_live (progression seulement : jamais le schéma). La séance expire au bout de 24 h.
+export async function createLive(title, template) {
+  const [row] = await rpc('create_live', { p_title: title, p_template: template });
+  return { id: row.live_id, token: row.admin_token };
+}
+export async function loadLive(id) {
+  const [row] = await rpc('get_live', { p_id: id });
+  return row ?? null;
+}
+export const joinLive = (id, client, student) => rpc('join_live', { p_id: id, p_client: client, p_student: student });
+export const reportLive = (id, client, progress, score, total) =>
+  rpc('report_live', { p_id: id, p_client: client, p_progress: progress, p_score: score, p_total: total });
+// Une ligne par étudiant (aucune si personne n'a rejoint : les champs étudiant sont alors nuls)
+export async function liveState(id, token) {
+  const rows = await rpc('live_state', { p_id: id, p_token: token ?? null });
+  const head = rows[0];
+  if (!head) return null;
+  return {
+    title: head.title, closed: head.closed, expiresAt: head.expires_at, serverNow: head.server_now,
+    students: rows.filter((r) => r.student !== null).map((r) => ({
+      student: r.student, progress: r.progress ?? [], score: r.score, total: r.total, joinedAt: r.joined_at, updatedAt: r.updated_at,
+    })),
+  };
+}
+export const setLiveClosed = (id, token, closed) => rpc('set_live_closed', { p_id: id, p_token: token ?? null, p_closed: closed });
+export const deleteLive = (id, token) => rpc('delete_live', { p_id: id, p_token: token ?? null });
+export function liveLinks(id, token, origin = siteOrigin()) {
+  const student = `${origin}/?live=${id}`;
+  return { student, admin: token ? `${student}#admin=${token}` : null };
+}
+// ?live=<id>[#admin=<jeton>]
+export function parseLiveLocation(loc = window.location) {
+  const id = new URLSearchParams(loc.search).get('live');
+  if (!id || !/^[a-z0-9]{6,20}$/.test(id)) return null;
+  return { id, token: new URLSearchParams(loc.hash.slice(1)).get('admin') || null };
+}
+
+// Séances lancées depuis ce navigateur (le lien de suivi n'est pas récupérable ailleurs) et poste de l'étudiant
+const LIVES_KEY = 'netcanvas:lives';
+export function localLives() {
+  try {
+    return JSON.parse(localStorage.getItem(LIVES_KEY) ?? '[]');
+  } catch {
+    return [];
+  }
+}
+export function rememberLive(entry) {
+  try {
+    localStorage.setItem(LIVES_KEY, JSON.stringify([entry, ...localLives().filter((e) => e.id !== entry.id)].slice(0, 20)));
+  } catch {
+    /* stockage indisponible */
+  }
+}
+export function forgetLive(id) {
+  try {
+    localStorage.setItem(LIVES_KEY, JSON.stringify(localLives().filter((e) => e.id !== id)));
+  } catch {
+    /* stockage indisponible */
+  }
+}
+// Étudiant : identifiant du poste et nom, pour reprendre sa place après un rechargement
+export function liveStored(id) {
+  try {
+    return JSON.parse(localStorage.getItem(`netcanvas:live:${id}`) ?? 'null');
+  } catch {
+    return null;
+  }
+}
+export function saveLiveStored(id, value) {
+  try {
+    localStorage.setItem(`netcanvas:live:${id}`, JSON.stringify(value));
+  } catch {
+    /* stockage indisponible */
+  }
+}
+
 // Examens créés depuis ce navigateur (le lien de suivi n'est pas récupérable ailleurs, sauf compte)
 const EXAMS_KEY = 'netcanvas:exams';
 export function localExams() {
@@ -136,6 +216,13 @@ export function localExams() {
     return JSON.parse(localStorage.getItem(EXAMS_KEY) ?? '[]');
   } catch {
     return [];
+  }
+}
+export function forgetExam(id) {
+  try {
+    localStorage.setItem(EXAMS_KEY, JSON.stringify(localExams().filter((e) => e.id !== id)));
+  } catch {
+    /* stockage indisponible */
   }
 }
 export function rememberExam(entry) {

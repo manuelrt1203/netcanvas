@@ -98,6 +98,17 @@ const late = await newPage();
 await late.goto(studentLink);
 await late.getByText('Cet examen est clos').waitFor();
 
+step('prof : suppression de l\'examen et de ses copies');
+await prof.goto(adminLink);
+await prof.getByRole('button', { name: 'Supprimer l\'examen et les copies' }).click(); // la boîte de confirmation est acceptée
+await prof.getByRole('heading', { name: /Bienvenue|NetCanvas/ }).first().waitFor();
+const gone = await newPage();
+await gone.goto(studentLink);
+await gone.getByText(/n'existe pas/).waitFor();
+const goneAdmin = await newPage();
+await goneAdmin.goto(adminLink);
+await goneAdmin.getByText(/lien de suivi invalide/).waitFor();
+
 assert.deepEqual(errors, []);
 await browser.close();
 console.log(`OK ${examId}`);

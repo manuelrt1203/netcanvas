@@ -3,6 +3,7 @@
 import { useId, useState } from 'react';
 import { OBJECTIVES, hintFor } from './net/exercise.js';
 import { ExamCreateForm } from './ExamViews.jsx';
+import { LiveCreateForm } from './LiveViews.jsx';
 import { isValidIp } from './net/ip.js';
 import { isValidIp6 } from './net/ip6.js';
 
@@ -90,9 +91,10 @@ function ObjectiveEditor({ objective, devices, onChange, onRemove }) {
 }
 
 // examRules (épreuve en cours) : { hints, progress } ; le TP n'est alors pas modifiable.
-// onCreateExam (prof, partage disponible) : crée un examen à partir de ce TP.
-export default function ExercisePanel({ exercise, results, devices, readOnly, doc, onChange, onLocate, examRules = null, onCreateExam = null }) {
+// onCreateExam (prof, partage disponible) : crée un examen à partir de ce TP ; onCreateLive : lance une séance en direct.
+export default function ExercisePanel({ exercise, results, devices, readOnly, doc, onChange, onLocate, examRules = null, onCreateExam = null, onCreateLive = null, onOpenLive = null }) {
   const [examForm, setExamForm] = useState(false);
+  const [liveForm, setLiveForm] = useState(false);
   const [editing, setEditing] = useState(false);
   const [hints, setHints] = useState({}); // id de l'objectif -> niveau d'indice affiché
 
@@ -188,6 +190,10 @@ export default function ExercisePanel({ exercise, results, devices, readOnly, do
       {onCreateExam && !readOnly && !examRules && total > 0 && (
         examForm ? <ExamCreateForm defaultTitle={exercise.title} subject={doc} onCreate={onCreateExam} />
           : <button type="button" className="ghost" onClick={() => setExamForm(true)}>Créer un examen chronométré…</button>
+      )}
+      {onCreateLive && !readOnly && !examRules && total > 0 && (
+        liveForm ? <LiveCreateForm defaultTitle={exercise.title} onCreate={onCreateLive} onOpenDashboard={onOpenLive} />
+          : <button type="button" className="ghost" onClick={() => setLiveForm(true)}>Lancer une séance en direct…</button>
       )}
     </>
   );

@@ -1,6 +1,6 @@
 // Mode examen : création (prof, depuis un TP), début de l'épreuve et chrono (étudiant), suivi des copies (prof).
 import { useEffect, useId, useMemo, useState } from 'react';
-import { examAdmin, examLinks, listSubmissions, setExamClosed } from './share.js';
+import { deleteExam, examAdmin, examLinks, forgetExam, listSubmissions, setExamClosed } from './share.js';
 import { examSettings, formatClock, gradeSubmission, gradesCsv } from './exam.js';
 import { analyzeLog, clock, logSummary } from './examlog.js';
 import { variantSupport } from './net/variant.js';
@@ -180,6 +180,15 @@ export function ExamDashboard({ id, token, onOpenCopy, onClose }) {
             await setExamClosed(id, token, !exam.closed).catch((e) => setError(e.message));
             refresh();
           }}>{exam.closed ? 'Rouvrir l\'examen' : 'Clore l\'examen'}</button>
+          <button type="button" className="ghost small-btn danger-text" onClick={async () => {
+            const n = graded.length;
+            if (!confirm(`Supprimer l'examen « ${exam.title} » et ${n} copie${n > 1 ? 's' : ''} ? Les liens ne marcheront plus. Exporte les notes (CSV) d'abord si tu en as besoin : c'est irréversible.`)) return;
+            try {
+              await deleteExam(id, token);
+              forgetExam(id);
+              onClose?.(true);
+            } catch (e) { setError(e.message); }
+          }}>Supprimer l'examen et les copies</button>
         </div>
         {error && <p className="field-error">{error}</p>}
         {!graded.length ? <p className="hint">Aucun étudiant n'a encore commencé.</p> : (

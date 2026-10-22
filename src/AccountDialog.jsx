@@ -2,7 +2,7 @@
 // supprimer), rattachement des schémas partagés depuis ce navigateur, déconnexion.
 import { useEffect, useId, useState } from 'react';
 import { changePassword, resetPassword, signIn, signOut, signUp } from './account.js';
-import { claimShared, deleteShared, localExams, myDiagrams, myExams, myShares, renameShared } from './share.js';
+import { claimShared, deleteExam, deleteShared, forgetExam, localExams, myDiagrams, myExams, myShares, renameShared } from './share.js';
 
 function Field({ label, ...props }) {
   const id = useId();
@@ -142,7 +142,10 @@ function MyDiagrams({ onOpen, current, onRenameCurrent }) {
 // Examens créés : dans ce navigateur (lien de suivi gardé) et, connecté, ceux du compte
 function MyExams({ user, onOpenExam }) {
   const [owned, setOwned] = useState([]);
-  useEffect(() => { if (user) myExams().then(setOwned).catch(() => setOwned([])); }, [user]);
+  const [error, setError] = useState(null);
+  const [, bump] = useState(0);
+  const refresh = () => { if (user) myExams().then(setOwned).catch(() => setOwned([])); bump((n) => n + 1); };
+  useEffect(refresh, [user]); // eslint-disable-line react-hooks/exhaustive-deps
   const local = localExams();
   const list = [...owned.map((e) => ({ id: e.exam_id, title: e.title, at: e.created_at, closed: e.closed, submissions: e.submissions, token: local.find((l) => l.id === e.exam_id)?.token ?? null })),
     ...local.filter((l) => !owned.some((e) => e.exam_id === l.id)).map((l) => ({ ...l, closed: null, submissions: null }))];
@@ -157,10 +160,23 @@ function MyExams({ user, onOpenExam }) {
               <strong>{e.title}</strong>
               <span className="muted"> · créé le {new Date(e.at).toLocaleDateString('fr-FR')}{e.submissions !== null ? ` · ${e.submissions} copie${e.submissions > 1 ? 's' : ''} rendue${e.submissions > 1 ? 's' : ''}` : ''}{e.closed ? ' · clos' : ''}</span>
             </div>
-            <button type="button" className="small-btn" onClick={() => onOpenExam(e.id, e.token)}>Suivi</button>
+            <div className="row">
+              <button type="button" className="small-btn" onClick={() => onOpenExam(e.id, e.token)}>Suivi</button>
+              <button type="button" className="ghost small-btn danger-text" onClick={async () => {
+                const n = e.submissions;
+                if (!confirm(`Supprimer « ${e.title} »${n ? ` et ses ${n} copie${n > 1 ? 's' : ''}` : ' et ses copies'} ? C'est irréversible.`)) return;
+                try {
+                  await deleteExam(e.id, e.token);
+                  forgetExam(e.id);
+                  setError(null);
+                } catch (err) { setError(err.message); }
+                refresh();
+              }}>Supprimer</button>
+            </div>
           </li>
         ))}
       </ul>
+      {error && <p className="field-error">{error}</p>}
     </section>
   );
 }
