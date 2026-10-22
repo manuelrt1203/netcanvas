@@ -219,7 +219,9 @@ export async function fromGns3(project, files = new Map()) {
   const decode = async (key) => new TextDecoder().decode(await files.get(key)());
   for (const [nodeId, m] of mapped) {
     const kind = m.node.node_type;
-    const key = kind === 'dynamips' ? find(`project-files/dynamips/${nodeId}/`, /(^|\/)i\d+_startup-config\.cfg$/)
+    // Config d'un routeur Dynamips : startup-config de son dossier, sinon « <nom>.cfg » à la racine de project-files/dynamips
+    const byName = `project-files/dynamips/${m.node.name}.cfg`;
+    const key = kind === 'dynamips' ? find(`project-files/dynamips/${nodeId}/`, /(^|\/)i\d+_startup-config\.cfg$/) ?? (files.has(byName) ? byName : null)
       : kind === 'vpcs' ? find(`project-files/vpcs/${nodeId}/`, /^startup\.vpc$/)
         : m.docker ? find(`project-files/docker/${nodeId}/`, /^etc\/network\/interfaces$/) : null;
     if (!key) {

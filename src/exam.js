@@ -25,11 +25,14 @@ export function gradeSubmission(sub, template) {
   const results = evaluateExercise({ ...sub.doc, exercise: exerciseFor(template, sub.student) });
   const score = results.filter((r) => r.ok).length;
   const total = results.length;
+  // Note : points des objectifs atteints (poids de chacun, 1 par défaut) sur le total des points
+  const points = results.reduce((a, r) => a + (r.ok ? r.weight : 0), 0);
+  const max = results.reduce((a, r) => a + r.weight, 0);
   return {
     ...base,
     status: late ? 'en retard' : 'rendue',
-    score, total,
-    note: total ? Math.round((200 * score) / total) / 10 : null, // sur 20, au dixième
+    score, total, points, max,
+    note: max ? Math.round((200 * points) / max) / 10 : null, // sur 20, au dixième
     minutes: Math.round((submitted - started) / 6000) / 10,
     results,
   };
@@ -39,9 +42,13 @@ export function gradeSubmission(sub, template) {
 export function gradesCsv(title, graded) {
   const q = (v) => (v === null || v === undefined ? '' : /[;"\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
   const fmt = (d) => (d ? new Date(d).toLocaleString('fr-FR') : '');
-  const rows = [['Examen', 'Étudiant', 'Objectifs atteints', 'Objectifs', 'Note /20', 'Statut', 'Début', 'Remise', 'Durée (min)']];
+  // Détail par objectif : « O1 (×2) » = premier objectif, de poids 2 ; la case donne les points obtenus (0 si non atteint)
+  const shape = graded.find((g) => g.results?.length)?.results ?? [];
+  const detail = shape.map((r, i) => `O${i + 1}${r.weight !== 1 ? ` (×${r.weight})` : ''}`);
+  const rows = [['Examen', 'Étudiant', 'Objectifs atteints', 'Objectifs', 'Note /20', 'Statut', 'Début', 'Remise', 'Durée (min)', ...detail]];
   for (const g of graded) {
-    rows.push([title, g.student, g.score, g.total, g.note === null ? '' : String(g.note).replace('.', ','), g.status, fmt(g.startedAt), fmt(g.submittedAt), g.minutes === null ? '' : String(g.minutes).replace('.', ',')]);
+    rows.push([title, g.student, g.score, g.total, g.note === null ? '' : String(g.note).replace('.', ','), g.status, fmt(g.startedAt), fmt(g.submittedAt), g.minutes === null ? '' : String(g.minutes).replace('.', ','),
+      ...shape.map((_, i) => (g.results?.[i] ? (g.results[i].ok ? g.results[i].weight : 0) : ''))]);
   }
   return `﻿${rows.map((r) => r.map(q).join(';')).join('\r\n')}\r\n`;
 }

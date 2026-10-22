@@ -574,3 +574,4 @@ button.link { background: none; border: 0; padding: 0; color: var(--primary); fo
 .log-table { font-variant-numeric: tabular-nums; }
 .log-table td:nth-child(3) { font-family: ui-monospace, monospace; word-break: break-word; }
 .log-table td:first-child { white-space: nowrap; }
+.tp-weight { color: var(--muted, #667); font-size: .85em; font-weight: 600; }

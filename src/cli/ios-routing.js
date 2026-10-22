@@ -8,6 +8,7 @@ import { parseInterfaces } from './ios.js';
 import { SOURCES, WITH_PROCESS, parseRedistOptions } from '../net/redistribute.js';
 
 const isIp = (t) => isValidIp(t);
+const isRouteMapName = (t) => /^[A-Za-z0-9_.-]+$/.test(t);
 const isNum = (min, max) => (t) => /^\d+$/.test(t) && Number(t) >= min && Number(t) <= max;
 // Zone : « 0 » ou « 0.0.0.0 »
 const isArea = (t) => isNum(0, 4294967295)(t) || isValidIp(t);
@@ -46,6 +47,82 @@ function formatRoute(r) {
   if (r.proto.startsWith('S')) return `${code}${p} [${r.ad}/${r.metric}] via ${r.nextHop}`;
   if (r.proto === 'B') return `${code}${p} [${r.ad}/${r.metric}] via ${r.nextHop}, ${UPTIME}`;
   return `${code}${p} [${r.ad}/${r.metric}] via ${r.nextHop}, ${UPTIME}, ${long(r.iface)}`;
+}
+
+// « show ip route A.B.C.D » : le détail de la route qui sert cette adresse
+export function showIpRouteEntry(dev, doc, ipText) {
+  if (!isValidIp(ipText)) return ["% Invalid input detected at '^' marker.", ''];
+  const rib = computeRouting(doc).ribs.get(dev.id) ?? new Map();
+  const ip = parseIpNum(ipText);
+  const route = [...rib.values()].filter((r) => networkOf(ipText, r.mask) === r.net).sort((a, b) => b.mask - a.mask)[0];
+  if (!route) return ['% Network not in table', ''];
+  const head = `Routing entry for ${prefixText(route.net, route.mask)}`;
+  if (route.proto === 'C' || route.proto === 'L') {
+    return [head, `  Known via "connected", distance 0, metric 0 (connected, via interface)`, '  Routing Descriptor Blocks:', `  * directly connected, via ${long(route.iface)}`, '      Route metric is 0, traffic share count is 1', ''];
+  }
+  const r = routerOf(dev, doc);
+  const via = route.nextHop;
+  if (route.proto === 'B') {
+    const p = [...(r?.bgp.table.get(`${route.net}/${route.mask}`) ?? [])].find((x) => x.best);
+    return [head, `  Known via "bgp ${r?.bgp.asn}", distance ${route.ad}, metric ${route.metric}`,
+      ...(p?.asPath.length ? [`  Tag ${p.asPath[0]}, type ${p.ebgp ? 'external' : 'internal'}`] : []),
+      `  Last update from ${via} 00:05:00 ago`, '  Routing Descriptor Blocks:', `  * ${via}, from ${p?.peerIp ?? via}, 00:05:00 ago`,
+      `      Route metric is ${route.metric}, traffic share count is 1`, ...(p ? [`      AS Hops ${p.asPath.length}`] : []), ''];
+  }
+  const proto = route.proto.startsWith('D') ? `eigrp ${r?.eigrp.asn}` : route.proto.startsWith('O') ? `ospf ${dev.config?.ospf?.processId ?? 1}` : route.proto.startsWith('R') ? 'rip' : 'static';
+  return [head, `  Known via "${proto}", distance ${route.ad}, metric ${route.metric}${route.proto.includes('EX') || route.proto.includes('E2') ? ', type external' : ''}`,
+    `  Last update from ${via}${route.iface ? ` on ${long(route.iface)}` : ''}, 00:05:00 ago`, '  Routing Descriptor Blocks:',
+    `  * ${via}, from ${via}, 00:05:00 ago${route.iface ? `, via ${long(route.iface)}` : ''}`, `      Route metric is ${route.metric}, traffic share count is 1`, ''];
+}
+const parseIpNum = (t) => t.split('.').reduce((a, o) => ((a << 8) | Number(o)) >>> 0, 0);
+
+// « show ip bgp A.B.C.D[/len] » : tous les chemins du préfixe avec leurs attributs
+export function showBgpPrefix(dev, doc, text) {
+  const r = routerOf(dev, doc);
+  if (!r?.bgp.enabled) return ['% BGP not active', ''];
+  const [ipText, lenText] = text.split('/');
+  if (!isValidIp(ipText)) return ["% Invalid input detected at '^' marker.", ''];
+  const entry = [...r.bgp.table.values()].filter((paths) => paths[0] && (lenText === undefined ? networkOf(ipText, paths[0].mask) === paths[0].net : paths[0].mask === Number(lenText) && networkOf(ipText, paths[0].mask) === paths[0].net))
+    .sort((a, b) => b[0].mask - a[0].mask)[0];
+  if (!entry) return ['% Network not in table', ''];
+  const ordered = [...entry].sort((a, b) => Number(b.best) - Number(a.best));
+  const rows = [`BGP routing table entry for ${prefixText(entry[0].net, entry[0].mask)}, version ${r.bgp.table.size + 1}`,
+    `Paths: (${ordered.length} available, best #${ordered.findIndex((p) => p.best) + 1 || 1}, table Default-IP-Routing-Table)`, '  Advertised to update-groups:', '     1'];
+  for (const p of ordered) {
+    rows.push(`  ${p.asPath.length ? p.asPath.join(' ') : 'Local'}`);
+    const from = p.local ? `0.0.0.0 from 0.0.0.0 (${r.bgp.routerId})` : `${p.nextHop} from ${p.peerIp} (${p.peerRouterId})`;
+    rows.push(`    ${from}`);
+    const origin = { i: 'IGP', e: 'EGP', '?': 'incomplete' }[p.origin ?? 'i'];
+    const attrs = [`Origin ${origin}`, `metric ${p.metric ?? 0}`, `localpref ${p.localPref ?? 100}`,
+      ...(p.local ? ['weight 32768'] : p.weight ? [`weight ${p.weight}`] : []),
+      p.valid ? 'valid' : 'invalid', p.local ? 'sourced' : p.ebgp ? 'external' : 'internal', ...(p.best ? ['best'] : [])];
+    rows.push(`      ${attrs.join(', ')}`);
+  }
+  return [...rows, ''];
+}
+
+// « show ip bgp neighbors [A.B.C.D] »
+export function showBgpNeighbors(dev, doc, only = null) {
+  const r = routerOf(dev, doc);
+  if (!r?.bgp.enabled) return ['% BGP not active', ''];
+  const out = [];
+  for (const s of r.bgp.sessions) {
+    if (only && s.neighbor !== only) continue;
+    const up = s.state === 'Established';
+    const kind = s.remoteAs === r.bgp.asn ? 'internal' : 'external';
+    out.push(`BGP neighbor is ${s.neighbor},  remote AS ${s.remoteAs}, ${kind} link`,
+      `  BGP version 4, remote router ID ${up ? s.peer.bgp.routerId : '0.0.0.0'}`,
+      `  BGP state = ${up ? 'Established, up for 00:05:00' : 'Active'}`);
+    if (!up) out.push(`  % NetCanvas : ${s.reason}.`);
+    if (s.cfg.updateSource) out.push(`  Update source is ${long(s.cfg.updateSource)}`);
+    if (s.cfg.nextHopSelf) out.push('  NEXT_HOP is always this router');
+    if (s.cfg.weight) out.push(`  Default weight ${s.cfg.weight}`);
+    if (s.cfg.routeMapIn) out.push(`  Route map for incoming advertisements is ${s.cfg.routeMapIn}`);
+    if (s.cfg.routeMapOut) out.push(`  Route map for outgoing advertisements is ${s.cfg.routeMapOut}`);
+    if (up) out.push(`  Prefixes received: ${r.bgp.adjIn?.get(s.peer.id)?.size ?? 0}`);
+    out.push('');
+  }
+  return out.length ? out : ['% No such neighbor', ''];
 }
 
 export const routeFilters = () => Object.keys(FILTERS).map((f) => kw(f, `${f} routes`, { run: (c) => c.out.push(...showIpRoute(c.dev, c.doc, f)) }));
@@ -137,10 +214,17 @@ export function showBgp(dev, doc) {
     `   ${pad('Network', 17)}${pad('Next Hop', 20)}${'Metric'.padStart(6)} ${'LocPrf'.padStart(6)} ${'Weight'.padStart(6)} Path`,
   ];
   const entries = [...r.bgp.table.values()].flat().sort((a, b) => a.net - b.net || a.mask - b.mask || Number(b.best) - Number(a.best));
+  const shown = new Set();
   for (const p of entries) {
-    const status = `${p.valid ? '*' : ' '}${p.best ? '>' : ' '}${!p.local && !p.ebgp ? 'i' : ' '}`;
-    const locPrf = !p.local && !p.ebgp ? '100' : '';
-    rows.push(`${status}${pad(prefixText(p.net, p.mask), 17)}${pad(p.nextHop, 20)}${'0'.padStart(6)} ${locPrf.padStart(6)} ${String(p.local ? 32768 : 0).padStart(6)} ${[...p.asPath, p.origin ?? 'i'].join(' ')}`);
+    const status = `${p.ribFailure ? 'r' : p.valid ? '*' : ' '}${p.best ? '>' : ' '}${!p.local && !p.ebgp ? 'i' : ' '}`;
+    // Comme IOS : le réseau n'est écrit que sur la première ligne de ses chemins
+    const key = `${p.net}/${p.mask}`;
+    const network = shown.has(key) ? '' : prefixText(p.net, p.mask);
+    shown.add(key);
+    const metric = p.metric === undefined || p.metric === null ? '' : String(p.metric);
+    const locPrf = p.localPref != null ? String(p.localPref) : !p.local && !p.ebgp ? '100' : '';
+    const weight = p.weight ?? (p.local ? 32768 : 0);
+    rows.push(`${status}${pad(network, 17)}${pad(p.nextHop, 20)}${metric.padStart(6)} ${locPrf.padStart(6)} ${String(weight).padStart(6)} ${[...p.asPath, p.origin ?? 'i'].join(' ')}`);
   }
   return [...rows, '', ...explain(r, /^BGP : .* (n'annonce|reçoit)/), ''];
 }
@@ -159,7 +243,14 @@ export const routingShows = () => [
   }),
   kw('bgp', 'BGP information', {
     run: (c) => c.out.push(...showBgp(c.dev, c.doc)),
-    children: [kw('summary', 'Summary of BGP neighbor status', { run: (c) => c.out.push(...showBgpSummary(c.dev, c.doc)) })],
+    children: [
+      kw('summary', 'Summary of BGP neighbor status', { run: (c) => c.out.push(...showBgpSummary(c.dev, c.doc)) }),
+      kw('neighbors', 'Detailed information on TCP and BGP neighbor connections', {
+        run: (c) => c.out.push(...showBgpNeighbors(c.dev, c.doc)),
+        children: [arg('ip', 'A.B.C.D', 'Neighbor to display information about', isIp, { run: (c) => c.out.push(...showBgpNeighbors(c.dev, c.doc, c.args.ip)) })],
+      }),
+      arg('prefix', 'A.B.C.D[/len]', 'Network in the BGP routing table to display', (t) => /^\d+\.\d+\.\d+\.\d+(\/\d+)?$/.test(t), { run: (c) => c.out.push(...showBgpPrefix(c.dev, c.doc, c.args.prefix)) }),
+    ],
   }),
   kw('protocols', 'IP routing protocol process parameters and statistics', { run: (c) => c.out.push(...showIpProtocols(c.dev, c.doc)) }),
   kw('rip', 'IP RIP show commands', {
@@ -363,6 +454,16 @@ export function bgpTree(common) {
         touch(c);
       })]),
       option('next-hop-self', 'Disable the next hop calculation for this neighbor', (c, n) => { n.nextHopSelf = true; }),
+      option('route-map', 'Apply route map to neighbor', null, [arg('rm', 'WORD', 'Name of route map', isRouteMapName, {
+        children: ['in', 'out'].map((d) => kw(d, d === 'in' ? 'Apply map to incoming routes' : 'Apply map to outbound routes', {
+          run: (c) => {
+            const n = neighborOf(c);
+            if (!n) return c.out.push('% Specify remote-as or peer-group commands first', '');
+            n[d === 'in' ? 'routeMapIn' : 'routeMapOut'] = c.args.rm;
+            return touch(c);
+          },
+        })),
+      })]),
       option('weight', 'Set default weight for routes from this neighbor', null, [arg('w', '<0-65535>', 'default weight', isNum(0, 65535), {
         run: (c) => { const n = neighborOf(c); if (!n) return c.out.push('% Specify remote-as or peer-group commands first', ''); if (Number(c.args.w)) n.weight = Number(c.args.w); else delete n.weight; return touch(c); },
       })]),
@@ -376,6 +477,11 @@ export function bgpTree(common) {
     run: (c) => { bgpOf(c).neighbors = (bgpOf(c).neighbors ?? []).filter((n) => n.ip !== c.args.ip); touch(c); },
     children: [
       kw('next-hop-self', '', { run: (c) => { const n = neighborOf(c); if (n) delete n.nextHopSelf; touch(c); } }),
+      kw('route-map', '', {
+        children: [arg('rm', 'WORD', '', isRouteMapName, {
+          children: ['in', 'out'].map((d) => kw(d, '', { run: (c) => { const n = neighborOf(c); if (n) delete n[d === 'in' ? 'routeMapIn' : 'routeMapOut']; touch(c); } })),
+        })],
+      }),
       kw('update-source', '', { run: (c) => { const n = neighborOf(c); if (n) delete n.updateSource; touch(c); } }),
       kw('ebgp-multihop', '', { run: (c) => { const n = neighborOf(c); if (n) delete n.ebgpMultihop; touch(c); } }),
       kw('weight', '', { run: (c) => { const n = neighborOf(c); if (n) delete n.weight; touch(c); }, children: [rest('x', 'LINE', '', (c) => { const n = neighborOf(c); if (n) delete n.weight; touch(c); })] }),
@@ -405,6 +511,13 @@ export function bgpTree(common) {
         children: [
           kw('router-id', 'Override configured router identifier', { children: [arg('rid', 'A.B.C.D', 'Manually configured router identifier', isIp, { run: (c) => { bgpOf(c).routerId = c.args.rid; touch(c); } })] }),
           accept('log-neighbor-changes', 'Log neighbor up/down and reset reason'),
+          kw('default', 'Configure BGP defaults', {
+            children: [kw('local-preference', 'local preference (higher=more preferred)', {
+              children: [arg('lp', '<0-4294967295>', 'Configure default local preference value', isNum(0, 4294967295), { run: (c) => { bgpOf(c).defaultLocalPref = Number(c.args.lp); touch(c); } })],
+            })],
+          }),
+          accept('always-compare-med', 'Allow comparing MED from different neighbors'),
+          accept('deterministic-med', 'Pick the best-MED path among paths advertised by neighbor AS'),
         ],
       }),
       redistribute(true),
@@ -414,7 +527,8 @@ export function bgpTree(common) {
       kw('no', 'Negate a command or set its defaults', {
         children: [kw('neighbor', 'Specify a neighbor router', { children: [noNeighbor] }), network(false), redistribute(false),
           accept('synchronization', ''), accept('auto-summary', ''),
-          kw('bgp', '', { children: [kw('router-id', '', { run: (c) => { delete bgpOf(c).routerId; touch(c); } }), accept('log-neighbor-changes', '')] })],
+          kw('bgp', '', { children: [kw('router-id', '', { run: (c) => { delete bgpOf(c).routerId; touch(c); } }), accept('log-neighbor-changes', ''),
+            kw('default', '', { children: [kw('local-preference', '', { run: (c) => { delete bgpOf(c).defaultLocalPref; touch(c); }, children: [rest('x', 'LINE', '', (c) => { delete bgpOf(c).defaultLocalPref; touch(c); })] })] })] })],
       }),
       leaveRouter(),
       ...common,
@@ -681,3 +795,14 @@ export const eigrpShows = () => kw('eigrp', 'IP-EIGRP show commands', {
     kw('topology', 'IP-EIGRP Topology Table', { run: (c) => c.out.push(...showEigrpTopology(c.dev, c.doc)) }),
   ],
 });
+
+// « clear ip bgp * | A.B.C.D | AS [soft] [in|out] » : NetCanvas recalcule tout à chaque modification, rien à remettre à zéro
+export function clearBgpCommand() {
+  const tail = [kw('soft', 'Soft reconfig', { run() {}, children: [kw('in', 'Send route-refresh', { run() {} }), kw('out', 'Resend updates', { run() {} })] }), kw('in', 'Soft reconfig inbound updates', { run() {} }), kw('out', 'Soft reconfig outbound updates', { run() {} })];
+  return kw('bgp', 'Clear BGP connections', {
+    children: [
+      kw('*', 'Clear all peers', { run() {}, children: tail }),
+      arg('who', 'A.B.C.D | <1-65535>', 'BGP neighbor address or AS number', (t) => isIp(t) || /^\d+$/.test(t), { run() {}, children: tail }),
+    ],
+  });
+}

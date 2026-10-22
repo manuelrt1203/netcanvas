@@ -31,8 +31,9 @@ export function parseRedistOptions(tokens, target) {
       opts.metric = vals;
       i += 5;
     } else if (t === 'metric' && /^\d+$/.test(tokens[i + 1] ?? '')) opts.metric = Number(tokens[++i]);
-    else if ((t === 'route-map' || t === 'tag') && tokens[i + 1]) {
-      notes.push(`% NetCanvas : « ${t} ${tokens[i + 1]} » n'est pas simulé, toutes les routes sont redistribuées.`);
+    else if (t === 'route-map' && tokens[i + 1]) opts.routeMap = tokens[++i];
+    else if (t === 'tag' && tokens[i + 1]) {
+      notes.push(`% NetCanvas : « tag ${tokens[i + 1]} » n'est pas simulé : utilise une route-map avec « set tag ».`);
       i++;
     } else if (t === 'match') {
       notes.push('% NetCanvas : « match » n\'est pas simulé (routes internes et externes redistribuées).');
@@ -50,7 +51,7 @@ export function redistLines(conf, target, processes = {}) {
     const v = { ...redistOf(conf, s) };
     if (WITH_PROCESS.has(s) && !v.process && processes[s]) v.process = processes[s];
     const metric = v.metric === undefined ? '' : ` metric ${Array.isArray(v.metric) ? v.metric.join(' ') : v.metric}`;
-    out.push(` redistribute ${s}${WITH_PROCESS.has(s) && v.process ? ` ${v.process}` : ''}${metric}${v.metricType === 1 ? ' metric-type 1' : ''}${target === 'ospf' && v.subnets ? ' subnets' : ''}`);
+    out.push(` redistribute ${s}${WITH_PROCESS.has(s) && v.process ? ` ${v.process}` : ''}${metric}${v.metricType === 1 ? ' metric-type 1' : ''}${target === 'ospf' && v.subnets ? ' subnets' : ''}${v.routeMap ? ` route-map ${v.routeMap}` : ''}`);
   }
   if (conf?.defaultMetric !== undefined) out.push(` default-metric ${Array.isArray(conf.defaultMetric) ? conf.defaultMetric.join(' ') : conf.defaultMetric}`);
   return out;

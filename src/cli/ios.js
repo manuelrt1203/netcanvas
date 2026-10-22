@@ -4,7 +4,7 @@ import { dataPorts, ensureEntry, getEntry, linkOf, maskToCidr, pad, ping, withDe
 import { buildTopology, isLoopbackName } from '../net/topology.js';
 import { cidrToMask, formatIp, isBroadcastAddress, isNetworkAddress, isValidIp, networkOf, parseIp, sameSubnet } from '../net/ip.js';
 import { isSviName, modelOf } from '../net/catalog.js';
-import { hostname as iosHostname, iosStpLines, iosStpPortLines, iosSwitchPortLines, iosVtpLines, iosAclLines, iosInterfaceExtras, iosDhcpLines, iosDnsLines, iosIpv6GlobalLines, iosIpv6IfaceLines, iosLongName, iosNatLines, iosRoutingLines } from '../export/cisco.js';
+import { hostname as iosHostname, iosStpLines, iosStpPortLines, iosSwitchPortLines, iosVtpLines, iosAclLines, iosInterfaceExtras, iosDhcpLines, iosDnsLines, iosIpv6GlobalLines, iosIpv6IfaceLines, iosLongName, iosNatLines, iosRoutingLines, iosRouteMapLines } from '../export/cisco.js';
 import { traceroute } from '../net/traceroute.js';
 import { ipArpShow, tableClears, tableShows } from './ios-tables.js';
 import { stpConfigCommand, stpInterfaceCommands, stpNoConfigCommand, stpShowCommand } from './ios-stp.js';
@@ -12,10 +12,12 @@ import { clearDhcpCommand, dhcpConfigCommand, dhcpTree, helperCommands, showDhcp
 import { clearNatCommand, natConfigCommand, natInterfaceCommands, showNatTranslations } from './ios-nat.js';
 import { dhcp6PoolTree, ipv6GlobalCommands, ipv6InterfaceCommands, ipv6ShowCommand } from './ios-ipv6.js';
 import { dnsConfigCommands, isTarget, resolveTarget, showHostsCommand } from './ios-dns.js';
+import { clearBgpCommand } from './ios-routing.js';
+import { prefixListCommands, routeMapConfigCommands, routeMapShows, routeMapTree } from './ios-routemap.js';
 import { acl6Tree, accessGroupCommands, aclConfigCommands, aclShows, aclTree, showAccessLists } from './ios-acl.js';
 import { bumpRevision, iosPortChannelLines, switchInterfaceCommands, switchShows, vlanEditAllowed, vtpCommands } from './ios-switch.js';
 import { vtpMode } from '../net/switching.js';
-import { bgpTree, delayCommands, eigrpShows, eigrpTree, interfaceRoutingCommands, ospf6Tree, ospfTree, ripTree, routeFilters, routerCommands, routingShows, showIpRoute } from './ios-routing.js';
+import { bgpTree, delayCommands, eigrpShows, eigrpTree, interfaceRoutingCommands, ospf6Tree, ospfTree, ripTree, routeFilters, routerCommands, routingShows, showIpRoute, showIpRouteEntry } from './ios-routing.js';
 
 const NOT_SIMULATED = (what) => [`% NetCanvas : ${what} n'est pas encore simulé.`, ''];
 
@@ -134,7 +136,7 @@ function runningConfig(dev) {
     for (const r of c.routes ?? []) {
       if (isValidIp(r.network) && r.mask != null && isValidIp(r.nextHop)) lines.push(`ip route ${r.network} ${cidrToMask(r.mask)} ${r.nextHop}`);
     }
-    lines.push(...iosIpv6GlobalLines(c), ...iosDhcpLines(c), ...iosRoutingLines(c), ...iosAclLines(c), ...iosDnsLines(c), '!');
+    lines.push(...iosIpv6GlobalLines(c), ...iosDhcpLines(c), ...iosRoutingLines(c), ...iosAclLines(c), ...iosRouteMapLines(c), ...iosDnsLines(c), '!');
   } else {
     for (const p of allInterfaces(dev)) {
       const e = getEntry(dev, p.name);
@@ -151,6 +153,7 @@ function runningConfig(dev) {
     lines.push(...iosDhcpLines(dev.config ?? {}));
     lines.push(...iosNatLines(dev.config ?? {}));
     lines.push(...iosAclLines(dev.config ?? {}));
+    lines.push(...iosRouteMapLines(dev.config ?? {}));
     lines.push(...iosDnsLines(dev.config ?? {}));
     lines.push('ip classless');
     for (const r of dev.config?.routes ?? []) {
@@ -348,9 +351,10 @@ function showTree(dev) {
           run: (c) => c.out.push(...(c.dev.type === 'switch' && !c.dev.config?.ipRouting
             ? [`Default gateway is ${c.dev.config?.defaultGateway ?? 'not set'}`, '', 'Host               Gateway           Last Use    Total Uses  Interface', 'ICMP redirect cache is empty', '']
             : showIpRoute(c.dev, c.doc))),
-          children: routeFilters(),
+          children: [...routeFilters(), arg('addr', 'A.B.C.D', 'Network to display information about', (t) => /^\d+\.\d+\.\d+\.\d+$/.test(t), { run: (c) => c.out.push(...showIpRouteEntry(c.dev, c.doc, c.args.addr)) })],
         }), ...routingShows(), eigrpShows()] : []),
         kw('access-lists', 'List IP access lists', { run: (c) => c.out.push(...showAccessLists(c.dev)) }),
+        prefixListCommands().show,
         ipArpShow(),
         kw('dhcp', 'Show items in the DHCP database', {
           children: [
@@ -362,6 +366,7 @@ function showTree(dev) {
       ],
     }),
     ...aclShows(),
+    ...routeMapShows(),
     showHostsCommand(),
     ipv6ShowCommand((d) => allInterfaces(d).map((p) => p.name), portState),
     kw('cdp', 'CDP information', { children: [kw('neighbors', 'CDP neighbor entries', { run: (c) => c.out.push(...showCdp(c.dev, c.doc)) })] }),
@@ -388,7 +393,7 @@ function execTree(dev, privileged) {
     pingCmd(),
     ...(privileged ? [kw('clear', 'Reset functions', {
       children: [
-        ...(dev.type === 'router' ? [kw('ip', 'IP', { children: [clearNatCommand(), clearDhcpCommand()] })] : []),
+        ...(dev.type === 'router' ? [kw('ip', 'IP', { children: [clearNatCommand(), clearDhcpCommand(), clearBgpCommand()] })] : []),
         ...tableClears(dev),
       ],
     })] : []),
@@ -470,9 +475,11 @@ function configTree(dev) {
     }),
     interfaceCmd(isSwitch),
     aclConfigCommands().numbered,
+    ...(!isSwitch || modelOf(dev).l3 ? [routeMapConfigCommands().add] : []),
     kw('ip', 'Global IP configuration subcommands', {
       children: [
         aclConfigCommands().ipNamed,
+        ...(!isSwitch || modelOf(dev).l3 ? [prefixListCommands().add] : []),
         ...(isSwitch ? [] : [natConfigCommand()]),
         ...(isSwitch ? [kw('default-gateway', 'Specify default gateway', {
           children: [arg('gw', 'A.B.C.D', 'IP address of default gateway', isIp, { run: (c) => { c.dev.config.defaultGateway = c.args.gw; c.changed = true; } })],
@@ -498,7 +505,7 @@ function configTree(dev) {
     ...(!isSwitch || modelOf(dev).l3 ? [routerCommands().router] : []),
     kw('no', 'Negate a command or set its defaults', {
       children: [
-        ...(!isSwitch || modelOf(dev).l3 ? [routerCommands().noRouter, ipv6Global.remove] : []),
+        ...(!isSwitch || modelOf(dev).l3 ? [routerCommands().noRouter, ipv6Global.remove, routeMapConfigCommands().remove] : []),
         aclConfigCommands().noNumbered,
         ...(isSwitch ? [] : [kw('ip', 'Global IP configuration subcommands', {
           children: [
@@ -506,6 +513,7 @@ function configTree(dev) {
             kw('domain-lookup', 'Enable IP Domain Name System hostname translation', { run() {} }),
             ...IOS_NOOP_IP.map(([w, h]) => accept(w, h)),
             aclConfigCommands().noIpNamed,
+            prefixListCommands().remove,
             ...dnsConfigCommands(true),
             natConfigCommand(true),
             dhcpConfigCommand(true),
@@ -802,6 +810,7 @@ const TREES = {
   'router-rip': (d) => ripTree([endCmd(), doCmd(d)]),
   'router-eigrp': (d) => eigrpTree([endCmd(), doCmd(d)]),
   'router-bgp': (d) => bgpTree([endCmd(), doCmd(d)]),
+  'route-map': (d) => routeMapTree([endCmd(), doCmd(d)]),
   'acl-std': (d) => aclTree([endCmd(), doCmd(d)]),
   dhcp: (d) => dhcpTree([endCmd(), doCmd(d)]),
   'acl-ext': (d) => aclTree([endCmd(), doCmd(d)]),
@@ -809,7 +818,7 @@ const TREES = {
 
 const SUFFIX = { user: '>', priv: '#', config: '(config)#', if: '(config-if)#', 'if-range': '(config-if-range)#', vlan: '(config-vlan)#', line: '(config-line)#',
   'router-ospf': '(config-router)#', 'router-ospf6': '(config-rtr)#', acl6: '(config-ipv6-acl)#', 'dhcp6-pool': '(config-dhcpv6)#', 'router-rip': '(config-router)#', 'router-eigrp': '(config-router)#', 'router-bgp': '(config-router)#',
-  'acl-std': '(config-std-nacl)#', 'acl-ext': '(config-ext-nacl)#', dhcp: '(dhcp-config)#' };
+  'route-map': '(config-route-map)#', 'acl-std': '(config-std-nacl)#', 'acl-ext': '(config-ext-nacl)#', dhcp: '(dhcp-config)#' };
 
 export const ios = {
   banner: (dev) => [`${modelOf(dev).label} : terminal IOS simulé. Tape « ? » pour l'aide, Tab pour compléter.`, ''],

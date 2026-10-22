@@ -1,0 +1,26 @@
+# Garde le projet Supabase actif : l'offre gratuite met un projet en pause après une période sans activité,
+# ce qui coupe le partage, les comptes, les examens et la collaboration jusqu'à ce qu'on le réveille à la main.
+# Un appel à la base deux fois par semaine suffit (get_exam sur un identifiant qui n'existe pas : rien n'est écrit).
+name: Keep alive
+
+on:
+  schedule:
+    - cron: '17 6 * * 1,4'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Appeler la base
+        env:
+          URL: ${{ secrets.VITE_SUPABASE_URL }}
+          KEY: ${{ secrets.VITE_SUPABASE_KEY }}
+        run: |
+          test -n "$URL" -a -n "$KEY" || { echo "Secrets VITE_SUPABASE_URL / VITE_SUPABASE_KEY absents"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 -X POST "$URL/rest/v1/rpc/get_exam" \
+            -H "apikey: $KEY" -H 'Content-Type: application/json' -d '{"p_id":"keepalive"}')
+          echo "HTTP $code"
+          test "$code" = 200

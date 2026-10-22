@@ -12,6 +12,7 @@ import { MODELS, MODULES, isFrr, isMikrotik, modelId, modelOf } from '../net/cat
 import { frrConfig } from '../cli/frr.js';
 import { routerosScript } from '../cli/routeros.js';
 import { aclTypeOf, ruleText } from '../net/acl.js';
+import { prefixListLines, routeMapLines } from '../net/routemap.js';
 import { ascii, interfaceTable, switchVlans, uniqueNames } from './common.js';
 
 const LONG = {
@@ -129,6 +130,7 @@ function routerConfig(d, rows, { target, table, topo }) {
   }
   lines.push(...iosRoutingLines(cfg, (n) => renamed.get(n) ?? iosLongName(n)).map((l) => (l === '!' && target !== 'gns3' ? ' exit' : l)));
   lines.push(...iosAclLines(cfg).filter((l) => l !== '!'));
+  lines.push(...iosRouteMapLines(cfg).map((l) => (l === '!' && target !== 'gns3' ? ' exit' : l)));
   lines.push(...iosNatLines(cfg, (n) => renamed.get(n) ?? iosLongName(n)));
   lines.push(...iosDhcpLines(cfg).map((l) => (l === '!' ? ' exit' : l)));
   lines.push(...iosDnsLines(cfg));
@@ -176,6 +178,7 @@ function switchConfig(d, rows) {
   }
   lines.push(...iosRoutingLines(c).map((l) => (l === '!' ? ' exit' : l)));
   lines.push(...iosAclLines(c).filter((l) => l !== '!'));
+  lines.push(...iosRouteMapLines(c).map((l) => (l === '!' ? ' exit' : l)));
   lines.push(...iosDnsLines(c));
   lines.push(...iosIpv6GlobalLines(c));
   return { lines, warnings };
@@ -375,12 +378,15 @@ export function iosRoutingLines(cfg, ifName = iosLongName) {
     out.push(`router bgp ${b.asn}`);
     if (b.routerId) out.push(` bgp router-id ${b.routerId}`);
     out.push(' bgp log-neighbor-changes');
+    if (b.defaultLocalPref !== undefined) out.push(` bgp default local-preference ${b.defaultLocalPref}`);
     for (const n of b.neighbors ?? []) {
       out.push(` neighbor ${n.ip} remote-as ${n.remoteAs}`);
       if (n.ebgpMultihop) out.push(` neighbor ${n.ip} ebgp-multihop ${n.ebgpMultihop}`);
       if (n.updateSource) out.push(` neighbor ${n.ip} update-source ${ifName(n.updateSource)}`);
       if (n.nextHopSelf) out.push(` neighbor ${n.ip} next-hop-self`);
       if (n.weight) out.push(` neighbor ${n.ip} weight ${n.weight}`);
+      if (n.routeMapIn) out.push(` neighbor ${n.ip} route-map ${n.routeMapIn} in`);
+      if (n.routeMapOut) out.push(` neighbor ${n.ip} route-map ${n.routeMapOut} out`);
     }
     for (const n of b.networks ?? []) out.push(` network ${n.network} mask ${cidrToMask(n.mask)}`);
     out.push(...redistLines(b, 'bgp', processes(cfg)));
@@ -388,6 +394,9 @@ export function iosRoutingLines(cfg, ifName = iosLongName) {
   }
   return out;
 }
+
+// --- Route-maps (partagé avec le terminal) ---------------------------------------------------
+export const iosRouteMapLines = (cfg) => [...prefixListLines(cfg.prefixLists), ...routeMapLines(cfg.routeMaps)];
 
 // --- ACL (partagé avec le terminal : show running-config) -------------------------------------
 export function iosAclLines(cfg) {

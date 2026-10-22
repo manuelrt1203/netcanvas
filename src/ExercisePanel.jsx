@@ -24,6 +24,7 @@ function Param({ kind, name, value, devices, onChange }) {
   const labels = {
     from: 'Depuis', to: 'Vers', host: 'Hôte', a: 'Équipement A', b: 'Équipement B', router: 'Équipement', neighbor: 'Voisin (IP)',
     name: 'Nom', target: 'Adresse ou nom', expect: 'Adresse attendue (facultatif)', switch: 'Switch', vlan: 'VLAN',
+    via: 'Par (IP du next-hop)', attr: 'Attribut (local-pref, med, weight, as-path)', value: 'Valeur',
   };
   if (kind === 'ip') {
     const ip = (value ?? '').split('/')[0];
@@ -75,6 +76,10 @@ function ObjectiveEditor({ objective, devices, onChange, onRemove }) {
           ))}
         </div>
       )}
+      <Field label="Poids dans la note (1 = normal)">
+        {(id) => <input id={id} type="number" min="1" max="20" className="cidr" value={objective.weight ?? 1}
+          onChange={(e) => onChange({ ...objective, weight: Math.max(1, Math.min(20, Number(e.target.value) || 1)) })} />}
+      </Field>
       <Field label="Libellé affiché (facultatif)">
         {(id) => <input id={id} value={objective.label ?? ''} placeholder="Généré automatiquement"
           onChange={(e) => onChange({ ...objective, label: e.target.value || undefined })} />}
@@ -163,7 +168,7 @@ export default function ExercisePanel({ exercise, results, devices, readOnly, do
             <li key={r.objective.id} className={hidden ? 'todo' : r.ok ? 'ok' : 'todo'}>
               <span className="tp-mark" aria-label={hidden ? 'objectif' : r.ok ? 'atteint' : 'pas encore atteint'}>{hidden ? '•' : r.ok ? '✓' : '○'}</span>
               <div>
-                <span>{r.text}</span>
+                <span>{r.text}</span>{r.weight > 1 && <span className="tp-weight" title="Poids dans la note"> ×{r.weight}</span>}
                 {hintsOn && !r.ok && level > 0 && (
                   <p className="tp-hint">
                     {hintFor(r, level, doc)}

@@ -97,6 +97,21 @@ const covers = (r, ip, len) => networkOf(ip, r.mask) === r.net && (len === undef
 const splitTarget = (to) => { const [ip, len] = String(to).split('/'); return [ip, len === undefined || len === '' ? undefined : Number(len)]; };
 const peerIssue = (r, re, other) => (r?.issues ?? []).find((i) => re.test(i.text) && i.text.includes(other))?.text ?? null;
 
+
+const ATTR_NAMES = { localpref: 'la préférence locale', lp: 'la préférence locale', med: 'le MED', metric: 'le MED', weight: 'le weight', aspathlength: 'la longueur de l\'AS_PATH', aspath: 'la longueur de l\'AS_PATH' };
+// Meilleur chemin BGP d'un routeur pour un préfixe exact (ou, sans longueur, le plus précis qui couvre l'adresse)
+function bestBgpPath(r, ip, len) {
+  let found = null;
+  for (const paths of r.bgp.table.values()) {
+    for (const p of paths) {
+      if (!p.best) continue;
+      const covers = len === undefined ? networkOf(ip, p.mask) === p.net : p.mask === len && networkOf(ip, p.mask) === p.net;
+      if (covers && (!found || p.mask > found.mask)) found = p;
+    }
+  }
+  return found;
+}
+
 export const MORE_OBJECTIVES = {
   dns: {
     label: 'Nom résolu (DNS)',
@@ -228,6 +243,39 @@ export const MORE_OBJECTIVES = {
       return { ok, where: ok ? null : o.switch, why: ok ? null : `Aucun port de ${label(ctx.live, o.switch)} n'est en err-disabled : active port-security (« violation shutdown ») et limite le nombre d'adresses.` };
     },
   },
+  bgpBest: {
+    label: 'Chemin BGP préféré',
+    params: [['router', 'router'], ['to', 'ip'], ['via', 'ip']],
+    describe: (o, doc) => `${label(doc, o.router)} choisit le chemin BGP vers ${o.to} par ${o.via}`,
+    check: (o, ctx) => {
+      const r = ctx.routing.routers.get(o.router);
+      const [ip, len] = splitTarget(o.to);
+      if (!r?.bgp.enabled) return { ok: false, where: o.router, why: `${label(ctx.live, o.router)} n'a pas BGP.` };
+      const best = bestBgpPath(r, ip, len);
+      if (!best) return { ok: false, where: o.router, why: `Aucun chemin BGP vers ${o.to} dans la table de ${label(ctx.live, o.router)}.` };
+      const ok = best.nextHop === o.via;
+      return { ok, where: ok ? null : o.router, why: ok ? null : `${label(ctx.live, o.router)} passe par ${best.nextHop === '0.0.0.0' ? 'sa propre annonce' : best.nextHop} (chemin ${best.asPath.length ? best.asPath.join(' ') : 'local'}), pas par ${o.via} : compare les attributs des chemins (weight, préférence locale, AS_PATH, MED).` };
+    },
+  },
+  bgpAttr: {
+    label: 'Attribut du meilleur chemin BGP',
+    params: [['router', 'router'], ['to', 'ip'], ['attr', 'text'], ['value', 'text']],
+    describe: (o, doc) => `Le meilleur chemin BGP de ${label(doc, o.router)} vers ${o.to} a ${ATTR_NAMES[o.attr] ?? o.attr} = ${o.value}`,
+    check: (o, ctx) => {
+      const r = ctx.routing.routers.get(o.router);
+      const [ip, len] = splitTarget(o.to);
+      const best = r?.bgp.enabled ? bestBgpPath(r, ip, len) : null;
+      if (!best) return { ok: false, where: o.router, why: `Aucun chemin BGP vers ${o.to} dans la table de ${label(ctx.live, o.router)}.` };
+      const key = String(o.attr ?? '').toLowerCase().replace(/[-_ ]/g, '');
+      const actual = key === 'localpref' || key === 'lp' ? best.localPref ?? (best.local || best.ebgp ? 100 : 100)
+        : key === 'med' || key === 'metric' ? Number(best.metric ?? 0)
+          : key === 'weight' ? Number(best.weight ?? (best.local ? 32768 : 0))
+            : key === 'aspathlength' || key === 'aspath' ? best.asPath.length : undefined;
+      if (actual === undefined) return { ok: false, where: null, why: `Attribut inconnu : « ${o.attr} » (local-pref, med, weight ou as-path).` };
+      const ok = Number(actual) === Number(o.value);
+      return { ok, where: ok ? null : o.router, why: ok ? null : `${ATTR_NAMES[key] ?? o.attr} vaut ${actual} sur le meilleur chemin de ${label(ctx.live, o.router)} (attendu ${o.value}).` };
+    },
+  },
   acl: {
     label: 'ACL appliquée à une interface',
     params: [['router', 'router'], ['name', 'text']],
@@ -243,6 +291,9 @@ export const MORE_OBJECTIVES = {
   },
 };
 Object.assign(OBJECTIVES, MORE_OBJECTIVES);
+
+// Poids d'un objectif dans la note (1 par défaut) : un objectif important peut valoir plus de points
+export const weightOf = (o) => (Number(o?.weight) > 0 ? Number(o.weight) : 1);
 
 // Évalue tous les objectifs d'un exercice ; ctx déjà calculé par l'éditeur (live, topo, routing, issues) ou recalculé
 export function evaluateExercise(doc, ctx = null) {
@@ -262,7 +313,7 @@ export function evaluateExercise(doc, ctx = null) {
     } catch {
       res = { ok: false, where: null, why: 'Objectif incomplet : vérifie ses paramètres.' };
     }
-    return { objective: o, text: o.label || def.describe(o, live), ...res };
+    return { objective: o, text: o.label || def.describe(o, live), weight: weightOf(o), ...res };
   });
 }
 

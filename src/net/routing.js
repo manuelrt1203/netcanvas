@@ -18,6 +18,7 @@ import { formatIp, isValidCidr, isValidIp, maskBits, networkOf, parseIp, sameSub
 import { isFrr, isMikrotik } from './catalog.js';
 import { simulatePing } from './simulate.js';
 import { redistOf, redistSources } from './redistribute.js';
+import { applyRouteMap } from './routemap.js';
 
 export const AD = { C: 0, L: 0, S: 1, eBGP: 20, D: 90, O: 110, R: 120, DEX: 170, iBGP: 200 };
 const RIP_INFINITY = 16;
@@ -89,6 +90,21 @@ function protocolNets(r) {
 const PROTO_OF = { ospf: /^O/, rip: /^R/, eigrp: /^D/, bgp: /^B$/ };
 // Routes que `r` redistribue depuis `source` dans `target` (null : processus inconnu, expliqué)
 function redistSource(r, source, target, issue) {
+  const routes = redistSourceRaw(r, source, target, issue);
+  const name = redistOf(r.cfg[target], source)?.routeMap;
+  if (!name) return routes;
+  // « route-map » de la redistribution : refuse des routes, change leur étiquette (tag), leur métrique ou leurs attributs BGP
+  const out = [];
+  for (const x of routes) {
+    const a = applyRouteMap(r.dev, name, { net: x.net, mask: x.mask, tag: x.tag, metric: x.metric });
+    if (a.missing) { issue(r, `${r.label} : la route-map ${name} (redistribute ${source} dans ${target.toUpperCase()}) n'existe pas.`); return routes; }
+    if (!a.permitted) continue;
+    const { tag, metric, localPref, weight } = a.route;
+    out.push({ ...x, tag: tag ?? x.tag, ...(metric !== undefined && metric !== x.metric ? { setMetric: metric } : {}), ...(localPref !== undefined ? { setLocalPref: localPref } : {}), ...(weight !== undefined ? { setWeight: weight } : {}) });
+  }
+  return out;
+}
+function redistSourceRaw(r, source, target, issue) {
   const v = redistOf(r.cfg[target], source);
   if (source === 'static') return r.statics;
   if (source === 'connected') return [...r.connected.values()].filter((x) => x.proto === 'C');
@@ -175,6 +191,16 @@ export function computeRouting(doc, topo = buildTopology(doc)) {
     }
     computeBgp(routers, issue, doc, topo);
     for (const r of routers.values()) for (const route of r.bgp.routes) pick(r.rib, route);
+    // « r » : le meilleur chemin BGP n'entre pas dans la table de routage (une route d'un autre protocole a une meilleure distance)
+    for (const r of routers.values()) {
+      if (!r.bgp.enabled) continue;
+      for (const paths of r.bgp.table.values()) {
+        for (const p of paths) {
+          if (!p.best || p.local) continue;
+          p.ribFailure = r.rib.get(prefixKey(p.net, p.mask))?.proto !== 'B';
+        }
+      }
+    }
     if (!dynamic) break;
     const sig = JSON.stringify([...routers.values()].map((r) => [...r.rib.values()].map((x) => `${x.net}/${x.mask}${x.proto}${x.metric}${x.nextHop}`).sort()));
     if (sig === last) break;
@@ -311,7 +337,7 @@ function computeOspf(routers, issue) {
           skipped.push(prefixText(x.net, x.mask));
           continue;
         }
-        r.ospf.externals.push({ net: x.net, mask: x.mask, metric, type: v.metricType === 1 ? 1 : 2 });
+        r.ospf.externals.push({ net: x.net, mask: x.mask, metric, type: v.metricType === 1 ? 1 : 2, ...(source === 'bgp' ? { viaBgp: true } : {}) });
       }
       if (skipped.length) issue(r, `${r.label} : « redistribute ${source} » sans « subnets » : seuls les réseaux par classe passent dans OSPF, ${skipped.length} sous-réseau(x) ignoré(s) (${skipped.slice(0, 3).join(', ')}${skipped.length > 3 ? '…' : ''}). Ajoute « subnets ».`);
     }
@@ -423,7 +449,7 @@ function spf(routers, key, hopOf, connected) {
       for (const ext of st.r[key].externals) {
         // E1 : métrique externe + coût jusqu'à l'ASBR ; E2 : métrique externe seule
         const e1 = ext.type === 1;
-        offer({ net: ext.net, mask: ext.mask, proto: ext.mask === 0 ? 'O*E2' : e1 ? 'O E1' : 'O E2', ad: AD.O, metric: e1 ? ext.metric + st.d : ext.metric, fwd: st.d, ...hop });
+        offer({ net: ext.net, mask: ext.mask, proto: ext.mask === 0 ? 'O*E2' : e1 ? 'O E1' : 'O E2', ad: AD.O, metric: e1 ? ext.metric + st.d : ext.metric, fwd: st.d, ...(ext.viaBgp ? { viaBgp: true } : {}), ...hop });
       }
     }
     // Les réseaux connectés restent connectés (distance 0)
@@ -537,6 +563,8 @@ function eigrpCovers(c, ip) {
   return (c.networks ?? []).some((n) => {
     if (!isValidIp(n.network)) return false;
     if (!n.wildcard) {
+      // « network 0.0.0.0 » seul (forme enregistrée dans « show run » après « network 0.0.0.0 255.255.255.255 ») : toutes les interfaces
+      if (n.network === '0.0.0.0') return true;
       const cl = classful(n.network);
       return networkOf(ip, cl.mask) === cl.net;
     }
@@ -580,7 +608,7 @@ function computeEigrp(routers, issue) {
         const out = r.ifaces.find((i) => i.name === x.iface);
         const [bw, delay] = seed ? [Number(seed[0]), Number(seed[1])] : out ? [eigrpBandwidth(out), eigrpDelay(out)] : [null, null];
         if (!bw) continue;
-        r.eigrp.table.set(prefixKey(x.net, x.mask), { net: x.net, mask: x.mask, bw, delay, external: true, via: null, local: true });
+        r.eigrp.table.set(prefixKey(x.net, x.mask), { net: x.net, mask: x.mask, bw, delay, external: true, ...(x.tag ? { tag: x.tag } : {}), ...(source === 'bgp' ? { viaBgp: true } : {}), via: null, local: true });
       }
     }
   }
@@ -617,7 +645,7 @@ function computeEigrp(routers, issue) {
         if (cur?.local) continue;
         const curMetric = cur && eigrpMetric(cur.bw, cur.delay);
         if (!cur || metric < curMetric || (metric === curMetric && byIp(aIface.ip, cur.via.nextHop) < 0)) {
-          b.eigrp.table.set(k, { net: e.net, mask: e.mask, ...cand, external: e.external, rd: eigrpMetric(e.bw, e.delay), via: { nextHop: aIface.ip, iface: bIface.name, link: bIface.link } });
+          b.eigrp.table.set(k, { net: e.net, mask: e.mask, ...cand, external: e.external, ...(e.tag ? { tag: e.tag } : {}), ...(e.viaBgp ? { viaBgp: true } : {}), rd: eigrpMetric(e.bw, e.delay), via: { nextHop: aIface.ip, iface: bIface.name, link: bIface.link } });
           changed = true;
         }
       }
@@ -630,7 +658,7 @@ function computeEigrp(routers, issue) {
       .filter((e) => !e.local && !r.connected.has(prefixKey(e.net, e.mask)))
       .map((e) => ({
         net: e.net, mask: e.mask, proto: e.external ? 'D EX' : 'D', ad: e.external ? AD.DEX : AD.D,
-        metric: eigrpMetric(e.bw, e.delay), rd: e.rd, ...e.via,
+        metric: eigrpMetric(e.bw, e.delay), rd: e.rd, ...(e.tag ? { tag: e.tag } : {}), ...(e.viaBgp ? { viaBgp: true } : {}), ...e.via,
       }));
   }
 }
@@ -712,12 +740,16 @@ function computeBgp(routers, issue, doc, topo) {
         issue(r, `BGP : ${r.label} n'annonce pas ${prefixText(net, n.mask)} : cette route exacte n'est pas dans sa table de routage.`);
         continue;
       }
-      r.bgp.local.push({ net, mask: Number(n.mask), asPath: [], nextHop: '0.0.0.0', local: true, origin: 'i' });
+      const exactRoute = [...r.rib.values()].find((x) => x.net === net && x.mask === Number(n.mask));
+      r.bgp.local.push({ net, mask: Number(n.mask), asPath: [], nextHop: '0.0.0.0', local: true, origin: 'i', metric: exactRoute?.metric ?? 0 });
     }
     const redistribute = (routes) => {
       for (const x of routes) {
         if (r.bgp.local.some((l) => l.net === x.net && l.mask === x.mask)) continue;
-        r.bgp.local.push({ net: x.net, mask: x.mask, asPath: [], nextHop: '0.0.0.0', local: true, origin: '?' });
+        r.bgp.local.push({
+          net: x.net, mask: x.mask, asPath: [], nextHop: x.nextHop ?? '0.0.0.0', local: true, origin: '?', metric: x.setMetric ?? x.metric ?? 0,
+          ...(x.setLocalPref !== undefined ? { localPref: x.setLocalPref } : {}), ...(x.setWeight !== undefined ? { weight: x.setWeight } : {}),
+        });
       }
     };
     // IGP vers BGP : routes de la table (même passe) et réseaux des interfaces du protocole
@@ -731,7 +763,9 @@ function computeBgp(routers, issue, doc, topo) {
           continue;
         }
         const nets = protocolNets(r)[source];
-        redistribute([...[...r.rib.values()].filter((x) => PROTO_OF[source].test(x.proto)), ...nets]);
+        // Une route que l'IGP a reçue de BGP (redistribute bgp) n'est pas ré-injectée dans BGP : sur du vrai matériel cette boucle
+        // de redistribution fait osciller les tables ; la parade est une route-map avec « set tag » / « match tag » (TP MED)
+        redistribute([...[...r.rib.values()].filter((x) => PROTO_OF[source].test(x.proto) && !x.viaBgp), ...nets]);
       }
     }
     r.bgp.adjIn = new Map(); // peerId -> Map prefixKey -> path
@@ -745,14 +779,24 @@ function computeBgp(routers, issue, doc, topo) {
     if (p.local || p.ebgp) return true;
     return Boolean(lookup(r.rib, p.nextHop, (x) => x.proto !== 'B'));
   };
+  // Décision BGP (IOS) : weight, préférence locale, origine locale, AS_PATH le plus court, origine (i < e < ?),
+  // MED (seulement entre chemins du même AS voisin), eBGP avant iBGP, plus petite métrique IGP vers le next-hop,
+  // puis plus petit router-id.
+  const ORIGIN = { i: 0, e: 1, '?': 2 };
+  const igpMetric = (r, p) => (p.local || p.ebgp ? 0 : lookup(r.rib, p.nextHop, (x) => x.proto !== 'B')?.metric ?? 0);
   const better = (r, x, y) => {
-    // Weight (Cisco, local au routeur ; 32768 pour ses propres routes), locale, AS_PATH le plus court,
-    // eBGP avant iBGP, puis plus petit router-id
-    const w = (p) => (p.local ? 32768 : Number(p.weight) || 0);
+    const w = (p) => (p.local ? Number(p.weight ?? 32768) : Number(p.weight) || 0);
     if (w(x) !== w(y)) return w(x) > w(y);
-    if (x.local !== y.local) return x.local;
+    const lp = (p) => Number(p.localPref ?? r.cfg.bgp?.defaultLocalPref ?? 100);
+    if (lp(x) !== lp(y)) return lp(x) > lp(y);
+    if (Boolean(x.local) !== Boolean(y.local)) return Boolean(x.local);
     if (x.asPath.length !== y.asPath.length) return x.asPath.length < y.asPath.length;
+    const [ox, oy] = [ORIGIN[x.origin ?? 'i'], ORIGIN[y.origin ?? 'i']];
+    if (ox !== oy) return ox < oy;
+    const [nx, ny] = [x.asPath[0] ?? null, y.asPath[0] ?? null];
+    if (nx !== null && nx === ny && Number(x.metric ?? 0) !== Number(y.metric ?? 0)) return Number(x.metric ?? 0) < Number(y.metric ?? 0);
     if (Boolean(x.ebgp) !== Boolean(y.ebgp)) return Boolean(x.ebgp);
+    if (igpMetric(r, x) !== igpMetric(r, y)) return igpMetric(r, x) < igpMetric(r, y);
     return byIp(x.peerRouterId ?? '0.0.0.0', y.peerRouterId ?? '0.0.0.0') < 0;
   };
   const bestOf = (r, paths) => paths.filter((p) => valid(r, p)).reduce((b, p) => (!b || better(r, p, b) ? p : b), null);
@@ -769,15 +813,34 @@ function computeBgp(routers, issue, doc, topo) {
         const best = bestOf(a, paths);
         if (!best) continue;
         if (!best.local && !best.ebgp && !ebgp) continue; // pas de relais iBGP -> iBGP
-        let path;
-        if (ebgp) {
-          if (best.asPath.includes(b.bgp.asn)) continue; // b rejetterait (boucle d'AS)
-          path = { net: best.net, mask: best.mask, asPath: [a.bgp.asn, ...best.asPath], nextHop: s.source, ebgp: true, origin: best.origin };
-        } else {
-          const self = best.local || s.cfg.nextHopSelf;
-          path = { net: best.net, mask: best.mask, asPath: best.asPath, nextHop: self ? s.source : best.nextHop, ebgp: false, origin: best.origin };
+        if (ebgp && best.asPath.includes(b.bgp.asn)) continue; // b rejetterait (boucle d'AS)
+        // Attributs à l'envoi. Le MED d'un AS voisin ne passe pas à un autre AS ; la préférence locale ne sort pas de l'AS
+        let attrs = {
+          asPath: best.asPath, origin: best.origin,
+          metric: ebgp ? (best.local ? best.metric : undefined) : best.metric ?? 0, // IOS annonce un MED 0 en iBGP quand le chemin n'en a pas
+          ...(ebgp ? {} : { localPref: best.localPref ?? a.cfg.bgp?.defaultLocalPref ?? 100 }),
+        };
+        // « neighbor … route-map … out » de a
+        if (s.cfg.routeMapOut) {
+          const ap = applyRouteMap(a.dev, s.cfg.routeMapOut, { net: best.net, mask: best.mask, ...attrs });
+          if (!ap.permitted) continue;
+          attrs = { ...attrs, asPath: ap.route.asPath, metric: ap.route.metric, ...(ebgp ? {} : { localPref: ap.route.localPref }) };
         }
-        out.set(k, { ...path, from: a.id, peerRouterId: a.bgp.routerId, peerIp: s.source, ...(back.cfg.weight ? { weight: Number(back.cfg.weight) } : {}) });
+        const self = best.local || s.cfg.nextHopSelf;
+        let path = {
+          net: best.net, mask: best.mask, ...attrs, ebgp,
+          asPath: ebgp ? [a.bgp.asn, ...attrs.asPath] : attrs.asPath,
+          nextHop: ebgp ? s.source : self ? s.source : best.nextHop,
+          from: a.id, peerRouterId: a.bgp.routerId, peerIp: s.source,
+        };
+        // « neighbor … weight » et « neighbor … route-map … in » de b
+        if (back.cfg.weight) path.weight = Number(back.cfg.weight);
+        if (back.cfg.routeMapIn) {
+          const ap = applyRouteMap(b.dev, back.cfg.routeMapIn, path);
+          if (!ap.permitted) continue;
+          path = { ...ap.route };
+        }
+        out.set(k, path);
       }
       const prev = b.bgp.adjIn.get(a.id);
       if (JSON.stringify(prev ? [...prev] : null) !== JSON.stringify([...out])) {
@@ -814,7 +877,7 @@ function computeBgp(routers, issue, doc, topo) {
       const via = best.ebgp ? r.ifaces.find((i) => !i.loopback && sameSubnet(i.ip, best.nextHop, i.mask)) : null;
       const igpRoute = via ? null : lookup(r.rib, best.nextHop, (x) => x.proto !== 'B');
       r.bgp.routes.push({
-        net: best.net, mask: best.mask, proto: 'B', ad: best.ebgp ? AD.eBGP : AD.iBGP, metric: 0,
+        net: best.net, mask: best.mask, proto: 'B', ad: best.ebgp ? AD.eBGP : AD.iBGP, metric: Number(best.metric ?? 0),
         nextHop: best.nextHop, asPath: best.asPath, ebgp: Boolean(best.ebgp),
         iface: via?.name ?? igpRoute?.iface ?? null, link: via?.link ?? igpRoute?.link ?? null, recursive: !via,
       });

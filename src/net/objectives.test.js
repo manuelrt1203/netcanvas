@@ -114,6 +114,24 @@ test('chaque type est décrit et ses paramètres connus', async () => {
     assert.ok(def.label && typeof def.check === 'function' && typeof def.describe === 'function', type);
     for (const [, kind] of def.params) assert.ok(['device', 'router', 'ip', 'text'].includes(kind), `${type} : ${kind}`);
   }
-  assert.equal(Object.keys(OBJECTIVES).length, 19);
+  assert.equal(Object.keys(OBJECTIVES).length, 21);
   assert.ok(DEMO);
+});
+
+test('barème : un objectif peut valoir plus de points, la note suit les poids', async () => {
+  const { gradeSubmission } = await import('../exam.js');
+  const doc = structuredClone(NAT_DEMO);
+  // 2 objectifs : un ping qui réussit (poids 3) et un autre qui échoue (poids 1) -> 3 points sur 4 = 15/20
+  const exercise = { title: 't', instructions: '', objectives: [
+    { id: 'a', type: 'ping', from: 'pc1', to: '198.51.100.10', weight: 3 },
+    { id: 'b', type: 'ping', from: 'pc1', to: '203.0.113.99', weight: 1 },
+  ] };
+  const template = { ...doc, exercise, settings: { duration: 60 } };
+  const g = gradeSubmission({ student: 'Alice', doc, started_at: '2026-10-22T08:00:00Z', submitted_at: '2026-10-22T08:30:00Z' }, template);
+  assert.deepEqual([g.score, g.total, g.points, g.max, g.note], [1, 2, 3, 4, 15]);
+  assert.deepEqual(g.results.map((r) => r.weight), [3, 1]);
+  const { gradesCsv } = await import('../exam.js');
+  const csv = gradesCsv('T', [g]);
+  assert.match(csv, /Durée \(min\);O1 \(×3\);O2\r\n/);
+  assert.match(csv, /;3;0\r\n$/);
 });

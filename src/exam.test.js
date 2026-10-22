@@ -31,7 +31,7 @@ test('examen : CSV pour tableur, chrono calé sur le serveur', () => {
   const g = [gradeSubmission({ student: 'Martin; "Léa"', started_at: at(0), submitted_at: at(12.5), doc: DEMO }, template)];
   const csv = gradesCsv('TP inter-VLAN', g);
   assert.ok(csv.startsWith('﻿Examen;Étudiant;'));
-  assert.match(csv, /TP inter-VLAN;"Martin; ""Léa""";\d+;\d+;[\d,]+;rendue;[^;]+;[^;]+;12,5\r\n$/);
+  assert.match(csv, /TP inter-VLAN;"Martin; ""Léa""";\d+;\d+;[\d,]+;rendue;[^;]+;[^;]+;12,5(;1)+\r\n$/);
   // Horloge du poste en avance de 2 h : l'écart corrige le chrono
   const offset = -2 * 3600000;
   assert.equal(remainingSeconds(at(0), 30, offset, new Date(at(10)).getTime() + 2 * 3600000), 20 * 60);
